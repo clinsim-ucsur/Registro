@@ -1,0 +1,126 @@
+// schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL") 
+}
+
+// ------------------------------------------------------
+// ENUMS
+// ------------------------------------------------------
+
+enum Role {
+  // Roles Administrativos (Dashboard)
+  SUPER_ADMIN
+  ADMIN_SECUNDARIO
+  
+  // Roles Operativos (Registro Asistencia)
+  DOCENTE
+  TECNICO
+  PACIENTE_SIMULADO
+}
+
+enum RecordType {
+  ENTRADA
+  SALIDA
+}
+
+enum RecordStatus {
+  A_TIEMPO
+  TARDANZA
+  FALTA
+  EXCEPCION
+}
+
+// ------------------------------------------------------
+// MODELOS
+// ------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  dni           String    @unique
+  email         String?   @unique 
+  password      String?
+  role          Role      @default(DOCENTE)
+  
+  campusId      String?
+  campus        Campus?   @relation(fields: [campusId], references: [id])
+
+  records       AttendanceRecord[]
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Campus {
+  id             String    @id @default(cuid())
+  name           String    @unique // Ej: "Campus Villa"
+
+  users          User[]
+  records        AttendanceRecord[]
+  rules          ToleranceRule[]
+
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+model Course {
+  id            String    @id @default(cuid())
+  name          String    @unique
+  
+  records       AttendanceRecord[]
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model AttendanceRecord {
+  id            String    @id @default(cuid())
+  
+  // Quién registró
+  userId        String
+  user          User      @relation(fields: [userId], references: [id])
+  
+  // Cuándo y qué registró
+  timestamp     DateTime  @default(now())
+  type          RecordType
+  
+  // Contexto del registro (Docentes/Pacientes)
+  campusId      String?
+  campus        Campus?   @relation(fields: [campusId], references: [id])
+  
+  courseId      String?
+  course        Course?   @relation(fields: [courseId], references: [id])
+  
+  // Auditoría y Estado
+  status        RecordStatus @default(A_TIEMPO)
+  isOfflineSync Boolean      @default(false) // True si la PWA guardó el registro localmente y lo subió luego
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Índices para consultas rápidas en el Dashboard
+  @@index([userId])
+  @@index([timestamp])
+  @@index([campusId])
+}
+
+model ToleranceRule {
+  id                    String   @id @default(cuid())
+  
+  campusId              String?  
+  campus                Campus?  @relation(fields: [campusId], references: [id])
+  role                  Role?    
+  
+  expectedEntryTime     String   // Formato "HH:mm", Ej: "08:00"
+  gracePeriodMinutes    Int      @default(0)  
+  lateToleranceMinutes  Int      @default(15) 
+  
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
