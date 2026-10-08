@@ -62,18 +62,38 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       return { success: false, message: "El usuario ya no existe en el sistema." }
     }
 
+    // Resolver Campus por nombre (ya que el form envía nombres hardcodeados)
+    let finalCampusId = null
+    if (data.campusId && data.campusId.trim() !== '') {
+      let campus = await prisma.campus.findUnique({ where: { name: data.campusId.trim() } })
+      if (!campus) {
+        campus = await prisma.campus.create({ data: { name: data.campusId.trim() } })
+      }
+      finalCampusId = campus.id
+    }
+
+    // Resolver Course por nombre
+    let finalCourseId = null
+    if (data.courseId && data.courseId.trim() !== '') {
+      let course = await prisma.course.findUnique({ where: { name: data.courseId.trim() } })
+      if (!course) {
+        course = await prisma.course.create({ data: { name: data.courseId.trim() } })
+      }
+      finalCourseId = course.id
+    }
+
     let status: RecordStatus = RecordStatus.A_TIEMPO
     
     if (data.type === RecordType.ENTRADA) {
-      status = await calculateToleranceStatus(recordTimestamp, data.campusId, data.role)
+      status = await calculateToleranceStatus(recordTimestamp, finalCampusId || undefined, data.role)
     }
 
     await prisma.attendanceRecord.create({
       data: {
         userId: data.userId,
         type: data.type,
-        campusId: data.campusId,
-        courseId: data.courseId,
+        campusId: finalCampusId,
+        courseId: finalCourseId,
         timestamp: recordTimestamp,
         status: status,
         isOfflineSync: data.isOfflineSync ?? false,
@@ -146,12 +166,27 @@ export async function syncOfflineRecordsAction(records: any[]) {
         continue
       }
 
+      // Resolver Campus y Course para el sync offline
+      let finalCampusId = null
+      if (record.campusId) {
+        let campus = await prisma.campus.findUnique({ where: { name: record.campusId } })
+        if (!campus) campus = await prisma.campus.create({ data: { name: record.campusId } })
+        finalCampusId = campus.id
+      }
+      
+      let finalCourseId = null
+      if (record.courseId) {
+        let course = await prisma.course.findUnique({ where: { name: record.courseId } })
+        if (!course) course = await prisma.course.create({ data: { name: record.courseId } })
+        finalCourseId = course.id
+      }
+
       await prisma.attendanceRecord.create({
         data: {
           userId: user.id,
           type: record.type,
-          campusId: record.campusId,
-          courseId: record.courseId,
+          campusId: finalCampusId,
+          courseId: finalCourseId,
           timestamp: new Date(record.timestamp),
           status: RecordStatus.A_TIEMPO,
           isOfflineSync: true,
