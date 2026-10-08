@@ -3,8 +3,7 @@
 import { revalidatePath } from "next/cache"
 import { PrismaClient, Role, RecordType, RecordStatus } from "@prisma/client"
 
-// Instanciamos prisma temporalmente (en prod es mejor tener un archivo lib/prisma.ts)
-const prisma = new PrismaClient()
+import prisma from "@/lib/prisma"
 
 // ------------------------------------------------------------------
 // 1. REEMPLAZO DE `validarDNI(rol, dni)`
@@ -105,8 +104,8 @@ async function calculateToleranceStatus(
   const rule = await prisma.toleranceRule.findFirst({
     where: {
       OR: [
-        { campusId: campusId, role: role },
-        { campusId: campusId, role: null },
+        { campusId: campusId || null, role: role },
+        { campusId: campusId || null, role: null },
         { campusId: null, role: null }     
       ]
     }
