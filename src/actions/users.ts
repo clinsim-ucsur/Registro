@@ -31,7 +31,7 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
       let userRole: Role = Role.DOCENTE
       if (roleRaw === 'TECNICO' || roleRaw === 'TÉCNICO') userRole = Role.TECNICO
       else if (roleRaw === 'PACIENTE_SIMULADO' || roleRaw === 'PACIENTE') userRole = Role.PACIENTE_SIMULADO
-      else if (roleRaw === 'COORDINADOR') userRole = Role.COORDINADOR
+      else if (roleRaw === 'COORDINADOR' || roleRaw === 'ADMIN_SECUNDARIO') userRole = Role.ADMIN_SECUNDARIO
       else if (roleRaw === 'SUPER_ADMIN') userRole = Role.SUPER_ADMIN
 
       // Mapeo y creación de Sede si no existe

@@ -54,7 +54,7 @@ export default function AttendanceForm() {
         if (res.success) {
           localStorage.removeItem('offline_records')
           toast.success(`Se sincronizaron automáticamente ${res.syncedCount} registros offline.`)
-          if (res.errorCount > 0) {
+          if (res.errorCount && res.errorCount > 0) {
             toast.warning(`Se ignoraron ${res.errorCount} registros (DNI inválidos).`)
           }
         }
