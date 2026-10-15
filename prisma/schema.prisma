@@ -47,6 +47,7 @@ model User {
   email         String?   @unique 
   password      String?
   role          Role      @default(DOCENTE)
+  permissions   String[]  @default([])
   
   campusId      String?
   campus        Campus?   @relation(fields: [campusId], references: [id])

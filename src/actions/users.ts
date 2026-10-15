@@ -146,36 +146,72 @@ export async function deleteUserAction(dni: string) {
 // ---------------------------------------------
 // CRUD: CREAR ADMINISTRADOR
 // ---------------------------------------------
-export async function createAdminAction(data: { name: string, dni: string, role: Role, password?: string }) {
+export async function createAdminAction(data: { 
+  name: string
+  dni: string
+  role: Role
+  password?: string
+  campusId?: string | null
+  permissions?: string[]
+}) {
   try {
     const existing = await prisma.user.findUnique({ where: { dni: data.dni } })
     if (existing) return { success: false, message: "El DNI/Usuario ya existe." }
+
+    // Plantilla estándar por defecto si no se especifican permisos manualmente
+    let finalPermissions = data.permissions || []
+    if (finalPermissions.length === 0) {
+      if (data.role === Role.SUPER_ADMIN) {
+        finalPermissions = ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins"]
+      } else {
+        // Plantilla estándar para Admin Secundario: Vista básica, reportes y personal operativo
+        finalPermissions = ["overview", "reports", "users"]
+      }
+    }
 
     await prisma.user.create({
       data: {
         name: data.name,
         dni: data.dni,
         role: data.role,
-        password: data.password || null
+        password: data.password || null,
+        campusId: data.campusId || null,
+        permissions: finalPermissions,
       }
     })
 
     revalidatePath("/dashboard")
     return { success: true, message: "Administrador creado exitosamente." }
-  } catch (error) {
-    return { success: false, message: "Error al crear administrador." }
+  } catch (error: any) {
+    console.error("[createAdminAction] Error:", error)
+    return { success: false, message: error.message || "Error al crear administrador." }
   }
 }
 
 // ---------------------------------------------
 // CRUD: EDITAR ADMINISTRADOR
 // ---------------------------------------------
-export async function editAdminAction(oldDni: string, data: { name: string, dni: string, role: Role, password?: string }) {
+export async function editAdminAction(oldDni: string, data: { 
+  name: string
+  dni: string
+  role: Role
+  password?: string
+  campusId?: string | null
+  permissions?: string[]
+}) {
   try {
     const updateData: any = {
       name: data.name,
       dni: data.dni,
-      role: data.role
+      role: data.role,
+    }
+
+    if (data.campusId !== undefined) {
+      updateData.campusId = data.campusId || null
+    }
+
+    if (data.permissions !== undefined) {
+      updateData.permissions = data.permissions
     }
     
     // Solo actualiza la contraseña si se ingresó algo
@@ -190,7 +226,8 @@ export async function editAdminAction(oldDni: string, data: { name: string, dni:
     
     revalidatePath("/dashboard")
     return { success: true, message: "Administrador actualizado." }
-  } catch (error) {
-    return { success: false, message: "Error al actualizar administrador." }
+  } catch (error: any) {
+    console.error("[editAdminAction] Error:", error)
+    return { success: false, message: error.message || "Error al actualizar administrador." }
   }
 }

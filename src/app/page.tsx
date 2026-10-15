@@ -1,7 +1,15 @@
 import AttendanceForm from "@/components/attendance-form"
 import LiveClock from "@/components/live-clock"
+import prisma from "@/lib/prisma"
 
-export default function Home() {
+export const dynamic = "force-dynamic"
+
+export default async function Home() {
+  const [campuses, courses] = await Promise.all([
+    prisma.campus.findMany({ select: { id: true, name: true }, orderBy: { name: 'asc' } }),
+    prisma.course.findMany({ select: { id: true, name: true }, orderBy: { name: 'asc' } }),
+  ])
+
   return (
     <main className="min-h-screen relative flex flex-col items-center justify-center overflow-hidden bg-[#1967D2] p-6">
       
@@ -36,7 +44,7 @@ export default function Home() {
 
         {/* Contenedor Principal: Formulario Centrado */}
         <div className="w-full animate-fade-in-up" style={{animationDelay: '0.1s'}}>
-          <AttendanceForm />
+          <AttendanceForm campuses={campuses} courses={courses} />
         </div>
       </div>
 

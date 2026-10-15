@@ -22,11 +22,47 @@ const formSchema = z.object({
   dni: z.string().length(8, "El DNI debe tener 8 dígitos numéricos").regex(/^\d+$/, "Solo números"),
 })
 
-export default function AttendanceForm() {
+const DEFAULT_CAMPUSES = [
+  "Campus Villa",
+  "Campus Norte",
+  "Campus Aramburú",
+  "Campus Ate"
+]
+
+const DEFAULT_COURSES = [
+  "Simulación Quirúrgica",
+  "Simulación Clínica Integrada (SCI)",
+  "Semiología Basada en Simulación (SBS)",
+  "Simulación Ginecológica",
+  "Simulación Pediátrica",
+  "Externado de Cirugía",
+  "Externado de Medicina",
+  "Externado de Pediatría",
+  "Externado de Ginecología",
+  "Primeros Auxilios",
+  "Medicina Legal",
+  "Ecografía",
+  "Otros"
+]
+
+interface AttendanceFormProps {
+  campuses?: { id: string; name: string }[]
+  courses?: { id: string; name: string }[]
+}
+
+export default function AttendanceForm({ campuses: propCampuses, courses: propCourses }: AttendanceFormProps = {}) {
   const [isValidating, setIsValidating] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState<RecordType | null>(null)
   const [validatedUser, setValidatedUser] = useState<{id: string, name: string} | null>(null)
   const [isOffline, setIsOffline] = useState(false)
+
+  const availableCampuses = (propCampuses && propCampuses.length > 0)
+    ? propCampuses.map(c => c.name)
+    : DEFAULT_CAMPUSES
+
+  const availableCourses = (propCourses && propCourses.length > 0)
+    ? propCourses.map(c => c.name)
+    : DEFAULT_COURSES
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -248,11 +284,12 @@ export default function AttendanceForm() {
                           <SelectValue placeholder="Seleccione Sede" />
                         </SelectTrigger>
                       </FormControl>
-                      <SelectContent alignItemWithTrigger={false} side="bottom" sideOffset={4} className="bg-white text-slate-800 border-slate-200 rounded-xl text-2xl">
-                        <SelectItem value="Campus Villa" className="py-4">Campus Villa</SelectItem>
-                        <SelectItem value="Campus Norte" className="py-4">Campus Norte</SelectItem>
-                        <SelectItem value="Campus Ate" className="py-4">Campus Ate</SelectItem>
-                        <SelectItem value="Campus Aramburú" className="py-4">Campus Aramburú</SelectItem>
+                      <SelectContent alignItemWithTrigger={false} side="bottom" sideOffset={4} className="bg-white text-slate-800 border-slate-200 rounded-xl text-xl max-h-[300px] overflow-y-auto">
+                        {availableCampuses.map((cName) => (
+                          <SelectItem key={cName} value={cName} className="py-3">
+                            {cName}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                     <FormMessage />
@@ -273,19 +310,11 @@ export default function AttendanceForm() {
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent alignItemWithTrigger={false} side="bottom" sideOffset={4} className="bg-white text-slate-800 border-slate-200 rounded-xl text-xl max-h-[300px] overflow-y-auto">
-                        <SelectItem value="Simulación Quirúrgica" className="py-3">Simulación Quirúrgica</SelectItem>
-                        <SelectItem value="Simulación Clínica Integrada (SCI)" className="py-3">Simulación Clínica Integrada (SCI)</SelectItem>
-                        <SelectItem value="Semiología Basada en Simulación (SBS)" className="py-3">Semiología Basada en Simulación (SBS)</SelectItem>
-                        <SelectItem value="Simulación Ginecológica" className="py-3">Simulación Ginecológica</SelectItem>
-                        <SelectItem value="Simulación Pediátrica" className="py-3">Simulación Pediátrica</SelectItem>
-                        <SelectItem value="Externado de Cirugía" className="py-3">Externado de Cirugía</SelectItem>
-                        <SelectItem value="Externado de Medicina" className="py-3">Externado de Medicina</SelectItem>
-                        <SelectItem value="Externado de Pediatría" className="py-3">Externado de Pediatría</SelectItem>
-                        <SelectItem value="Externado de Ginecología" className="py-3">Externado de Ginecología</SelectItem>
-                        <SelectItem value="Primeros Auxilios" className="py-3">Primeros Auxilios</SelectItem>
-                        <SelectItem value="Medicina Legal" className="py-3">Medicina Legal</SelectItem>
-                        <SelectItem value="Ecografía" className="py-3">Ecografía</SelectItem>
-                        <SelectItem value="Otros" className="py-3">Otros</SelectItem>
+                        {availableCourses.map((crsName) => (
+                          <SelectItem key={crsName} value={crsName} className="py-3">
+                            {crsName}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                     <FormMessage />

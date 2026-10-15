@@ -7,6 +7,7 @@ export type AdminSession = {
   role: "SUPER_ADMIN" | "ADMIN_SECUNDARIO"
   campusId: string | null
   campusName: string | null
+  permissions: string[]
 }
 
 /**
@@ -20,12 +21,19 @@ export async function getAdminSession(): Promise<AdminSession | null> {
 
   // Sesión de respaldo (backdoor MVP)
   if (token === "superadmin_session") {
-    return { id: null, name: "Super Admin", role: "SUPER_ADMIN", campusId: null, campusName: null }
+    return { 
+      id: null, 
+      name: "Super Admin", 
+      role: "SUPER_ADMIN", 
+      campusId: null, 
+      campusName: null,
+      permissions: ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins"]
+    }
   }
 
   const user = await prisma.user.findUnique({
     where: { id: token },
-    select: { id: true, name: true, role: true, campusId: true, campus: { select: { name: true } } },
+    select: { id: true, name: true, role: true, permissions: true, campusId: true, campus: { select: { name: true } } },
   })
 
   if (!user || (user.role !== "SUPER_ADMIN" && user.role !== "ADMIN_SECUNDARIO")) return null
@@ -36,6 +44,9 @@ export async function getAdminSession(): Promise<AdminSession | null> {
     role: user.role,
     campusId: user.campusId,
     campusName: user.campus?.name ?? null,
+    permissions: user.role === "SUPER_ADMIN" && (!user.permissions || user.permissions.length === 0)
+      ? ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins"]
+      : (user.permissions ?? []),
   }
 }
 
