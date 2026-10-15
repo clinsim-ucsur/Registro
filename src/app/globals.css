@@ -137,3 +137,12 @@
     @apply font-sans;
   }
 }
+
+/* Ocultar barra de desplazamiento manteniendo la funcionalidad de scroll */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

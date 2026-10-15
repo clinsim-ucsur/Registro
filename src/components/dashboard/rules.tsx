@@ -177,7 +177,7 @@ export function DashboardRules({
 
   const modalContent = isModalOpen && (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in-up">
-      <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl p-6 md:p-8 relative max-h-[90vh] overflow-y-auto">
+      <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl p-6 md:p-8 relative max-h-[92vh] overflow-y-auto no-scrollbar">
         <button
           onClick={() => setIsModalOpen(false)}
           className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full w-9 h-9 flex items-center justify-center transition-colors"
@@ -185,7 +185,7 @@ export function DashboardRules({
           ✕
         </button>
 
-        <div className="flex items-center gap-3 mb-2">
+        <div className="flex items-center gap-3 mb-1">
           <div className="p-2.5 bg-blue-50 text-[#1967D2] rounded-2xl">
             <Settings2 size={24} />
           </div>
@@ -197,56 +197,54 @@ export function DashboardRules({
           </div>
         </div>
 
-        <form onSubmit={handleSave} className="space-y-5 mt-6">
-          {/* Sede */}
-          <div>
-            <label className="text-xs font-black uppercase tracking-wider text-slate-700">Sede Universitaria</label>
-            <select
-              value={formData.campusId ?? ""}
-              onChange={(e) => setFormData({ ...formData, campusId: e.target.value })}
-              className="w-full h-12 mt-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
-            >
-              <option value="">Todas las sedes (Alcance Global)</option>
-              {campuses.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-            <p className="text-[11px] text-slate-400 mt-1">Déjalo en blanco para que aplique como regla general.</p>
-          </div>
-
-          {/* Rol */}
-          <div>
-            <label className="text-xs font-black uppercase tracking-wider text-slate-700">Rol Operativo</label>
-            <select
-              value={formData.role ?? ""}
-              onChange={(e) => setFormData({ ...formData, role: (e.target.value as Role) || null })}
-              className="w-full h-12 mt-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
-            >
-              <option value="">Todos los roles (Docentes, Técnicos y Pacientes)</option>
-              <option value="DOCENTE">Solo Docentes</option>
-              <option value="TECNICO">Solo Técnicos</option>
-              <option value="PACIENTE_SIMULADO">Solo Pacientes Simulados</option>
-            </select>
-          </div>
-
-          {/* Hora Esperada */}
-          <div>
-            <label className="text-xs font-black uppercase tracking-wider text-slate-700">Hora Oficial de Entrada</label>
-            <Input
-              type="time"
-              required
-              value={formData.expectedEntryTime}
-              onChange={(e) => setFormData({ ...formData, expectedEntryTime: e.target.value })}
-              className="h-12 mt-1.5 rounded-xl text-lg font-black bg-slate-50"
-            />
-            <p className="text-[11px] text-slate-400 mt-1">Ejemplo: 08:00 AM para turno mañana.</p>
-          </div>
-
-          {/* Gracia y Tolerancia */}
-          <div className="grid grid-cols-2 gap-4">
+        <form onSubmit={handleSave} className="space-y-4 mt-5">
+          {/* Sede y Rol en dos columnas */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             <div>
-              <label className="text-xs font-black uppercase tracking-wider text-emerald-700">Minutos de Gracia</label>
-              <div className="relative mt-1.5">
+              <label className="text-[11px] font-black uppercase tracking-wider text-slate-700">Sede</label>
+              <select
+                value={formData.campusId ?? ""}
+                onChange={(e) => setFormData({ ...formData, campusId: e.target.value })}
+                className="w-full h-11 mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
+              >
+                <option value="">Todas (Global)</option>
+                {campuses.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-black uppercase tracking-wider text-slate-700">Rol</label>
+              <select
+                value={formData.role ?? ""}
+                onChange={(e) => setFormData({ ...formData, role: (e.target.value as Role) || null })}
+                className="w-full h-11 mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
+              >
+                <option value="">Todos los roles</option>
+                <option value="DOCENTE">Docentes</option>
+                <option value="TECNICO">Técnicos</option>
+                <option value="PACIENTE_SIMULADO">Pacientes Sim.</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Hora Oficial, Gracia y Tolerancia en una sola fila integrada */}
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="text-[11px] font-black uppercase tracking-wider text-slate-700">Hora Entrada</label>
+              <Input
+                type="time"
+                required
+                value={formData.expectedEntryTime}
+                onChange={(e) => setFormData({ ...formData, expectedEntryTime: e.target.value })}
+                className="h-11 mt-1 rounded-xl text-base font-black bg-slate-50 px-2.5"
+              />
+            </div>
+
+            <div>
+              <label className="text-[11px] font-black uppercase tracking-wider text-emerald-700">Gracia</label>
+              <div className="relative mt-1">
                 <Input
                   type="number"
                   min={0}
@@ -254,16 +252,15 @@ export function DashboardRules({
                   required
                   value={formData.gracePeriodMinutes}
                   onChange={(e) => setFormData({ ...formData, gracePeriodMinutes: Number(e.target.value) })}
-                  className="h-12 rounded-xl text-base font-bold bg-slate-50 pr-12"
+                  className="h-11 rounded-xl text-sm font-bold bg-slate-50 pr-9"
                 />
-                <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">min</span>
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-400">min</span>
               </div>
-              <p className="text-[10px] text-slate-400 mt-1">Llega a tiempo hasta +{formData.gracePeriodMinutes}m</p>
             </div>
 
             <div>
-              <label className="text-xs font-black uppercase tracking-wider text-amber-700">Límite Tardanza</label>
-              <div className="relative mt-1.5">
+              <label className="text-[11px] font-black uppercase tracking-wider text-amber-700">Tardanza</label>
+              <div className="relative mt-1">
                 <Input
                   type="number"
                   min={formData.gracePeriodMinutes}
@@ -271,29 +268,40 @@ export function DashboardRules({
                   required
                   value={formData.lateToleranceMinutes}
                   onChange={(e) => setFormData({ ...formData, lateToleranceMinutes: Number(e.target.value) })}
-                  className="h-12 rounded-xl text-base font-bold bg-slate-50 pr-12"
+                  className="h-11 rounded-xl text-sm font-bold bg-slate-50 pr-9"
                 />
-                <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">min</span>
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-400">min</span>
               </div>
-              <p className="text-[10px] text-slate-400 mt-1">Falta a partir de +{formData.lateToleranceMinutes}m</p>
             </div>
           </div>
 
           {/* Vista Previa Dinámica de la Regla */}
-          <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200/80 space-y-2">
-            <p className="text-[11px] font-black uppercase tracking-wider text-slate-500">Comportamiento con estos valores:</p>
+          <div className="rounded-2xl bg-slate-50/90 p-4 border border-slate-200/70 space-y-2">
+            <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-slate-400">
+              <span>Evaluación automática</span>
+              <span className="text-[#1967D2]">Entrada oficial: {formData.expectedEntryTime}</span>
+            </div>
             <div className="text-xs space-y-1 font-semibold text-slate-700">
-              <div className="flex items-center gap-2 text-emerald-700">
-                <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                <strong>A Tiempo:</strong> Hasta las {minutesToTimeString(formGraceLimitMins)}
+              <div className="flex items-center justify-between text-emerald-700 bg-emerald-50/70 px-3 py-1.5 rounded-xl border border-emerald-100">
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                  <strong>A Tiempo:</strong>
+                </span>
+                <span>Hasta las {minutesToTimeString(formGraceLimitMins)}</span>
               </div>
-              <div className="flex items-center gap-2 text-amber-700">
-                <span className="h-2 w-2 rounded-full bg-amber-500" />
-                <strong>Tardanza:</strong> De {minutesToTimeString(formGraceLimitMins + 1)} hasta las {minutesToTimeString(formLateLimitMins)}
+              <div className="flex items-center justify-between text-amber-700 bg-amber-50/70 px-3 py-1.5 rounded-xl border border-amber-100">
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-amber-500" />
+                  <strong>Tardanza:</strong>
+                </span>
+                <span>{minutesToTimeString(formGraceLimitMins + 1)} — {minutesToTimeString(formLateLimitMins)}</span>
               </div>
-              <div className="flex items-center gap-2 text-rose-700">
-                <span className="h-2 w-2 rounded-full bg-rose-500" />
-                <strong>Falta:</strong> A partir de las {minutesToTimeString(formLateLimitMins + 1)}
+              <div className="flex items-center justify-between text-rose-700 bg-rose-50/70 px-3 py-1.5 rounded-xl border border-rose-100">
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-rose-500" />
+                  <strong>Falta:</strong>
+                </span>
+                <span>Desde {minutesToTimeString(formLateLimitMins + 1)}</span>
               </div>
             </div>
           </div>
@@ -303,7 +311,7 @@ export function DashboardRules({
               type="button"
               variant="outline"
               onClick={() => setIsModalOpen(false)}
-              className="flex-1 h-12 rounded-xl font-bold"
+              className="flex-1 h-12 rounded-xl font-bold border-slate-200"
             >
               Cancelar
             </Button>
