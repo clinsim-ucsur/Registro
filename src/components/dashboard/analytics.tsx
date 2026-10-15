@@ -5,7 +5,7 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAx
 import { toast } from "sonner"
 import {
   Activity, AlarmClock, BookOpen, CalendarRange, CheckCircle2, Clock, Loader2, MapPin,
-  TrendingDown, TrendingUp, Trophy, UserX, Users,
+  TrendingDown, TrendingUp, Trophy, UserX, Users, Briefcase, Stethoscope, Wrench
 } from "lucide-react"
 
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
@@ -253,6 +253,104 @@ export function DashboardAnalytics({ initialData, lockedCampus }: { initialData:
               <Users size={12} className="inline mr-1 -mt-0.5" />{kpis.activeUsers} usuarios activos en el periodo
             </span>
           </KpiCard>
+        </div>
+
+        {/* ---------- CENSO DE TRABAJADORES REGISTRADOS ---------- */}
+        <div className="rounded-3xl border border-slate-200/80 bg-white p-6 md:p-8 shadow-sm shadow-slate-200/50 animate-fade-in-up">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-100">
+            <div>
+              <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.2em] text-[#1967D2]">
+                <Users size={16} /> Censo Institucional
+              </div>
+              <h3 className="text-xl md:text-2xl font-black text-slate-800 mt-1">Personal Operativo Registrado</h3>
+              <p className="text-xs md:text-sm text-slate-500 font-medium">
+                Padrón activo en la base de datos para control de accesos y actividades clínicas de simulación.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 bg-slate-50 border border-slate-200/60 px-5 py-3 rounded-2xl w-fit">
+              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Total Plantilla:</span>
+              <span className="text-2xl font-black text-slate-800 tabular-nums">
+                {data.registeredStaff?.total ?? 0} <span className="text-xs font-bold text-slate-400 font-normal">trabajadores</span>
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 md:gap-6 mt-6">
+            {/* DOCENTES */}
+            <div className="relative overflow-hidden rounded-2xl border-2 border-blue-100 bg-gradient-to-br from-blue-50/60 to-white p-5 transition-all duration-300 hover:shadow-lg hover:border-blue-300 hover:-translate-y-0.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black uppercase tracking-wider text-blue-700">Docentes</span>
+                <div className="p-2.5 bg-blue-600 text-white rounded-xl shadow-md shadow-blue-500/20">
+                  <Briefcase size={20} />
+                </div>
+              </div>
+              <div className="mt-3 flex items-baseline gap-2">
+                <span className="text-3xl md:text-4xl font-black text-slate-800 tabular-nums">
+                  {data.registeredStaff?.docentes ?? 0}
+                </span>
+                <span className="text-xs font-bold text-blue-600 bg-blue-100/70 px-2 py-0.5 rounded-full">
+                  {data.registeredStaff?.total > 0 ? Math.round(((data.registeredStaff?.docentes ?? 0) / data.registeredStaff.total) * 100) : 0}%
+                </span>
+              </div>
+              <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-blue-100">
+                <div 
+                  className="h-full rounded-full bg-blue-600 transition-all duration-700" 
+                  style={{ width: `${data.registeredStaff?.total > 0 ? ((data.registeredStaff?.docentes ?? 0) / data.registeredStaff.total) * 100 : 0}%` }} 
+                />
+              </div>
+              <p className="mt-2 text-[11px] font-semibold text-slate-500">Catedráticos y médicos instructores</p>
+            </div>
+
+            {/* PACIENTES SIMULADOS */}
+            <div className="relative overflow-hidden rounded-2xl border-2 border-emerald-100 bg-gradient-to-br from-emerald-50/60 to-white p-5 transition-all duration-300 hover:shadow-lg hover:border-emerald-300 hover:-translate-y-0.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black uppercase tracking-wider text-emerald-700">Pacientes Simulados</span>
+                <div className="p-2.5 bg-emerald-600 text-white rounded-xl shadow-md shadow-emerald-500/20">
+                  <Stethoscope size={20} />
+                </div>
+              </div>
+              <div className="mt-3 flex items-baseline gap-2">
+                <span className="text-3xl md:text-4xl font-black text-slate-800 tabular-nums">
+                  {data.registeredStaff?.pacientes ?? 0}
+                </span>
+                <span className="text-xs font-bold text-emerald-600 bg-emerald-100/70 px-2 py-0.5 rounded-full">
+                  {data.registeredStaff?.total > 0 ? Math.round(((data.registeredStaff?.pacientes ?? 0) / data.registeredStaff.total) * 100) : 0}%
+                </span>
+              </div>
+              <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-emerald-100">
+                <div 
+                  className="h-full rounded-full bg-emerald-600 transition-all duration-700" 
+                  style={{ width: `${data.registeredStaff?.total > 0 ? ((data.registeredStaff?.pacientes ?? 0) / data.registeredStaff.total) * 100 : 0}%` }} 
+                />
+              </div>
+              <p className="mt-2 text-[11px] font-semibold text-slate-500">Actores y pacientes para evaluación clínica</p>
+            </div>
+
+            {/* TÉCNICOS */}
+            <div className="relative overflow-hidden rounded-2xl border-2 border-purple-100 bg-gradient-to-br from-purple-50/60 to-white p-5 transition-all duration-300 hover:shadow-lg hover:border-purple-300 hover:-translate-y-0.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black uppercase tracking-wider text-purple-700">Técnicos de Simulación</span>
+                <div className="p-2.5 bg-purple-600 text-white rounded-xl shadow-md shadow-purple-500/20">
+                  <Wrench size={20} />
+                </div>
+              </div>
+              <div className="mt-3 flex items-baseline gap-2">
+                <span className="text-3xl md:text-4xl font-black text-slate-800 tabular-nums">
+                  {data.registeredStaff?.tecnicos ?? 0}
+                </span>
+                <span className="text-xs font-bold text-purple-600 bg-purple-100/70 px-2 py-0.5 rounded-full">
+                  {data.registeredStaff?.total > 0 ? Math.round(((data.registeredStaff?.tecnicos ?? 0) / data.registeredStaff.total) * 100) : 0}%
+                </span>
+              </div>
+              <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-purple-100">
+                <div 
+                  className="h-full rounded-full bg-purple-600 transition-all duration-700" 
+                  style={{ width: `${data.registeredStaff?.total > 0 ? ((data.registeredStaff?.tecnicos ?? 0) / data.registeredStaff.total) * 100 : 0}%` }} 
+                />
+              </div>
+              <p className="mt-2 text-[11px] font-semibold text-slate-500">Operadores de simulación y soporte</p>
+            </div>
+          </div>
         </div>
 
         {/* ---------- Tendencia + Distribución ---------- */}

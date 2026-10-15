@@ -1,5 +1,5 @@
 import prisma from "@/lib/prisma"
-import { LayoutDashboard, UploadCloud, FileText, LogOut, Users, Shield, BarChart3 } from "lucide-react"
+import { LayoutDashboard, UploadCloud, FileText, LogOut, Users, Shield, BarChart3, Clock } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { redirect } from "next/navigation"
 
@@ -9,6 +9,7 @@ import { DashboardReports } from "@/components/dashboard/reports"
 import { DashboardUsers } from "@/components/dashboard/users"
 import { DashboardAdmins } from "@/components/dashboard/admins"
 import { DashboardAnalytics } from "@/components/dashboard/analytics"
+import { DashboardRules } from "@/components/dashboard/rules"
 import { getAdminSession } from "@/lib/session"
 import { computeAnalytics } from "@/lib/analytics"
 
@@ -17,7 +18,7 @@ export default async function DashboardPage() {
   if (!session) redirect("/login")
   const currentUserRole = session.role
 
-  const [records, users, admins, weeklyAnalytics, initialAnalytics] = await Promise.all([
+  const [records, users, admins, weeklyAnalytics, initialAnalytics, rules, campuses] = await Promise.all([
     prisma.attendanceRecord.findMany({
       orderBy: { timestamp: 'desc' },
       take: 100, // En producción usaríamos paginación
@@ -34,6 +35,14 @@ export default async function DashboardPage() {
     }),
     computeAnalytics({ days: 7 }),
     computeAnalytics({ days: 30 }),
+    prisma.toleranceRule.findMany({
+      include: { campus: { select: { id: true, name: true } } },
+      orderBy: { createdAt: 'desc' },
+    }),
+    prisma.campus.findMany({
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
+    }),
   ])
   
   return (
@@ -79,6 +88,13 @@ export default async function DashboardPage() {
               className="w-full justify-start gap-4 px-5 py-4 text-sm md:text-base font-bold rounded-2xl text-slate-300 data-[state=active]:bg-[#1967D2] data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-blue-900/50 hover:bg-white/5 transition-all outline-none"
             >
               <FileText size={22}/> Exportación
+            </TabsTrigger>
+
+            <TabsTrigger 
+              value="rules" 
+              className="w-full justify-start gap-4 px-5 py-4 text-sm md:text-base font-bold rounded-2xl text-slate-300 data-[state=active]:bg-[#1967D2] data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-blue-900/50 hover:bg-white/5 transition-all outline-none"
+            >
+              <Clock size={22}/> Horarios y Tolerancias
             </TabsTrigger>
 
             <div className="h-px w-full bg-white/5 my-2"></div>
@@ -152,6 +168,10 @@ export default async function DashboardPage() {
 
             <TabsContent value="reports" className="m-0 p-0 outline-none">
               <DashboardReports records={records} />
+            </TabsContent>
+
+            <TabsContent value="rules" className="m-0 p-0 outline-none">
+              <DashboardRules rules={rules} campuses={campuses} />
             </TabsContent>
 
             <TabsContent value="users" className="m-0 p-0 outline-none">

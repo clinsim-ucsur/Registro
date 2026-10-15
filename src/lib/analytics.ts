@@ -26,7 +26,7 @@ export async function computeAnalytics({ days, campusId }: { days: number; campu
 
   const campusFilter: Prisma.AttendanceRecordWhereInput = campusId ? { campusId } : {}
 
-  const [records, prevGroups, campuses] = await Promise.all([
+  const [records, prevGroups, campuses, allStaffCounts] = await Promise.all([
     prisma.attendanceRecord.findMany({
       where: { timestamp: { gte: from, lt: to }, ...campusFilter },
       select: {
@@ -46,7 +46,22 @@ export async function computeAnalytics({ days, campusId }: { days: number; campu
       _count: { _all: true },
     }),
     prisma.campus.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    prisma.user.groupBy({
+      by: ["role"],
+      where: { role: { in: ["DOCENTE", "TECNICO", "PACIENTE_SIMULADO"] } },
+      _count: { _all: true },
+    }),
   ])
+
+  let staffDocentes = 0
+  let staffTecnicos = 0
+  let staffPacientes = 0
+  for (const s of allStaffCounts) {
+    if (s.role === "DOCENTE") staffDocentes = s._count._all
+    else if (s.role === "TECNICO") staffTecnicos = s._count._all
+    else if (s.role === "PACIENTE_SIMULADO") staffPacientes = s._count._all
+  }
+  const staffTotal = staffDocentes + staffTecnicos + staffPacientes
 
   // ---------- Serie diaria (inicializada con todos los días del rango) ----------
   const dailyMap = new Map<string, AnalyticsData["daily"][number]>()
@@ -189,5 +204,11 @@ export async function computeAnalytics({ days, campusId }: { days: number; campu
       .sort((a, b) => b.tardanzas + b.faltas * 2 - (a.tardanzas + a.faltas * 2))
       .slice(0, 5),
     campuses,
+    registeredStaff: {
+      total: staffTotal,
+      docentes: staffDocentes,
+      tecnicos: staffTecnicos,
+      pacientes: staffPacientes,
+    },
   }
 }

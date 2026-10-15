@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache"
 import { PrismaClient, Role, RecordType, RecordStatus } from "@prisma/client"
 
 import prisma from "@/lib/prisma"
+import { limaMinutesOfDay } from "@/lib/timezone"
 
 // ------------------------------------------------------------------
 // 1. REEMPLAZO DE `validarDNI(rol, dni)`
@@ -116,30 +117,34 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
 // ------------------------------------------------------------------
 // 3. LÓGICA DE NEGOCIO: CÁLCULO DE REGLAS DE TOLERANCIA
 // ------------------------------------------------------------------
-async function calculateToleranceStatus(
+export async function calculateToleranceStatus(
   recordTime: Date, 
   campusId?: string, 
   role?: Role
 ): Promise<RecordStatus> {
-  const rule = await prisma.toleranceRule.findFirst({
-    where: {
-      OR: [
-        { campusId: campusId || null, role: role },
-        { campusId: campusId || null, role: null },
-        { campusId: null, role: null }     
-      ]
-    }
-  })
+  const rules = await prisma.toleranceRule.findMany()
+  if (rules.length === 0) return RecordStatus.A_TIEMPO
+
+  // Buscar por prioridad:
+  // 1. Coincidencia exacta de Sede y Rol
+  // 2. Coincidencia de Sede (para cualquier rol)
+  // 3. Coincidencia de Rol (para cualquier sede)
+  // 4. Regla global (sin sede ni rol)
+  const rule = 
+    (campusId && role ? rules.find(r => r.campusId === campusId && r.role === role) : null) ||
+    (campusId ? rules.find(r => r.campusId === campusId && !r.role) : null) ||
+    (role ? rules.find(r => !r.campusId && r.role === role) : null) ||
+    rules.find(r => !r.campusId && !r.role)
 
   if (!rule) return RecordStatus.A_TIEMPO
 
   const [expectedHour, expectedMinute] = rule.expectedEntryTime.split(':').map(Number)
-  
-  const expectedDate = new Date(recordTime)
-  expectedDate.setHours(expectedHour, expectedMinute, 0, 0)
+  const expectedMinutes = (isNaN(expectedHour) ? 8 : expectedHour) * 60 + (isNaN(expectedMinute) ? 0 : expectedMinute)
+  const recordMinutes = limaMinutesOfDay(recordTime)
 
-  const diffInMinutes = (recordTime.getTime() - expectedDate.getTime()) / (1000 * 60)
+  const diffInMinutes = recordMinutes - expectedMinutes
 
+  // Si marca antes de la hora esperada o dentro del periodo de gracia
   if (diffInMinutes <= rule.gracePeriodMinutes) {
     return RecordStatus.A_TIEMPO
   } else if (diffInMinutes <= rule.lateToleranceMinutes) {
@@ -181,14 +186,20 @@ export async function syncOfflineRecordsAction(records: any[]) {
         finalCourseId = course.id
       }
 
+      const recDate = new Date(record.timestamp)
+      let status: RecordStatus = RecordStatus.A_TIEMPO
+      if (record.type === RecordType.ENTRADA) {
+        status = await calculateToleranceStatus(recDate, finalCampusId || undefined, user.role)
+      }
+
       await prisma.attendanceRecord.create({
         data: {
           userId: user.id,
           type: record.type,
           campusId: finalCampusId,
           courseId: finalCourseId,
-          timestamp: new Date(record.timestamp),
-          status: RecordStatus.A_TIEMPO,
+          timestamp: recDate,
+          status: status,
           isOfflineSync: true,
         }
       })
