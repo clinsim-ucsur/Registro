@@ -98,6 +98,17 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
     let status: RecordStatus = RecordStatus.A_TIEMPO
     
     if (data.type === RecordType.ENTRADA) {
+      const allRules = await prisma.toleranceRule.findMany()
+      const matchedRule = findApplicableToleranceRule(allRules, finalCampusId || undefined, data.role)
+      if (matchedRule) {
+        const earlyCheck = validateEarlyEntry(recordTimestamp, matchedRule)
+        if (!earlyCheck.allowed) {
+          return {
+            success: false,
+            message: earlyCheck.message || "No se permite marcar con tanta anticipación.",
+          }
+        }
+      }
       status = await calculateToleranceStatus(recordTimestamp, finalCampusId || undefined, data.role)
     }
 
@@ -129,6 +140,51 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
 // ------------------------------------------------------------------
 // 3. LÓGICA DE NEGOCIO: CÁLCULO DE REGLAS DE TOLERANCIA
 // ------------------------------------------------------------------
+export function findApplicableToleranceRule(
+  rules: any[],
+  campusId?: string,
+  role?: Role
+) {
+  if (rules.length === 0) return null
+  return (
+    (campusId && role ? rules.find(r => r.campusId === campusId && r.role === role) : null) ||
+    (campusId ? rules.find(r => r.campusId === campusId && !r.role) : null) ||
+    (role ? rules.find(r => !r.campusId && r.role === role) : null) ||
+    rules.find(r => !r.campusId && !r.role) ||
+    null
+  )
+}
+
+export function validateEarlyEntry(
+  recordTime: Date,
+  rule: { expectedEntryTime: string; earlyEntryToleranceMinutes: number }
+): { allowed: boolean; message?: string } {
+  const [expectedHour, expectedMinute] = rule.expectedEntryTime.split(':').map(Number)
+  const expectedMinutes = (isNaN(expectedHour) ? 8 : expectedHour) * 60 + (isNaN(expectedMinute) ? 0 : expectedMinute)
+  const recordMinutes = limaMinutesOfDay(recordTime)
+
+  const diffInMinutes = recordMinutes - expectedMinutes
+  const earlyAllowed = rule.earlyEntryToleranceMinutes ?? 15
+
+  // Si marca con demasiada anticipación (ej: diffInMinutes < -15)
+  if (diffInMinutes < -earlyAllowed) {
+    const earlyMinutesActual = Math.abs(diffInMinutes)
+    const allowedStartMinutes = (expectedMinutes - earlyAllowed + 1440) % 1440
+    const startHour = Math.floor(allowedStartMinutes / 60)
+    const startMinute = allowedStartMinutes % 60
+    const startPeriod = startHour >= 12 ? "PM" : "AM"
+    const displayH = startHour % 12 === 0 ? 12 : startHour % 12
+    const allowedStartTimeStr = `${String(displayH).padStart(2, "0")}:${String(startMinute).padStart(2, "0")} ${startPeriod}`
+
+    return {
+      allowed: false,
+      message: `No se permite marcar con tanta anticipación. Su hora de entrada oficial es ${rule.expectedEntryTime}. Podrá marcar a partir de las ${allowedStartTimeStr} (máximo ${earlyAllowed} min antes).`,
+    }
+  }
+
+  return { allowed: true }
+}
+
 export async function calculateToleranceStatus(
   recordTime: Date, 
   campusId?: string, 
@@ -137,17 +193,7 @@ export async function calculateToleranceStatus(
   const rules = await prisma.toleranceRule.findMany()
   if (rules.length === 0) return RecordStatus.A_TIEMPO
 
-  // Buscar por prioridad:
-  // 1. Coincidencia exacta de Sede y Rol
-  // 2. Coincidencia de Sede (para cualquier rol)
-  // 3. Coincidencia de Rol (para cualquier sede)
-  // 4. Regla global (sin sede ni rol)
-  const rule = 
-    (campusId && role ? rules.find(r => r.campusId === campusId && r.role === role) : null) ||
-    (campusId ? rules.find(r => r.campusId === campusId && !r.role) : null) ||
-    (role ? rules.find(r => !r.campusId && r.role === role) : null) ||
-    rules.find(r => !r.campusId && !r.role)
-
+  const rule = findApplicableToleranceRule(rules, campusId, role)
   if (!rule) return RecordStatus.A_TIEMPO
 
   const [expectedHour, expectedMinute] = rule.expectedEntryTime.split(':').map(Number)

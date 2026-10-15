@@ -10,6 +10,7 @@ export type ToleranceRuleInput = {
   campusId?: string | null
   role?: Role | null
   expectedEntryTime: string // "HH:mm"
+  earlyEntryToleranceMinutes?: number
   gracePeriodMinutes: number
   lateToleranceMinutes: number
 }
@@ -27,9 +28,13 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
       return { success: false, message: "El formato de hora debe ser HH:mm (ej: 08:00)" }
     }
 
+    const early = data.earlyEntryToleranceMinutes !== undefined ? Number(data.earlyEntryToleranceMinutes) : 15
     const grace = Number(data.gracePeriodMinutes)
     const late = Number(data.lateToleranceMinutes)
 
+    if (isNaN(early) || early < 0) {
+      return { success: false, message: "Los minutos de anticipación permitida no pueden ser negativos." }
+    }
     if (isNaN(grace) || grace < 0) {
       return { success: false, message: "Los minutos de gracia no pueden ser negativos." }
     }
@@ -48,6 +53,7 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
           campusId: cleanCampusId,
           role: cleanRole,
           expectedEntryTime: data.expectedEntryTime,
+          earlyEntryToleranceMinutes: early,
           gracePeriodMinutes: grace,
           lateToleranceMinutes: late,
         },
@@ -69,6 +75,7 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
         where: { id: existing.id },
         data: {
           expectedEntryTime: data.expectedEntryTime,
+          earlyEntryToleranceMinutes: early,
           gracePeriodMinutes: grace,
           lateToleranceMinutes: late,
         },
@@ -82,6 +89,7 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
         campusId: cleanCampusId,
         role: cleanRole,
         expectedEntryTime: data.expectedEntryTime,
+        earlyEntryToleranceMinutes: early,
         gracePeriodMinutes: grace,
         lateToleranceMinutes: late,
       },
@@ -134,13 +142,14 @@ export async function seedDefaultToleranceRuleAction() {
         campusId: null,
         role: null,
         expectedEntryTime: "08:00",
+        earlyEntryToleranceMinutes: 15,
         gracePeriodMinutes: 10,
         lateToleranceMinutes: 30,
       },
     })
 
     revalidatePath("/dashboard")
-    return { success: true, message: "Regla global creada: Entrada 08:00 AM (Gracia: 10 min, Tardanza hasta 30 min)." }
+    return { success: true, message: "Regla global creada: Entrada 08:00 AM (Anticipación: 15 min, Gracia: 10 min, Tardanza hasta 30 min)." }
   } catch (error: any) {
     console.error("[seedDefaultToleranceRuleAction]", error)
     return { success: false, message: error.message || "Error al inicializar la regla predeterminada." }

@@ -25,6 +25,7 @@ type ToleranceRuleItem = {
   campus: { id: string; name: string } | null
   role: Role | null
   expectedEntryTime: string
+  earlyEntryToleranceMinutes?: number
   gracePeriodMinutes: number
   lateToleranceMinutes: number
 }
@@ -41,7 +42,7 @@ function timeStringToMinutes(timeStr: string): number {
 }
 
 function minutesToTimeString(minutes: number): string {
-  const clamped = Math.max(0, Math.min(23 * 60 + 59, minutes))
+  const clamped = Math.max(0, Math.min(23 * 60 + 59, (minutes + 1440) % 1440))
   const h = Math.floor(clamped / 60)
   const m = clamped % 60
   const period = h >= 12 ? "PM" : "AM"
@@ -66,6 +67,7 @@ export function DashboardRules({
     campusId: "",
     role: null,
     expectedEntryTime: "08:00",
+    earlyEntryToleranceMinutes: 15,
     gracePeriodMinutes: 10,
     lateToleranceMinutes: 30,
   })
@@ -81,6 +83,7 @@ export function DashboardRules({
       campusId: "",
       role: null,
       expectedEntryTime: "08:00",
+      earlyEntryToleranceMinutes: 15,
       gracePeriodMinutes: 10,
       lateToleranceMinutes: 30,
     })
@@ -94,6 +97,7 @@ export function DashboardRules({
       campusId: rule.campusId ?? "",
       role: rule.role,
       expectedEntryTime: rule.expectedEntryTime,
+      earlyEntryToleranceMinutes: rule.earlyEntryToleranceMinutes ?? 15,
       gracePeriodMinutes: rule.gracePeriodMinutes,
       lateToleranceMinutes: rule.lateToleranceMinutes,
     })
@@ -141,7 +145,7 @@ export function DashboardRules({
 
   // Live simulation calculation for the test widget
   const evaluateTest = () => {
-    if (rules.length === 0) return { status: "A_TIEMPO", diff: 0, ruleUsed: null }
+    if (rules.length === 0) return { status: "A_TIEMPO", diff: 0, ruleUsed: null, message: null }
 
     const matchedRule =
       (testCampusId && testRole ? rules.find(r => r.campusId === testCampusId && r.role === testRole) : null) ||
@@ -149,18 +153,28 @@ export function DashboardRules({
       (testRole ? rules.find(r => !r.campusId && r.role === testRole) : null) ||
       rules.find(r => !r.campusId && !r.role)
 
-    if (!matchedRule) return { status: "A_TIEMPO", diff: 0, ruleUsed: null }
+    if (!matchedRule) return { status: "A_TIEMPO", diff: 0, ruleUsed: null, message: null }
 
     const testMinutes = timeStringToMinutes(testTime)
     const expectedMinutes = timeStringToMinutes(matchedRule.expectedEntryTime)
     const diff = testMinutes - expectedMinutes
+    const earlyLimit = matchedRule.earlyEntryToleranceMinutes ?? 15
 
     let status = "A_TIEMPO"
-    if (diff <= matchedRule.gracePeriodMinutes) status = "A_TIEMPO"
-    else if (diff <= matchedRule.lateToleranceMinutes) status = "TARDANZA"
-    else status = "FALTA"
+    let message: string | null = null
 
-    return { status, diff, ruleUsed: matchedRule }
+    if (diff < -earlyLimit) {
+      status = "BLOQUEADO"
+      message = `Bloqueado por anticipación excesiva (${Math.abs(diff)} min antes, máx ${earlyLimit} min).`
+    } else if (diff <= matchedRule.gracePeriodMinutes) {
+      status = "A_TIEMPO"
+    } else if (diff <= matchedRule.lateToleranceMinutes) {
+      status = "TARDANZA"
+    } else {
+      status = "FALTA"
+    }
+
+    return { status, diff, ruleUsed: matchedRule, message }
   }
 
   const testResult = evaluateTest()
@@ -172,6 +186,7 @@ export function DashboardRules({
 
   // Preview numbers for the modal live bar
   const formExpectedMins = timeStringToMinutes(formData.expectedEntryTime)
+  const formEarlyLimitMins = formExpectedMins - (Number(formData.earlyEntryToleranceMinutes) || 15)
   const formGraceLimitMins = formExpectedMins + (Number(formData.gracePeriodMinutes) || 0)
   const formLateLimitMins = formExpectedMins + (Number(formData.lateToleranceMinutes) || 0)
 
@@ -229,8 +244,8 @@ export function DashboardRules({
             </div>
           </div>
 
-          {/* Hora Oficial, Gracia y Tolerancia en una sola fila integrada */}
-          <div className="grid grid-cols-3 gap-3">
+          {/* Hora Oficial, Anticipación, Gracia y Tolerancia en una grilla responsiva */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div>
               <label className="text-[11px] font-black uppercase tracking-wider text-slate-700">Hora Entrada</label>
               <Input
@@ -240,6 +255,23 @@ export function DashboardRules({
                 onChange={(e) => setFormData({ ...formData, expectedEntryTime: e.target.value })}
                 className="h-11 mt-1 rounded-xl text-base font-black bg-slate-50 px-2.5"
               />
+            </div>
+
+            <div>
+              <label className="text-[11px] font-black uppercase tracking-wider text-sky-700">Anticipación</label>
+              <div className="relative mt-1">
+                <Input
+                  type="number"
+                  min={0}
+                  max={120}
+                  required
+                  value={formData.earlyEntryToleranceMinutes ?? 15}
+                  onChange={(e) => setFormData({ ...formData, earlyEntryToleranceMinutes: Number(e.target.value) })}
+                  className="h-11 rounded-xl text-sm font-bold bg-slate-50 pr-9"
+                  title="Minutos antes de la hora oficial en que se permite marcar"
+                />
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-bold text-slate-400">min</span>
+              </div>
             </div>
 
             <div>
@@ -282,10 +314,17 @@ export function DashboardRules({
               <span className="text-[#1967D2]">Entrada oficial: {formData.expectedEntryTime}</span>
             </div>
             <div className="text-xs space-y-1 font-semibold text-slate-700">
+              <div className="flex items-center justify-between text-sky-800 bg-sky-50/80 px-3 py-1.5 rounded-xl border border-sky-100">
+                <span className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-sky-500" />
+                  <strong>Permitido marcar desde:</strong>
+                </span>
+                <span>{minutesToTimeString(formEarlyLimitMins)} (-{formData.earlyEntryToleranceMinutes ?? 15} min)</span>
+              </div>
               <div className="flex items-center justify-between text-emerald-700 bg-emerald-50/70 px-3 py-1.5 rounded-xl border border-emerald-100">
                 <span className="flex items-center gap-2">
                   <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                  <strong>A Tiempo:</strong>
+                  <strong>A Tiempo (Puntual):</strong>
                 </span>
                 <span>Hasta las {minutesToTimeString(formGraceLimitMins)}</span>
               </div>
@@ -301,7 +340,7 @@ export function DashboardRules({
                   <span className="h-2 w-2 rounded-full bg-rose-500" />
                   <strong>Falta:</strong>
                 </span>
-                <span>Desde {minutesToTimeString(formLateLimitMins + 1)}</span>
+                <span>A partir de las {minutesToTimeString(formLateLimitMins + 1)}</span>
               </div>
             </div>
           </div>
@@ -468,18 +507,24 @@ export function DashboardRules({
                       </div>
                     </div>
 
-                    {/* Resumen numérico */}
-                    <div className="grid grid-cols-3 gap-3 pt-4">
+                    {/* Resumen numérico en 4 columnas */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4">
                       <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
                         <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Hora Oficial</p>
                         <p className="text-xl font-black text-slate-800 mt-0.5">{rule.expectedEntryTime}</p>
                         <p className="text-[11px] font-medium text-slate-500 mt-0.5">{minutesToTimeString(expMins)}</p>
                       </div>
 
+                      <div className="rounded-2xl bg-sky-50/70 p-3.5 border border-sky-100">
+                        <p className="text-[10px] font-black uppercase tracking-wider text-sky-700">Anticipación Máx</p>
+                        <p className="text-xl font-black text-sky-800 mt-0.5">{rule.earlyEntryToleranceMinutes ?? 15} min</p>
+                        <p className="text-[11px] font-medium text-sky-700 mt-0.5">Desde {minutesToTimeString(expMins - (rule.earlyEntryToleranceMinutes ?? 15))}</p>
+                      </div>
+
                       <div className="rounded-2xl bg-emerald-50/60 p-3.5 border border-emerald-100">
                         <p className="text-[10px] font-black uppercase tracking-wider text-emerald-700">Cortesía / Gracia</p>
                         <p className="text-xl font-black text-emerald-800 mt-0.5">+{rule.gracePeriodMinutes} min</p>
-                        <p className="text-[11px] font-medium text-emerald-700 mt-0.5">A tiempo hasta {minutesToTimeString(graceMins)}</p>
+                        <p className="text-[11px] font-medium text-emerald-700 mt-0.5">Puntual hasta {minutesToTimeString(graceMins)}</p>
                       </div>
 
                       <div className="rounded-2xl bg-amber-50/60 p-3.5 border border-amber-100">
@@ -587,6 +632,11 @@ export function DashboardRules({
               <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">Resultado Evaluado</p>
               
               <div className="mt-3">
+                {testResult.status === "BLOQUEADO" && (
+                  <div className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 text-white px-5 py-2.5 font-black text-lg shadow-lg">
+                    <ShieldAlert size={24} className="text-rose-400" /> ENTRADA BLOQUEADA
+                  </div>
+                )}
                 {testResult.status === "A_TIEMPO" && (
                   <div className="inline-flex items-center gap-2 rounded-2xl bg-emerald-100/80 px-5 py-2.5 text-emerald-800 font-black text-lg">
                     <CheckCircle2 size={24} className="text-emerald-600" /> A TIEMPO (Puntual)
@@ -605,6 +655,11 @@ export function DashboardRules({
               </div>
 
               <div className="mt-3 text-xs text-slate-600 space-y-1">
+                {testResult.message && (
+                  <p className="text-rose-600 font-bold bg-rose-50 p-2 rounded-lg border border-rose-100">
+                    ⚠️ {testResult.message}
+                  </p>
+                )}
                 {testResult.ruleUsed ? (
                   <>
                     <p className="font-bold">

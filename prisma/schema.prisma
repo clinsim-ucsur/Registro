@@ -124,10 +124,11 @@ model ToleranceRule {
   campus                Campus?  @relation(fields: [campusId], references: [id])
   role                  Role?    
   
-  expectedEntryTime     String   // Formato "HH:mm", Ej: "08:00"
-  gracePeriodMinutes    Int      @default(0)  
-  lateToleranceMinutes  Int      @default(15) 
+  expectedEntryTime          String   // Formato "HH:mm", Ej: "08:00"
+  earlyEntryToleranceMinutes Int      @default(15) // Minutos máximos antes de la hora oficial en que se permite marcar entrada
+  gracePeriodMinutes         Int      @default(0)  
+  lateToleranceMinutes       Int      @default(15) 
   
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
 }
