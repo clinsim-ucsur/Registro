@@ -5,6 +5,7 @@ import { PrismaClient, Role, RecordType, RecordStatus } from "@prisma/client"
 
 import prisma from "@/lib/prisma"
 import { limaMinutesOfDay } from "@/lib/timezone"
+import { GEOFENCE, isInsideGeofence, distanceToCampus } from "@/lib/geofence"
 
 // ------------------------------------------------------------------
 // 1. REEMPLAZO DE `validarDNI(rol, dni)`
@@ -47,10 +48,23 @@ type RegisterAttendanceData = {
   courseId?: string
   isOfflineSync?: boolean
   clientTimestamp?: Date 
+  location?: { lat: number; lng: number; accuracy?: number }
 }
 
 export async function registerAttendanceAction(data: RegisterAttendanceData) {
   try {
+    // Límite por geolocalización (el registro offline se valida en el dispositivo al guardarse)
+    if (GEOFENCE.enabled && !data.isOfflineSync) {
+      const loc = data.location
+      if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng)) {
+        return { success: false, message: "No se pudo verificar su ubicación. Active el GPS y permita el acceso." }
+      }
+      if (!isInsideGeofence(loc.lat, loc.lng, loc.accuracy ?? 0)) {
+        const d = Math.round(distanceToCampus(loc.lat, loc.lng))
+        return { success: false, message: `Fuera de rango: debe estar en ${GEOFENCE.name} para marcar (a ${d} m).` }
+      }
+    }
+
     const recordTimestamp = data.isOfflineSync && data.clientTimestamp 
       ? new Date(data.clientTimestamp) 
       : new Date()

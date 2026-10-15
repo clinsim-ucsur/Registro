@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button"
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { GEOFENCE, isInsideGeofence, distanceToCampus } from "@/lib/geofence"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 
 const formSchema = z.object({
@@ -157,6 +158,24 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
     }
   }
 
+  const getLocation = () =>
+    new Promise<{ lat: number; lng: number; accuracy: number }>((resolve, reject) => {
+      if (typeof navigator === "undefined" || !navigator.geolocation) {
+        reject(new Error("Su dispositivo no soporta geolocalización."))
+        return
+      }
+      navigator.geolocation.getCurrentPosition(
+        (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }),
+        (err) =>
+          reject(new Error(
+            err.code === err.PERMISSION_DENIED
+              ? "Debe permitir el acceso a su ubicación para marcar asistencia."
+              : "No se pudo obtener su ubicación. Active el GPS e inténtelo de nuevo."
+          )),
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      )
+    })
+
   const onSubmit = async (data: z.infer<typeof formSchema>, type: RecordType) => {
     if (!validatedUser) {
       toast.error("Debe validar su DNI primero")
@@ -169,6 +188,23 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
     }
 
     setIsSubmitting(type)
+
+    let location: { lat: number; lng: number; accuracy: number } | undefined
+    if (GEOFENCE.enabled) {
+      try {
+        location = await getLocation()
+      } catch (e: any) {
+        toast.error(e.message)
+        setIsSubmitting(null)
+        return
+      }
+      if (!isInsideGeofence(location.lat, location.lng, location.accuracy)) {
+        const d = Math.round(distanceToCampus(location.lat, location.lng))
+        toast.error(`Fuera de rango: debe estar en ${GEOFENCE.name} para marcar (a ${d} m).`, { duration: 6000 })
+        setIsSubmitting(null)
+        return
+      }
+    }
     
     if (isOffline) {
       const newRecord = {
@@ -198,6 +234,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         campusId: data.campusId, 
         courseId: data.courseId,
         clientTimestamp: new Date(),
+        location,
         isOfflineSync: !navigator.onLine 
       })
 
