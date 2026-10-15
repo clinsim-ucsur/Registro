@@ -204,13 +204,13 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       try {
         location = await getLocation()
       } catch (e: any) {
-        toast.error(e.message)
+        toast.error(e.message || "Se requiere acceso a su ubicación GPS para registrar la asistencia.", { duration: 6000 })
         setIsSubmitting(null)
         return
       }
       const geoError = checkGeofence(location, geoCampuses, data.campusId)
       if (geoError) {
-        toast.error(geoError, { duration: 6000 })
+        toast.error(geoError, { duration: 7000 })
         setIsSubmitting(null)
         return
       }
@@ -223,6 +223,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         type: type,
         campusId: data.campusId,
         courseId: data.courseId,
+        location,
         timestamp: new Date().toISOString()
       }
       const localData = JSON.parse(localStorage.getItem('offline_records') || '[]')
@@ -245,7 +246,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         courseId: data.courseId,
         clientTimestamp: new Date(),
         location,
-        isOfflineSync: !navigator.onLine 
+        isOfflineSync: false 
       })
 
       if (res.success) {
@@ -255,14 +256,8 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       } else {
         toast.error(res.message)
       }
-    } catch (error) {
-      if (!navigator.onLine) {
-         toast.info("Sin conexión. Registro guardado localmente para sincronizar luego.")
-         form.reset({ role: watchRole, dni: "", campusId: data.campusId, courseId: data.courseId })
-         setValidatedUser(null)
-      } else {
-         toast.error("Ocurrió un error inesperado al registrar.")
-      }
+    } catch (error: any) {
+      toast.error(error?.message || "Ocurrió un error inesperado al registrar.")
     } finally {
       setIsSubmitting(null)
     }
