@@ -140,7 +140,7 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
 // ------------------------------------------------------------------
 // 3. LÓGICA DE NEGOCIO: CÁLCULO DE REGLAS DE TOLERANCIA
 // ------------------------------------------------------------------
-export function findApplicableToleranceRule(
+function findApplicableToleranceRule(
   rules: any[],
   campusId?: string,
   role?: Role
@@ -155,7 +155,7 @@ export function findApplicableToleranceRule(
   )
 }
 
-export function validateEarlyEntry(
+function validateEarlyEntry(
   recordTime: Date,
   rule: { expectedEntryTime: string; earlyEntryToleranceMinutes: number }
 ): { allowed: boolean; message?: string } {
