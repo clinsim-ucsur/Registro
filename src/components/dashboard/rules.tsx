@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect } from "react"
+import { createPortal } from "react-dom"
 import { Role } from "@prisma/client"
 import { toast } from "sonner"
 import {
@@ -164,15 +165,167 @@ export function DashboardRules({
 
   const testResult = evaluateTest()
 
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => {
+    setMounted(true)
+  }, [])
+
   // Preview numbers for the modal live bar
   const formExpectedMins = timeStringToMinutes(formData.expectedEntryTime)
   const formGraceLimitMins = formExpectedMins + (Number(formData.gracePeriodMinutes) || 0)
   const formLateLimitMins = formExpectedMins + (Number(formData.lateToleranceMinutes) || 0)
 
+  const modalContent = isModalOpen && (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in-up">
+      <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl p-6 md:p-8 relative max-h-[90vh] overflow-y-auto">
+        <button
+          onClick={() => setIsModalOpen(false)}
+          className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full w-9 h-9 flex items-center justify-center transition-colors"
+        >
+          ✕
+        </button>
+
+        <div className="flex items-center gap-3 mb-2">
+          <div className="p-2.5 bg-blue-50 text-[#1967D2] rounded-2xl">
+            <Settings2 size={24} />
+          </div>
+          <div>
+            <h3 className="text-2xl font-black text-[#0B1B3D]">
+              {editingRule ? "Editar Regla de Horario" : "Nueva Regla de Horario"}
+            </h3>
+            <p className="text-xs text-slate-400 font-medium">Configura los parámetros para este alcance</p>
+          </div>
+        </div>
+
+        <form onSubmit={handleSave} className="space-y-5 mt-6">
+          {/* Sede */}
+          <div>
+            <label className="text-xs font-black uppercase tracking-wider text-slate-700">Sede Universitaria</label>
+            <select
+              value={formData.campusId ?? ""}
+              onChange={(e) => setFormData({ ...formData, campusId: e.target.value })}
+              className="w-full h-12 mt-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
+            >
+              <option value="">Todas las sedes (Alcance Global)</option>
+              {campuses.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-slate-400 mt-1">Déjalo en blanco para que aplique como regla general.</p>
+          </div>
+
+          {/* Rol */}
+          <div>
+            <label className="text-xs font-black uppercase tracking-wider text-slate-700">Rol Operativo</label>
+            <select
+              value={formData.role ?? ""}
+              onChange={(e) => setFormData({ ...formData, role: (e.target.value as Role) || null })}
+              className="w-full h-12 mt-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
+            >
+              <option value="">Todos los roles (Docentes, Técnicos y Pacientes)</option>
+              <option value="DOCENTE">Solo Docentes</option>
+              <option value="TECNICO">Solo Técnicos</option>
+              <option value="PACIENTE_SIMULADO">Solo Pacientes Simulados</option>
+            </select>
+          </div>
+
+          {/* Hora Esperada */}
+          <div>
+            <label className="text-xs font-black uppercase tracking-wider text-slate-700">Hora Oficial de Entrada</label>
+            <Input
+              type="time"
+              required
+              value={formData.expectedEntryTime}
+              onChange={(e) => setFormData({ ...formData, expectedEntryTime: e.target.value })}
+              className="h-12 mt-1.5 rounded-xl text-lg font-black bg-slate-50"
+            />
+            <p className="text-[11px] text-slate-400 mt-1">Ejemplo: 08:00 AM para turno mañana.</p>
+          </div>
+
+          {/* Gracia y Tolerancia */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs font-black uppercase tracking-wider text-emerald-700">Minutos de Gracia</label>
+              <div className="relative mt-1.5">
+                <Input
+                  type="number"
+                  min={0}
+                  max={120}
+                  required
+                  value={formData.gracePeriodMinutes}
+                  onChange={(e) => setFormData({ ...formData, gracePeriodMinutes: Number(e.target.value) })}
+                  className="h-12 rounded-xl text-base font-bold bg-slate-50 pr-12"
+                />
+                <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">min</span>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1">Llega a tiempo hasta +{formData.gracePeriodMinutes}m</p>
+            </div>
+
+            <div>
+              <label className="text-xs font-black uppercase tracking-wider text-amber-700">Límite Tardanza</label>
+              <div className="relative mt-1.5">
+                <Input
+                  type="number"
+                  min={formData.gracePeriodMinutes}
+                  max={240}
+                  required
+                  value={formData.lateToleranceMinutes}
+                  onChange={(e) => setFormData({ ...formData, lateToleranceMinutes: Number(e.target.value) })}
+                  className="h-12 rounded-xl text-base font-bold bg-slate-50 pr-12"
+                />
+                <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">min</span>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1">Falta a partir de +{formData.lateToleranceMinutes}m</p>
+            </div>
+          </div>
+
+          {/* Vista Previa Dinámica de la Regla */}
+          <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200/80 space-y-2">
+            <p className="text-[11px] font-black uppercase tracking-wider text-slate-500">Comportamiento con estos valores:</p>
+            <div className="text-xs space-y-1 font-semibold text-slate-700">
+              <div className="flex items-center gap-2 text-emerald-700">
+                <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                <strong>A Tiempo:</strong> Hasta las {minutesToTimeString(formGraceLimitMins)}
+              </div>
+              <div className="flex items-center gap-2 text-amber-700">
+                <span className="h-2 w-2 rounded-full bg-amber-500" />
+                <strong>Tardanza:</strong> De {minutesToTimeString(formGraceLimitMins + 1)} hasta las {minutesToTimeString(formLateLimitMins)}
+              </div>
+              <div className="flex items-center gap-2 text-rose-700">
+                <span className="h-2 w-2 rounded-full bg-rose-500" />
+                <strong>Falta:</strong> A partir de las {minutesToTimeString(formLateLimitMins + 1)}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsModalOpen(false)}
+              className="flex-1 h-12 rounded-xl font-bold"
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="submit"
+              disabled={isPending}
+              className="flex-1 h-12 rounded-xl bg-[#1967D2] hover:bg-blue-800 text-white font-extrabold shadow-lg shadow-blue-500/20"
+            >
+              {isPending ? <Loader2 size={18} className="animate-spin mr-2" /> : null}
+              {editingRule ? "Guardar Cambios" : "Crear Regla"}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+
   return (
-    <div className="space-y-8 animate-fade-in-up pb-12">
-      {/* Header Banner */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#0B1B3D] via-[#12306b] to-[#1967D2] p-8 text-white shadow-xl shadow-blue-900/20">
+    <>
+      <div className="space-y-8 animate-fade-in-up pb-12">
+        {/* Header Banner */}
+        <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#0B1B3D] via-[#12306b] to-[#1967D2] p-8 text-white shadow-xl shadow-blue-900/20">
         <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
         <div className="relative flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -469,152 +622,9 @@ export function DashboardRules({
         </div>
       </div>
 
-      {/* MODAL CREAR / EDITAR REGLA */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in-up">
-          <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl p-6 md:p-8 relative max-h-[90vh] overflow-y-auto">
-            <button
-              onClick={() => setIsModalOpen(false)}
-              className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full w-9 h-9 flex items-center justify-center transition-colors"
-            >
-              ✕
-            </button>
+      </div>
 
-            <div className="flex items-center gap-3 mb-2">
-              <div className="p-2.5 bg-blue-50 text-[#1967D2] rounded-2xl">
-                <Settings2 size={24} />
-              </div>
-              <div>
-                <h3 className="text-2xl font-black text-[#0B1B3D]">
-                  {editingRule ? "Editar Regla de Horario" : "Nueva Regla de Horario"}
-                </h3>
-                <p className="text-xs text-slate-400 font-medium">Configura los parámetros para este alcance</p>
-              </div>
-            </div>
-
-            <form onSubmit={handleSave} className="space-y-5 mt-6">
-              {/* Sede */}
-              <div>
-                <label className="text-xs font-black uppercase tracking-wider text-slate-700">Sede Universitaria</label>
-                <select
-                  value={formData.campusId ?? ""}
-                  onChange={(e) => setFormData({ ...formData, campusId: e.target.value })}
-                  className="w-full h-12 mt-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
-                >
-                  <option value="">Todas las sedes (Alcance Global)</option>
-                  {campuses.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-                <p className="text-[11px] text-slate-400 mt-1">Déjalo en blanco para que aplique como regla general.</p>
-              </div>
-
-              {/* Rol */}
-              <div>
-                <label className="text-xs font-black uppercase tracking-wider text-slate-700">Rol Operativo</label>
-                <select
-                  value={formData.role ?? ""}
-                  onChange={(e) => setFormData({ ...formData, role: (e.target.value as Role) || null })}
-                  className="w-full h-12 mt-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
-                >
-                  <option value="">Todos los roles (Docentes, Técnicos y Pacientes)</option>
-                  <option value="DOCENTE">Solo Docentes</option>
-                  <option value="TECNICO">Solo Técnicos</option>
-                  <option value="PACIENTE_SIMULADO">Solo Pacientes Simulados</option>
-                </select>
-              </div>
-
-              {/* Hora Esperada */}
-              <div>
-                <label className="text-xs font-black uppercase tracking-wider text-slate-700">Hora Oficial de Entrada</label>
-                <Input
-                  type="time"
-                  required
-                  value={formData.expectedEntryTime}
-                  onChange={(e) => setFormData({ ...formData, expectedEntryTime: e.target.value })}
-                  className="h-12 mt-1.5 rounded-xl text-lg font-black bg-slate-50"
-                />
-                <p className="text-[11px] text-slate-400 mt-1">Ejemplo: 08:00 AM para turno mañana.</p>
-              </div>
-
-              {/* Gracia y Tolerancia */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-black uppercase tracking-wider text-emerald-700">Minutos de Gracia</label>
-                  <div className="relative mt-1.5">
-                    <Input
-                      type="number"
-                      min={0}
-                      max={120}
-                      required
-                      value={formData.gracePeriodMinutes}
-                      onChange={(e) => setFormData({ ...formData, gracePeriodMinutes: Number(e.target.value) })}
-                      className="h-12 rounded-xl text-base font-bold bg-slate-50 pr-12"
-                    />
-                    <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">min</span>
-                  </div>
-                  <p className="text-[10px] text-slate-400 mt-1">Llega a tiempo hasta +{formData.gracePeriodMinutes}m</p>
-                </div>
-
-                <div>
-                  <label className="text-xs font-black uppercase tracking-wider text-amber-700">Límite Tardanza</label>
-                  <div className="relative mt-1.5">
-                    <Input
-                      type="number"
-                      min={formData.gracePeriodMinutes}
-                      max={240}
-                      required
-                      value={formData.lateToleranceMinutes}
-                      onChange={(e) => setFormData({ ...formData, lateToleranceMinutes: Number(e.target.value) })}
-                      className="h-12 rounded-xl text-base font-bold bg-slate-50 pr-12"
-                    />
-                    <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">min</span>
-                  </div>
-                  <p className="text-[10px] text-slate-400 mt-1">Falta a partir de +{formData.lateToleranceMinutes}m</p>
-                </div>
-              </div>
-
-              {/* Vista Previa Dinámica de la Regla */}
-              <div className="rounded-2xl bg-slate-50 p-4 border border-slate-200/80 space-y-2">
-                <p className="text-[11px] font-black uppercase tracking-wider text-slate-500">Comportamiento con estos valores:</p>
-                <div className="text-xs space-y-1 font-semibold text-slate-700">
-                  <div className="flex items-center gap-2 text-emerald-700">
-                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                    <strong>A Tiempo:</strong> Hasta las {minutesToTimeString(formGraceLimitMins)}
-                  </div>
-                  <div className="flex items-center gap-2 text-amber-700">
-                    <span className="h-2 w-2 rounded-full bg-amber-500" />
-                    <strong>Tardanza:</strong> De {minutesToTimeString(formGraceLimitMins + 1)} hasta las {minutesToTimeString(formLateLimitMins)}
-                  </div>
-                  <div className="flex items-center gap-2 text-rose-700">
-                    <span className="h-2 w-2 rounded-full bg-rose-500" />
-                    <strong>Falta:</strong> A partir de las {minutesToTimeString(formLateLimitMins + 1)}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex gap-3 pt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setIsModalOpen(false)}
-                  className="flex-1 h-12 rounded-xl font-bold"
-                >
-                  Cancelar
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={isPending}
-                  className="flex-1 h-12 rounded-xl bg-[#1967D2] hover:bg-blue-800 text-white font-extrabold shadow-lg shadow-blue-500/20"
-                >
-                  {isPending ? <Loader2 size={18} className="animate-spin mr-2" /> : null}
-                  {editingRule ? "Guardar Cambios" : "Crear Regla"}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-    </div>
+      {mounted && typeof document !== "undefined" && modalContent && createPortal(modalContent, document.body)}
+    </>
   )
 }
