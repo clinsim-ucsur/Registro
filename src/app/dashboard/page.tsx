@@ -21,8 +21,12 @@ export default async function DashboardPage() {
   const [records, users, admins, weeklyAnalytics, initialAnalytics, rules, campuses] = await Promise.all([
     prisma.attendanceRecord.findMany({
       orderBy: { timestamp: 'desc' },
-      take: 100, // En producción usaríamos paginación
-      include: { user: true }
+      take: 200,
+      include: {
+        user: true,
+        campus: { select: { id: true, name: true } },
+        course: { select: { id: true, name: true } },
+      }
     }),
     prisma.user.findMany({
       where: { role: { in: ['DOCENTE', 'TECNICO', 'PACIENTE_SIMULADO'] } },
@@ -167,7 +171,7 @@ export default async function DashboardPage() {
             </TabsContent>
 
             <TabsContent value="reports" className="m-0 p-0 outline-none">
-              <DashboardReports records={records} />
+              <DashboardReports initialRecords={records} campuses={campuses} />
             </TabsContent>
 
             <TabsContent value="rules" className="m-0 p-0 outline-none">
