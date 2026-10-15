@@ -81,6 +81,47 @@ export async function updateCampusAction(id: string, newName: string) {
   }
 }
 
+export async function updateCampusGeoAction(
+  id: string,
+  geo: { geoEnforced: boolean; latitude: number | null; longitude: number | null; radiusMeters: number }
+) {
+  try {
+    await requireAdmin()
+    const { geoEnforced, latitude, longitude } = geo
+    const radiusMeters = Math.round(geo.radiusMeters)
+
+    if (geoEnforced && (latitude == null || longitude == null)) {
+      return { success: false, message: "Ingrese latitud y longitud para activar el límite por ubicación." }
+    }
+    if (latitude != null && (latitude < -90 || latitude > 90)) {
+      return { success: false, message: "La latitud debe estar entre -90 y 90." }
+    }
+    if (longitude != null && (longitude < -180 || longitude > 180)) {
+      return { success: false, message: "La longitud debe estar entre -180 y 180." }
+    }
+    if (!Number.isFinite(radiusMeters) || radiusMeters < 30 || radiusMeters > 5000) {
+      return { success: false, message: "El radio debe estar entre 30 y 5000 metros." }
+    }
+
+    const campus = await prisma.campus.update({
+      where: { id },
+      data: { geoEnforced, latitude, longitude, radiusMeters },
+    })
+
+    revalidatePath("/dashboard")
+    revalidatePath("/")
+    return {
+      success: true,
+      message: geoEnforced
+        ? `Geocerca activada para "${campus.name}" (${radiusMeters} m).`
+        : `Límite por ubicación desactivado para "${campus.name}".`,
+    }
+  } catch (error: any) {
+    console.error("[updateCampusGeoAction] Error:", error)
+    return { success: false, message: error.message || "Error al guardar la ubicación de la sede." }
+  }
+}
+
 export async function deleteCampusAction(id: string) {
   try {
     await requireAdmin()

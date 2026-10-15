@@ -18,12 +18,15 @@ import {
   Check, 
   Layers,
   MapPin,
-  BookOpen
+  BookOpen,
+  Crosshair,
+  Navigation
 } from "lucide-react"
 import { toast } from "sonner"
 import { 
   createCampusAction, 
   updateCampusAction, 
+  updateCampusGeoAction,
   deleteCampusAction,
   createCourseAction, 
   updateCourseAction, 
@@ -34,6 +37,10 @@ export type CatalogCampus = {
   id: string
   name: string
   _count?: { users: number; records: number; rules: number }
+  geoEnforced?: boolean
+  latitude?: number | null
+  longitude?: number | null
+  radiusMeters?: number
 }
 
 export type CatalogCourse = {
@@ -161,6 +168,71 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
       }
     } catch {
       toast.error("Error al procesar el curso")
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  // Geocerca por sede
+  const [geoModal, setGeoModal] = useState<CatalogCampus | null>(null)
+  const [geoForm, setGeoForm] = useState({ enabled: false, lat: "", lng: "", radius: "300" })
+  const [isLocating, setIsLocating] = useState(false)
+
+  const handleOpenGeo = (c: CatalogCampus) => {
+    setGeoForm({
+      enabled: !!c.geoEnforced,
+      lat: c.latitude != null ? String(c.latitude) : "",
+      lng: c.longitude != null ? String(c.longitude) : "",
+      radius: String(c.radiusMeters ?? 300),
+    })
+    setGeoModal(c)
+  }
+
+  const handleUseMyLocation = () => {
+    if (!navigator.geolocation) {
+      toast.error("Este navegador no soporta geolocalización.")
+      return
+    }
+    setIsLocating(true)
+    navigator.geolocation.getCurrentPosition(
+      (p) => {
+        setGeoForm((f) => ({ ...f, lat: p.coords.latitude.toFixed(6), lng: p.coords.longitude.toFixed(6) }))
+        toast.success(`Ubicación capturada (precisión ~${Math.round(p.coords.accuracy)} m).`)
+        setIsLocating(false)
+      },
+      () => {
+        toast.error("No se pudo obtener su ubicación. Verifique los permisos del navegador.")
+        setIsLocating(false)
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    )
+  }
+
+  const handleSaveGeo = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!geoModal) return
+    const lat = geoForm.lat.trim() === "" ? null : Number(geoForm.lat.replace(",", "."))
+    const lng = geoForm.lng.trim() === "" ? null : Number(geoForm.lng.replace(",", "."))
+    if ((lat !== null && !Number.isFinite(lat)) || (lng !== null && !Number.isFinite(lng))) {
+      toast.error("Latitud o longitud inválidas.")
+      return
+    }
+    setIsProcessing(true)
+    try {
+      const res = await updateCampusGeoAction(geoModal.id, {
+        geoEnforced: geoForm.enabled,
+        latitude: lat,
+        longitude: lng,
+        radiusMeters: Number(geoForm.radius),
+      })
+      if (res.success) {
+        toast.success(res.message)
+        setGeoModal(null)
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error("Error al guardar la ubicación.")
     } finally {
       setIsProcessing(false)
     }
@@ -296,6 +368,9 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
                             <div>
                               <p className="font-extrabold text-slate-800 text-base">{campus.name}</p>
                               <span className="text-[11px] font-semibold text-slate-400">ID: {campus.id.slice(0, 10)}...</span>
+                              <span className={`ml-2 inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md ${campus.geoEnforced ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-slate-100 text-slate-400"}`}>
+                                <Crosshair size={10} /> {campus.geoEnforced ? `GPS ${campus.radiusMeters ?? 300} m` : "Sin límite GPS"}
+                              </span>
                             </div>
                           </div>
                         </TableCell>
@@ -315,6 +390,15 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
                           </span>
                         </TableCell>
                         <TableCell className="px-6 text-right space-x-2">
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            onClick={() => handleOpenGeo(campus)}
+                            className="h-9 w-9 text-emerald-600 border-emerald-200 hover:bg-emerald-50 rounded-xl transition-colors shadow-sm"
+                            title="Ubicación y límite por GPS"
+                          >
+                            <Crosshair size={16} />
+                          </Button>
                           <Button
                             variant="outline"
                             size="icon"
@@ -504,6 +588,100 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
                   disabled={isProcessing}
                 >
                   {isProcessing ? <Loader2 className="animate-spin" size={18} /> : (campusModal.mode === "create" ? "Crear Sede" : "Guardar")}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* MODAL GEOCERCA (PORTAL) */}
+      {typeof document !== "undefined" && geoModal && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-6 md:p-8 relative">
+            <button
+              onClick={() => !isProcessing && setGeoModal(null)}
+              className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full w-8 h-8 flex items-center justify-center transition-colors"
+            >
+              ✕
+            </button>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                <Crosshair size={24} />
+              </div>
+              <div>
+                <h3 className="text-2xl font-black text-[#0B1B3D]">Límite por GPS</h3>
+                <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">{geoModal.name}</p>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveGeo} className="space-y-5">
+              <div
+                onClick={() => setGeoForm((f) => ({ ...f, enabled: !f.enabled }))}
+                className={`flex items-center justify-between p-4 rounded-2xl border cursor-pointer transition-colors ${geoForm.enabled ? "bg-emerald-50 border-emerald-300" : "bg-slate-50 border-slate-200"}`}
+              >
+                <div>
+                  <p className="font-bold text-sm text-slate-800">Solo permitir marcar dentro de la sede</p>
+                  <p className="text-xs text-slate-500">Si está activo, se valida la ubicación del dispositivo.</p>
+                </div>
+                <div className={`w-12 h-7 rounded-full p-1 transition-colors ${geoForm.enabled ? "bg-emerald-500" : "bg-slate-300"}`}>
+                  <div className={`w-5 h-5 bg-white rounded-full shadow transition-transform ${geoForm.enabled ? "translate-x-5" : ""}`} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Latitud</label>
+                  <Input
+                    value={geoForm.lat}
+                    onChange={(e) => setGeoForm((f) => ({ ...f, lat: e.target.value }))}
+                    placeholder="-12.189400"
+                    className="h-12 bg-slate-50 border-slate-200 font-semibold rounded-xl"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Longitud</label>
+                  <Input
+                    value={geoForm.lng}
+                    onChange={(e) => setGeoForm((f) => ({ ...f, lng: e.target.value }))}
+                    placeholder="-76.973800"
+                    className="h-12 bg-slate-50 border-slate-200 font-semibold rounded-xl"
+                  />
+                </div>
+              </div>
+
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleUseMyLocation}
+                disabled={isLocating}
+                className="w-full h-11 rounded-xl font-bold border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+              >
+                {isLocating ? <Loader2 className="animate-spin" size={16} /> : <><Navigation size={16} className="mr-2" /> Usar mi ubicación actual</>}
+              </Button>
+
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Radio permitido (metros)</label>
+                <Input
+                  type="number"
+                  min={30}
+                  max={5000}
+                  value={geoForm.radius}
+                  onChange={(e) => setGeoForm((f) => ({ ...f, radius: e.target.value }))}
+                  className="h-12 bg-slate-50 border-slate-200 font-semibold rounded-xl"
+                />
+                <p className="text-xs text-slate-400 mt-2 font-medium">
+                  Entre 30 y 5000 m. Se recomienda 200–500 m por la imprecisión del GPS en interiores.
+                </p>
+              </div>
+
+              <div className="flex gap-3 pt-4 border-t border-slate-100">
+                <Button type="button" variant="outline" className="flex-1 h-12 rounded-xl font-bold border-slate-200 text-slate-600 hover:bg-slate-50" onClick={() => setGeoModal(null)} disabled={isProcessing}>
+                  Cancelar
+                </Button>
+                <Button type="submit" className="flex-1 h-12 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold shadow-md shadow-emerald-600/20" disabled={isProcessing}>
+                  {isProcessing ? <Loader2 className="animate-spin" size={18} /> : "Guardar"}
                 </Button>
               </div>
             </form>

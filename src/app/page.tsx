@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic"
 
 export default async function Home() {
   const [campuses, courses] = await Promise.all([
-    prisma.campus.findMany({ select: { id: true, name: true }, orderBy: { name: 'asc' } }),
+    prisma.campus.findMany({ select: { id: true, name: true, geoEnforced: true, latitude: true, longitude: true, radiusMeters: true }, orderBy: { name: 'asc' } }),
     prisma.course.findMany({ select: { id: true, name: true }, orderBy: { name: 'asc' } }),
   ])
 

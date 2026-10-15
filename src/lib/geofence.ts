@@ -1,18 +1,18 @@
-// Geocerca de la Universidad Científica del Sur - Sede Villa.
-// Configurable por variables de entorno (NEXT_PUBLIC_*) para ajustar sin tocar código.
-const num = (v: string | undefined, fallback: number) => {
-  const n = v ? Number(v) : NaN
-  return Number.isFinite(n) ? n : fallback
-}
+// Utilidades de geocerca. Las coordenadas y el radio se guardan por sede en la BD
+// y se editan desde el módulo "Sedes & Cursos".
 
-export const GEOFENCE = {
-  enabled: process.env.NEXT_PUBLIC_GEOFENCE_ENABLED !== "false",
-  name: "Universidad Científica del Sur - Sede Villa",
-  latitude: num(process.env.NEXT_PUBLIC_GEOFENCE_LAT, -12.1894),
-  longitude: num(process.env.NEXT_PUBLIC_GEOFENCE_LNG, -76.9738),
-  radiusMeters: num(process.env.NEXT_PUBLIC_GEOFENCE_RADIUS, 500),
-  // Precisión máxima aceptada del GPS (m); lecturas muy imprecisas se rechazan
-  maxAccuracyMeters: 1000,
+// Valores iniciales sugeridos para Campus Villa (verificar y ajustar desde el panel)
+export const VILLA_DEFAULTS = { latitude: -12.1894, longitude: -76.9738, radiusMeters: 500 }
+
+// Precisión máxima aceptada del GPS (m); lecturas muy imprecisas se rechazan
+export const MAX_ACCURACY_METERS = 1000
+
+export type GeoCampus = {
+  name: string
+  geoEnforced: boolean
+  latitude: number | null
+  longitude: number | null
+  radiusMeters: number
 }
 
 /** Distancia en metros entre dos coordenadas (fórmula de Haversine). */
@@ -27,11 +27,39 @@ export function distanceMeters(lat1: number, lon1: number, lat2: number, lon2: n
   return 2 * R * Math.asin(Math.sqrt(a))
 }
 
-export function distanceToCampus(lat: number, lng: number): number {
-  return distanceMeters(lat, lng, GEOFENCE.latitude, GEOFENCE.longitude)
+export function isGeoActive(c: GeoCampus): boolean {
+  return c.geoEnforced && c.latitude != null && c.longitude != null
 }
 
-export function isInsideGeofence(lat: number, lng: number, accuracy = 0): boolean {
-  if (accuracy > GEOFENCE.maxAccuracyMeters) return false
-  return distanceToCampus(lat, lng) <= GEOFENCE.radiusMeters
+/**
+ * Evalúa una ubicación contra las sedes con geocerca activa.
+ * - Con sede elegida: debe estar dentro de esa sede.
+ * - Sin sede: debe estar dentro de alguna sede con geocerca activa.
+ * Devuelve null si está permitido o un mensaje de error.
+ */
+export function checkGeofence(
+  loc: { lat: number; lng: number; accuracy?: number } | undefined,
+  campuses: GeoCampus[],
+  selectedCampusName?: string
+): string | null {
+  const selected = selectedCampusName
+    ? campuses.find((c) => c.name.toLowerCase() === selectedCampusName.trim().toLowerCase())
+    : undefined
+  const targets = selected ? (isGeoActive(selected) ? [selected] : []) : campuses.filter(isGeoActive)
+  if (targets.length === 0) return null // sin restricción
+
+  if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng)) {
+    return "No se pudo verificar su ubicación. Active el GPS y permita el acceso."
+  }
+  if ((loc.accuracy ?? 0) > MAX_ACCURACY_METERS) {
+    return "La precisión del GPS es insuficiente. Acérquese a una ventana o active la ubicación precisa."
+  }
+
+  let best = { name: "", dist: Infinity, radius: 0 }
+  for (const c of targets) {
+    const d = distanceMeters(loc.lat, loc.lng, c.latitude!, c.longitude!)
+    if (d <= c.radiusMeters) return null
+    if (d < best.dist) best = { name: c.name, dist: d, radius: c.radiusMeters }
+  }
+  return `Fuera de rango: debe estar en ${best.name} para marcar (a ${Math.round(best.dist)} m, máximo ${best.radius} m).`
 }

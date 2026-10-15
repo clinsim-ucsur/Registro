@@ -62,6 +62,12 @@ model Campus {
   id             String    @id @default(cuid())
   name           String    @unique // Ej: "Campus Villa"
 
+  // Geocerca (límite por geolocalización)
+  geoEnforced    Boolean   @default(false)
+  latitude       Float?
+  longitude      Float?
+  radiusMeters   Int       @default(300)
+
   users          User[]
   records        AttendanceRecord[]
   rules          ToleranceRule[]

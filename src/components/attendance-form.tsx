@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button"
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { GEOFENCE, isInsideGeofence, distanceToCampus } from "@/lib/geofence"
+import { checkGeofence, isGeoActive, type GeoCampus } from "@/lib/geofence"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 
 const formSchema = z.object({
@@ -47,7 +47,7 @@ const DEFAULT_COURSES = [
 ]
 
 interface AttendanceFormProps {
-  campuses?: { id: string; name: string }[]
+  campuses?: (Partial<GeoCampus> & { id: string; name: string })[]
   courses?: { id: string; name: string }[]
 }
 
@@ -190,7 +190,17 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
     setIsSubmitting(type)
 
     let location: { lat: number; lng: number; accuracy: number } | undefined
-    if (GEOFENCE.enabled) {
+    const geoCampuses: GeoCampus[] = (propCampuses ?? []).map((c) => ({
+      name: c.name,
+      geoEnforced: !!c.geoEnforced,
+      latitude: c.latitude ?? null,
+      longitude: c.longitude ?? null,
+      radiusMeters: c.radiusMeters ?? 300,
+    }))
+    const needsGeo = data.campusId
+      ? geoCampuses.some((c) => c.name === data.campusId && isGeoActive(c))
+      : geoCampuses.some(isGeoActive)
+    if (needsGeo) {
       try {
         location = await getLocation()
       } catch (e: any) {
@@ -198,9 +208,9 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         setIsSubmitting(null)
         return
       }
-      if (!isInsideGeofence(location.lat, location.lng, location.accuracy)) {
-        const d = Math.round(distanceToCampus(location.lat, location.lng))
-        toast.error(`Fuera de rango: debe estar en ${GEOFENCE.name} para marcar (a ${d} m).`, { duration: 6000 })
+      const geoError = checkGeofence(location, geoCampuses, data.campusId)
+      if (geoError) {
+        toast.error(geoError, { duration: 6000 })
         setIsSubmitting(null)
         return
       }
