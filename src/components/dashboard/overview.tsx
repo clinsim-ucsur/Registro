@@ -2,25 +2,24 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Users, LogIn, LogOut, Stethoscope, Briefcase, UserSquare2, FileWarning } from "lucide-react"
 import { DashboardChart } from "@/components/dashboard-chart"
+import { limaDayKey, formatLimaTime } from "@/lib/timezone"
 
-export function DashboardOverview({ records }: { records: any[] }) {
-  const totalHoy = records.length
-  const entradas = records.filter(r => r.type === 'ENTRADA').length
-  const salidas = records.filter(r => r.type === 'SALIDA').length
+export function DashboardOverview({ records, weekly }: { records: any[]; weekly: { label: string; total: number }[] }) {
+  const todayKey = limaDayKey(new Date())
+  const todayRecords = records.filter(r => limaDayKey(new Date(r.timestamp)) === todayKey)
+
+  const totalHoy = todayRecords.length
+  const entradas = todayRecords.filter(r => r.type === 'ENTRADA').length
+  const salidas = todayRecords.filter(r => r.type === 'SALIDA').length
   
-  const docentes = records.filter(r => r.role === 'DOCENTE').length
-  const tecnicos = records.filter(r => r.role === 'TECNICO').length
-  const pacientes = records.filter(r => r.role === 'PACIENTE_SIMULADO').length
+  const docentes = todayRecords.filter(r => r.user?.role === 'DOCENTE').length
+  const tecnicos = todayRecords.filter(r => r.user?.role === 'TECNICO').length
+  const pacientes = todayRecords.filter(r => r.user?.role === 'PACIENTE_SIMULADO').length
 
-  const chartData = [
-    { date: "Lun 10", total: 45 },
-    { date: "Mar 11", total: 52 },
-    { date: "Mié 12", total: 38 },
-    { date: "Jue 13", total: 60 },
-    { date: "Vie 14", total: 48 },
-    { date: "Sáb 15", total: 12 },
-    { date: "Hoy", total: totalHoy },
-  ]
+  const chartData = weekly.map((d, i) => ({
+    date: i === weekly.length - 1 ? "Hoy" : d.label,
+    total: d.total,
+  }))
 
   return (
     <div className="space-y-6">
@@ -78,7 +77,7 @@ export function DashboardOverview({ records }: { records: any[] }) {
 
         <Card className="shadow-sm shadow-slate-200/50 border-slate-200/60 rounded-2xl bg-white flex flex-col">
           <CardHeader className="pb-4 border-b border-slate-100">
-            <CardTitle className="text-lg font-extrabold text-slate-800">Asistencia por Rol</CardTitle>
+            <CardTitle className="text-lg font-extrabold text-slate-800">Asistencia por Rol (Hoy)</CardTitle>
           </CardHeader>
           <CardContent className="pt-6 space-y-6">
             <div className="flex items-center justify-between">
@@ -138,14 +137,14 @@ export function DashboardOverview({ records }: { records: any[] }) {
                         <p className="font-bold text-slate-800">{record.user.name}</p>
                         <p className="text-xs text-slate-400 font-medium">DNI: {record.user.dni}</p>
                       </TableCell>
-                      <TableCell className="text-slate-500 text-xs font-bold">{record.role}</TableCell>
+                      <TableCell className="text-slate-500 text-xs font-bold">{record.user?.role}</TableCell>
                       <TableCell>
                         <span className={`px-2 py-1 rounded-[5px] text-[10px] font-black tracking-widest ${record.type === 'ENTRADA' ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-700'}`}>
                           {record.type}
                         </span>
                       </TableCell>
                       <TableCell className="px-6 text-right text-slate-600 text-sm font-bold">
-                        {record.timestamp.toLocaleTimeString('es-PE', { hour12: true, hour: '2-digit', minute: '2-digit' })}
+                        {formatLimaTime(new Date(record.timestamp))}
                       </TableCell>
                     </TableRow>
                   ))

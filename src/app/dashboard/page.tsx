@@ -1,40 +1,40 @@
 import prisma from "@/lib/prisma"
-import { LayoutDashboard, UploadCloud, FileText, LogOut, Users, Shield } from "lucide-react"
+import { LayoutDashboard, UploadCloud, FileText, LogOut, Users, Shield, BarChart3 } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { cookies } from "next/headers"
+import { redirect } from "next/navigation"
 
 import { DashboardOverview } from "@/components/dashboard/overview"
 import { DashboardUpload } from "@/components/dashboard/upload"
 import { DashboardReports } from "@/components/dashboard/reports"
 import { DashboardUsers } from "@/components/dashboard/users"
 import { DashboardAdmins } from "@/components/dashboard/admins"
+import { DashboardAnalytics } from "@/components/dashboard/analytics"
+import { getAdminSession } from "@/lib/session"
+import { computeAnalytics } from "@/lib/analytics"
 
 export default async function DashboardPage() {
-  const cookieStore = await cookies()
-  const token = cookieStore.get("auth_token")?.value
-  let currentUserRole = "SUPER_ADMIN"
-  
-  if (token && token !== "superadmin_session") {
-     const currentUser = await prisma.user.findUnique({ where: { id: token } })
-     if (currentUser) currentUserRole = currentUser.role
-  }
+  const session = await getAdminSession()
+  if (!session) redirect("/login")
+  const currentUserRole = session.role
 
-  const records = await prisma.attendanceRecord.findMany({
-    orderBy: { timestamp: 'desc' },
-    take: 100, // En producción usaríamos paginación
-    include: { user: true }
-  })
-  
-  const users = await prisma.user.findMany({
-    where: { role: { in: ['DOCENTE', 'TECNICO', 'PACIENTE_SIMULADO'] } },
-    orderBy: { name: 'asc' },
-    take: 200 // MVP limit
-  })
-  
-  const admins = await prisma.user.findMany({
-    where: { role: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } },
-    orderBy: { name: 'asc' },
-  })
+  const [records, users, admins, weeklyAnalytics, initialAnalytics] = await Promise.all([
+    prisma.attendanceRecord.findMany({
+      orderBy: { timestamp: 'desc' },
+      take: 100, // En producción usaríamos paginación
+      include: { user: true }
+    }),
+    prisma.user.findMany({
+      where: { role: { in: ['DOCENTE', 'TECNICO', 'PACIENTE_SIMULADO'] } },
+      orderBy: { name: 'asc' },
+      take: 200 // MVP limit
+    }),
+    prisma.user.findMany({
+      where: { role: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } },
+      orderBy: { name: 'asc' },
+    }),
+    computeAnalytics({ days: 7 }),
+    computeAnalytics({ days: 30 }),
+  ])
   
   return (
     <Tabs defaultValue="overview" orientation="vertical" className="flex flex-row h-screen w-full bg-slate-50 overflow-hidden font-sans">
@@ -57,6 +57,13 @@ export default async function DashboardPage() {
               className="w-full justify-start gap-4 px-5 py-4 text-sm md:text-base font-bold rounded-2xl text-slate-300 data-[state=active]:bg-[#1967D2] data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-blue-900/50 hover:bg-white/5 transition-all outline-none"
             >
               <LayoutDashboard size={22}/> Resumen
+            </TabsTrigger>
+
+            <TabsTrigger 
+              value="analytics" 
+              className="w-full justify-start gap-4 px-5 py-4 text-sm md:text-base font-bold rounded-2xl text-slate-300 data-[state=active]:bg-[#1967D2] data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-blue-900/50 hover:bg-white/5 transition-all outline-none"
+            >
+              <BarChart3 size={22}/> Métricas
             </TabsTrigger>
             
             <TabsTrigger 
@@ -132,7 +139,11 @@ export default async function DashboardPage() {
           <div className="max-w-[1400px] mx-auto pb-10">
             
             <TabsContent value="overview" className="m-0 p-0 outline-none">
-              <DashboardOverview records={records} />
+              <DashboardOverview records={records} weekly={weeklyAnalytics.daily} />
+            </TabsContent>
+
+            <TabsContent value="analytics" className="m-0 p-0 outline-none">
+              <DashboardAnalytics initialData={initialAnalytics} />
             </TabsContent>
 
             <TabsContent value="upload" className="m-0 p-0 outline-none">
