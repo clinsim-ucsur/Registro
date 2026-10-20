@@ -91,12 +91,6 @@ export default function LoginPage() {
             {loading ? "Verificando identidad..." : "Iniciar Sesión"}
           </Button>
         </form>
-        
-        <div className="mt-8 pt-6 border-t border-slate-100">
-           <p className="text-center text-xs font-bold text-amber-600 bg-amber-50 p-3 rounded-lg border border-amber-100">
-             Para pruebas MVP, usa:<br/> Usuario: <strong>admin</strong> | Clave: <strong>admin123</strong>
-           </p>
-        </div>
       </div>
     </div>
   )
