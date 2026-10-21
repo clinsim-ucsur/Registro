@@ -6,6 +6,8 @@ import { PrismaClient, Role, RecordType, RecordStatus } from "@prisma/client"
 import prisma from "@/lib/prisma"
 import { limaMinutesOfDay } from "@/lib/timezone"
 import { checkGeofence } from "@/lib/geofence"
+import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
+import { Shift } from "@prisma/client"
 
 // ------------------------------------------------------------------
 // 0. CONSULTA DE ESTADO DE ASISTENCIA HOY (para lógica ENTRADA/SALIDA)
@@ -177,25 +179,57 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
 
     let status: RecordStatus = RecordStatus.A_TIEMPO
     
-    if (data.type === RecordType.ENTRADA) {
-      // Si el técnico tiene un horario/turno específico asignado hoy en su cronograma,
-      // usamos esas tolerancias prioritariamente sobre las reglas genéricas
-      if (scheduledShift) {
-        const scheduleRule = {
-          expectedEntryTime: scheduledShift.expectedEntryTime,
-          earlyEntryToleranceMinutes: scheduledShift.earlyEntryToleranceMinutes ?? 15,
-          gracePeriodMinutes: scheduledShift.gracePeriodMinutes ?? 10,
-          lateToleranceMinutes: scheduledShift.lateToleranceMinutes ?? 30,
+        if (data.type === RecordType.ENTRADA) {
+      // Para TÉCNICOS: resolver turno de hoy por cronograma o por turno predeterminado del perfil
+      if (data.role === Role.TECNICO) {
+        let techRule: { expectedEntryTime: string; earlyEntryToleranceMinutes: number; gracePeriodMinutes: number; lateToleranceMinutes: number; shiftName?: string } | null = null
+
+        if (scheduledShift) {
+          techRule = {
+            expectedEntryTime: scheduledShift.expectedEntryTime,
+            earlyEntryToleranceMinutes: scheduledShift.earlyEntryToleranceMinutes ?? 15,
+            gracePeriodMinutes: scheduledShift.gracePeriodMinutes ?? 10,
+            lateToleranceMinutes: scheduledShift.lateToleranceMinutes ?? 30,
+            shiftName: scheduledShift.shift,
+          }
+        } else {
+          // Si no tiene cronograma hoy, buscar regla específica para su turno base en su sede
+          const userShift = (user.defaultShift || Shift.MANANA) as Shift
+          const defShift = DEFAULT_SHIFT_TIMES[userShift] || DEFAULT_SHIFT_TIMES.MANANA
+          
+          const shiftRules = await prisma.toleranceRule.findMany({
+            where: {
+              role: Role.TECNICO,
+              OR: [
+                { campusId: finalCampusId },
+                { campusId: null },
+              ],
+            },
+            orderBy: [{ campusId: 'desc' }],
+          })
+
+          // Buscar regla cuya hora de entrada coincida con su turno base
+          const matchedShiftRule = shiftRules.find(r => r.expectedEntryTime === defShift.entry) || shiftRules[0]
+
+          techRule = {
+            expectedEntryTime: matchedShiftRule?.expectedEntryTime || defShift.entry,
+            earlyEntryToleranceMinutes: matchedShiftRule?.earlyEntryToleranceMinutes ?? defShift.early,
+            gracePeriodMinutes: matchedShiftRule?.gracePeriodMinutes ?? defShift.grace,
+            lateToleranceMinutes: matchedShiftRule?.lateToleranceMinutes ?? defShift.late,
+            shiftName: userShift,
+          }
         }
-        const earlyCheck = validateEarlyEntry(recordTimestamp, scheduleRule)
+
+        const earlyCheck = validateEarlyEntry(recordTimestamp, techRule)
         if (!earlyCheck.allowed) {
           return {
             success: false,
-            message: earlyCheck.message || "No se permite marcar con tanta anticipación.",
+            message: earlyCheck.message || "No se permite marcar con tanta anticipación para su turno asignado.",
           }
         }
-        status = calculateStatusFromRule(recordTimestamp, scheduleRule)
+        status = calculateStatusFromRule(recordTimestamp, techRule)
       } else {
+        // Para Docentes y Pacientes Simulados: buscar regla correspondiente a su sede y rol
         const allRules = await prisma.toleranceRule.findMany()
         const matchedRule = findApplicableToleranceRule(allRules, finalCampusId || undefined, data.role)
         if (matchedRule) {
@@ -206,8 +240,10 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
               message: earlyCheck.message || "No se permite marcar con tanta anticipación.",
             }
           }
+          status = calculateStatusFromRule(recordTimestamp, matchedRule)
+        } else {
+          status = await calculateToleranceStatus(recordTimestamp, finalCampusId || undefined, data.role)
         }
-        status = await calculateToleranceStatus(recordTimestamp, finalCampusId || undefined, data.role)
       }
     }
 
@@ -254,20 +290,33 @@ function findApplicableToleranceRule(
   )
 }
 
-function validateEarlyEntry(
-  recordTime: Date,
-  rule: { expectedEntryTime: string; earlyEntryToleranceMinutes: number }
-): { allowed: boolean; message?: string } {
-  const [expectedHour, expectedMinute] = rule.expectedEntryTime.split(':').map(Number)
+function getShiftDiffInMinutes(recordTime: Date, expectedEntryTime: string): { diffInMinutes: number; recordMinutes: number; expectedMinutes: number } {
+  const [expectedHour, expectedMinute] = expectedEntryTime.split(':').map(Number)
   const expectedMinutes = (isNaN(expectedHour) ? 8 : expectedHour) * 60 + (isNaN(expectedMinute) ? 0 : expectedMinute)
   const recordMinutes = limaMinutesOfDay(recordTime)
 
-  const diffInMinutes = recordMinutes - expectedMinutes
-  const earlyAllowed = rule.earlyEntryToleranceMinutes ?? 15
+  // Diferencia horaria considerando el ciclo de 24 horas (720 min = 12 horas)
+  let diffInMinutes = recordMinutes - expectedMinutes
+  if (diffInMinutes < -720) {
+    diffInMinutes += 1440
+  } else if (diffInMinutes > 720) {
+    diffInMinutes -= 1440
+  }
 
-  // Si marca con demasiada anticipación (ej: diffInMinutes < -15)
+  return { diffInMinutes, recordMinutes, expectedMinutes }
+}
+
+function validateEarlyEntry(
+  recordTime: Date,
+  rule: { expectedEntryTime: string; earlyEntryToleranceMinutes: number; lateToleranceMinutes?: number }
+): { allowed: boolean; message?: string } {
+  const { diffInMinutes, expectedMinutes } = getShiftDiffInMinutes(recordTime, rule.expectedEntryTime)
+  const earlyAllowed = rule.earlyEntryToleranceMinutes ?? 15
+  // Ventana máxima permitida para registrar entrada: 240 minutos (4 horas) después de la hora oficial
+  const maxLateAllowed = Math.max(rule.lateToleranceMinutes ?? 30, 240)
+
+  // 1. Si intenta marcar antes de la ventana de anticipación permitida (ej: la noche anterior o 1 hora antes)
   if (diffInMinutes < -earlyAllowed) {
-    const earlyMinutesActual = Math.abs(diffInMinutes)
     const allowedStartMinutes = (expectedMinutes - earlyAllowed + 1440) % 1440
     const startHour = Math.floor(allowedStartMinutes / 60)
     const startMinute = allowedStartMinutes % 60
@@ -277,7 +326,15 @@ function validateEarlyEntry(
 
     return {
       allowed: false,
-      message: `No se permite marcar con tanta anticipación. Su hora de entrada oficial es ${rule.expectedEntryTime}. Podrá marcar a partir de las ${allowedStartTimeStr} (máximo ${earlyAllowed} min antes).`,
+      message: `No se permite marcar fuera de horario. Su turno oficial es a las ${rule.expectedEntryTime}. Podrá registrar su entrada a partir de las ${allowedStartTimeStr} (máximo ${earlyAllowed} minutos antes).`,
+    }
+  }
+
+  // 2. Si intenta marcar como "Entrada" muchas horas después de haber concluido el inicio de su turno
+  if (diffInMinutes > maxLateAllowed) {
+    return {
+      allowed: false,
+      message: `Su horario de entrada (${rule.expectedEntryTime}) ya venció hace más de 4 horas. No corresponde registrar entrada en este momento.`,
     }
   }
 
@@ -288,10 +345,7 @@ function calculateStatusFromRule(
   recordTime: Date,
   rule: { expectedEntryTime: string; gracePeriodMinutes: number; lateToleranceMinutes: number }
 ): RecordStatus {
-  const [expectedHour, expectedMinute] = rule.expectedEntryTime.split(':').map(Number)
-  const expectedMinutes = (isNaN(expectedHour) ? 8 : expectedHour) * 60 + (isNaN(expectedMinute) ? 0 : expectedMinute)
-  const recordMinutes = limaMinutesOfDay(recordTime)
-  const diffInMinutes = recordMinutes - expectedMinutes
+  const { diffInMinutes } = getShiftDiffInMinutes(recordTime, rule.expectedEntryTime)
 
   if (diffInMinutes <= rule.gracePeriodMinutes) {
     return RecordStatus.A_TIEMPO
