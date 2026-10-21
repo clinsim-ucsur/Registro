@@ -3,6 +3,7 @@
 import { useState, useTransition, useEffect } from "react"
 import { createPortal } from "react-dom"
 import { Role } from "@prisma/client"
+import { TECHNICIAN_SHIFT_PRESETS, type ShiftPreset } from "@/lib/schedule-constants"
 import { toast } from "sonner"
 import {
   Clock, Plus, Settings2, Trash2, Edit3, ShieldAlert, CheckCircle2,
@@ -213,6 +214,45 @@ export function DashboardRules({
         </div>
 
         <form onSubmit={handleSave} className="space-y-4 mt-5">
+          {/* Presets Rápidos de Turnos para Técnicos */}
+          <div className="p-3.5 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/80 rounded-2xl">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[11px] font-black uppercase tracking-wider text-[#1967D2] flex items-center gap-1.5">
+                <Sparkles size={14} /> Horarios Oficiales de Turnos de Técnicos
+              </span>
+              <span className="text-[10px] text-slate-500 font-bold">Clic para autocompletar</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {TECHNICIAN_SHIFT_PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => {
+                    setFormData((prev) => ({
+                      ...prev,
+                      role: Role.TECNICO,
+                      expectedEntryTime: p.entry,
+                      earlyEntryToleranceMinutes: p.early,
+                      gracePeriodMinutes: p.grace,
+                      lateToleranceMinutes: p.late,
+                    }))
+                    toast.info(`Cargado horario: ${p.name} (${p.entry})`)
+                  }}
+                  className="text-left p-2.5 rounded-xl border border-blue-200/60 bg-white hover:bg-blue-100/50 hover:border-[#1967D2] transition-all group shadow-xs"
+                >
+                  <p className="text-xs font-black text-slate-800 group-hover:text-[#1967D2] flex items-center justify-between">
+                    <span>{p.name}</span>
+                    <span className="font-mono text-[11px] font-bold text-[#1967D2] bg-blue-50 px-1.5 py-0.5 rounded-md">
+                      {p.entry}
+                    </span>
+                  </p>
+                  <p className="text-[10px] text-slate-500 font-medium mt-0.5">
+                    {p.scheduleText}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </div>
           {/* Sede y Rol en dos columnas */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             <div>

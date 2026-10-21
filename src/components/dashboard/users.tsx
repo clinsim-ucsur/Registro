@@ -316,9 +316,9 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                  onChange={e => setAddingUser({...addingUser, defaultShift: e.target.value})}
                  className="w-full h-14 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-[#1967D2] transition-all"
                >
-                 <option value="MANANA">Mañana (07:00 / 08:00 AM)</option>
-                 <option value="INTERMEDIO">Intermedio (11:00 / 12:00 PM)</option>
-                 <option value="TARDE">Tarde (02:00 / 03:00 PM)</option>
+                 <option value="MANANA">Mañana (6:00 AM — 3:00 PM)</option>
+                 <option value="INTERMEDIO">Intermedio (9:00 AM — 6:00 PM / Sáb 8 AM / Dom 10 AM)</option>
+                 <option value="TARDE">Tarde (1:00 PM — 10:00 PM)</option>
                </select>
              </div>
            )}
@@ -407,9 +407,9 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                  onChange={e => setEditingUser({...editingUser, defaultShift: e.target.value})}
                  className="w-full h-14 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-[#1967D2] transition-all"
                >
-                 <option value="MANANA">Mañana (07:00 / 08:00 AM)</option>
-                 <option value="INTERMEDIO">Intermedio (11:00 / 12:00 PM)</option>
-                 <option value="TARDE">Tarde (02:00 / 03:00 PM)</option>
+                 <option value="MANANA">Mañana (6:00 AM — 3:00 PM)</option>
+                 <option value="INTERMEDIO">Intermedio (9:00 AM — 6:00 PM / Sáb 8 AM / Dom 10 AM)</option>
+                 <option value="TARDE">Tarde (1:00 PM — 10:00 PM)</option>
                </select>
              </div>
            )}

@@ -685,9 +685,9 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             </label>
             <div className="grid grid-cols-3 gap-2">
               {[
-                { key: Shift.MANANA, label: "Mañana (07:00)", color: "border-amber-400 bg-amber-50" },
-                { key: Shift.INTERMEDIO, label: "Intermedio (11:00)", color: "border-cyan-400 bg-cyan-50" },
-                { key: Shift.TARDE, label: "Tarde (14:00)", color: "border-purple-400 bg-purple-50" },
+                { key: Shift.MANANA, label: "Mañana (06:00)", color: "border-amber-400 bg-amber-50" },
+                { key: Shift.INTERMEDIO, label: "Intermedio (09:00)", color: "border-cyan-400 bg-cyan-50" },
+                { key: Shift.TARDE, label: "Tarde (13:00)", color: "border-purple-400 bg-purple-50" },
               ].map((s) => (
                 <button
                   type="button"

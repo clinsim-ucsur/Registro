@@ -6,9 +6,6 @@ import { requireAdmin } from "@/lib/session"
 import { Shift, Role } from "@prisma/client"
 import { ScheduleItemInput, DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
 
-export type { ScheduleItemInput }
-export { DEFAULT_SHIFT_TIMES }
-
 /**
  * Obtiene el cronograma para un rango de fechas o mes específico.
  */
@@ -120,8 +117,8 @@ export async function upsertTechnicianScheduleAction(item: ScheduleItemInput) {
         notes: item.notes || null,
       },
       include: {
-        user: { select: { name: true } },
-        campus: { select: { name: true } },
+        user: { select: { id: true, name: true, dni: true } },
+        campus: { select: { id: true, name: true } },
       },
     })
 
