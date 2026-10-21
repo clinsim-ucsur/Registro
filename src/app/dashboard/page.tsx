@@ -23,6 +23,7 @@ import { DashboardAnalytics } from "@/components/dashboard/analytics"
 import { DashboardRules } from "@/components/dashboard/rules"
 import { DashboardCatalogs } from "@/components/dashboard/catalogs"
 import { DashboardSchedules } from "@/components/dashboard/schedules"
+import { ForceChangePasswordModal } from "@/components/dashboard/force-change-password-modal"
 import { getAdminSession } from "@/lib/session"
 import { computeAnalytics } from "@/lib/analytics"
 
@@ -311,6 +312,11 @@ export default async function DashboardPage() {
         </main>
         
       </div>
+
+      <ForceChangePasswordModal 
+        mustChange={Boolean(session.mustChangePassword)} 
+        adminName={session.name || "Administrador"} 
+      />
     </Tabs>
   )
 }

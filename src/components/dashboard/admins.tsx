@@ -6,19 +6,19 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { 
-  Search, 
-  Edit, 
-  Trash2, 
-  Shield, 
-  AlertTriangle, 
-  Loader2, 
-  UserPlus, 
-  Key, 
-  Eye, 
-  EyeOff, 
-  Check, 
-  Sliders, 
+import {
+  Search,
+  Edit,
+  Trash2,
+  Shield,
+  AlertTriangle,
+  Loader2,
+  UserPlus,
+  Key,
+  Eye,
+  EyeOff,
+  Check,
+  Sliders,
   Building2,
   Lock
 } from "lucide-react"
@@ -378,22 +378,20 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                     <button
                       type="button"
                       onClick={() => applyTemplate(addingAdmin, setAddingAdmin, "admin")}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${
-                        addingAdmin?.role === "ADMIN_SECUNDARIO"
+                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${addingAdmin?.role === "ADMIN_SECUNDARIO"
                           ? "bg-indigo-600 text-white border-indigo-600"
                           : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                      }`}
+                        }`}
                     >
                       Plantilla Estándar (Admin)
                     </button>
                     <button
                       type="button"
                       onClick={() => applyTemplate(addingAdmin, setAddingAdmin, "super")}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${
-                        addingAdmin?.role === "SUPER_ADMIN"
+                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${addingAdmin?.role === "SUPER_ADMIN"
                           ? "bg-indigo-600 text-white border-indigo-600"
                           : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                      }`}
+                        }`}
                     >
                       Super Admin (Todo)
                     </button>
@@ -418,15 +416,13 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                       <div
                         key={mod.id}
                         onClick={() => togglePermission(addingAdmin, setAddingAdmin, mod.id)}
-                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                          isChecked
+                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${isChecked
                             ? "bg-indigo-50/70 border-indigo-300 text-indigo-900"
                             : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
-                        }`}
+                          }`}
                       >
-                        <div className={`w-5 h-5 rounded-md mt-0.5 flex items-center justify-center shrink-0 border transition-colors ${
-                          isChecked ? "bg-indigo-600 border-indigo-600 text-white" : "border-slate-300 bg-white"
-                        }`}>
+                        <div className={`w-5 h-5 rounded-md mt-0.5 flex items-center justify-center shrink-0 border transition-colors ${isChecked ? "bg-indigo-600 border-indigo-600 text-white" : "border-slate-300 bg-white"
+                          }`}>
                           {isChecked && <Check size={14} strokeWidth={3} />}
                         </div>
                         <div className="space-y-0.5">
@@ -556,22 +552,20 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                     <button
                       type="button"
                       onClick={() => applyTemplate(editingAdmin, setEditingAdmin, "admin")}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${
-                        editingAdmin?.role === "ADMIN_SECUNDARIO"
+                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${editingAdmin?.role === "ADMIN_SECUNDARIO"
                           ? "bg-indigo-600 text-white border-indigo-600"
                           : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                      }`}
+                        }`}
                     >
                       Admin Estándar
                     </button>
                     <button
                       type="button"
                       onClick={() => applyTemplate(editingAdmin, setEditingAdmin, "super")}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${
-                        editingAdmin?.role === "SUPER_ADMIN"
+                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${editingAdmin?.role === "SUPER_ADMIN"
                           ? "bg-indigo-600 text-white border-indigo-600"
                           : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                      }`}
+                        }`}
                     >
                       Super Admin (Todo)
                     </button>
@@ -591,15 +585,13 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                       <div
                         key={mod.id}
                         onClick={() => togglePermission(editingAdmin, setEditingAdmin, mod.id)}
-                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
-                          isChecked
+                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${isChecked
                             ? "bg-indigo-50/70 border-indigo-300 text-indigo-900"
                             : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
-                        }`}
+                          }`}
                       >
-                        <div className={`w-5 h-5 rounded-md mt-0.5 flex items-center justify-center shrink-0 border transition-colors ${
-                          isChecked ? "bg-indigo-600 border-indigo-600 text-white" : "border-slate-300 bg-white"
-                        }`}>
+                        <div className={`w-5 h-5 rounded-md mt-0.5 flex items-center justify-center shrink-0 border transition-colors ${isChecked ? "bg-indigo-600 border-indigo-600 text-white" : "border-slate-300 bg-white"
+                          }`}>
                           {isChecked && <Check size={14} strokeWidth={3} />}
                         </div>
                         <div className="space-y-0.5">

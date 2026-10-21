@@ -19,7 +19,7 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
         errorCount++
         continue
       }
-      
+
       const dniStr = item.dni.toString().trim()
       if (dniStr.length !== 8) {
         errorCount++
@@ -63,8 +63,8 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
 
         // 2. Si no existió coincidencia previa, crear con nombre adecuado
         if (!finalCampusId) {
-          const formattedName = campusName.toLowerCase().startsWith("campus ") 
-            ? campusName 
+          const formattedName = campusName.toLowerCase().startsWith("campus ")
+            ? campusName
             : `Campus ${campusName.charAt(0).toUpperCase() + campusName.slice(1)}`
           const newCampus = await prisma.campus.create({ data: { name: formattedName } })
           campusMap.set(formattedName.toLowerCase(), newCampus.id)
@@ -74,7 +74,7 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
 
       // Upsert: Si existe actualiza, si no, crea.
       const existing = await prisma.user.findUnique({ where: { dni: dniStr } })
-      
+
       if (existing) {
         await prisma.user.update({
           where: { dni: dniStr },
@@ -89,9 +89,9 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
       }
     }
 
-    return { 
-      success: true, 
-      message: `¡Carga exitosa! ${insertedCount} usuarios creados, ${updatedCount} actualizados. (Errores/Omitidos: ${errorCount})` 
+    return {
+      success: true,
+      message: `¡Carga exitosa! ${insertedCount} usuarios creados, ${updatedCount} actualizados. (Errores/Omitidos: ${errorCount})`
     }
 
   } catch (error: any) {
@@ -189,7 +189,7 @@ export async function deleteUserAction(dni: string) {
 // ---------------------------------------------
 // CRUD: CREAR ADMINISTRADOR
 // ---------------------------------------------
-export async function createAdminAction(data: { 
+export async function createAdminAction(data: {
   name: string
   dni: string
   role: Role
@@ -227,9 +227,9 @@ export async function createAdminAction(data: {
       })
 
       revalidatePath("/dashboard")
-      return { 
-        success: true, 
-        message: `¡Usuario ${existing.name} promovido exitosamente a Administrador con acceso al Dashboard!` 
+      return {
+        success: true,
+        message: `¡Usuario ${existing.name} promovido exitosamente a Administrador con acceso al Dashboard!`
       }
     }
 
@@ -281,7 +281,7 @@ export async function revokeAdminAction(dni: string, fallbackRole: Role = Role.P
 // ---------------------------------------------
 // CRUD: EDITAR ADMINISTRADOR
 // ---------------------------------------------
-export async function editAdminAction(oldDni: string, data: { 
+export async function editAdminAction(oldDni: string, data: {
   name: string
   dni: string
   role: Role
@@ -303,7 +303,7 @@ export async function editAdminAction(oldDni: string, data: {
     if (data.permissions !== undefined) {
       updateData.permissions = data.permissions
     }
-    
+
     // Solo actualiza la contraseña si se ingresó algo
     if (data.password && data.password.trim() !== "") {
       updateData.password = data.password.trim()
@@ -313,7 +313,7 @@ export async function editAdminAction(oldDni: string, data: {
       where: { dni: oldDni },
       data: updateData
     })
-    
+
     revalidatePath("/dashboard")
     return { success: true, message: "Administrador actualizado." }
   } catch (error: any) {
