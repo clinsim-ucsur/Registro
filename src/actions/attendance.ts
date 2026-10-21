@@ -66,7 +66,9 @@ export async function validateUserAction(dni: string, role: Role) {
       return { success: false, message: "⚠ El usuario no está registrado." }
     }
 
-    if (user.role !== role) {
+    // Permitir marcación si el rol coincide, O si el usuario es un Administrador con funciones operativas
+    const isAdmin = user.role === Role.SUPER_ADMIN || user.role === Role.ADMIN_SECUNDARIO
+    if (user.role !== role && !isAdmin) {
       return { success: false, message: "⚠ El DNI existe, pero el rol seleccionado es incorrecto." }
     }
 

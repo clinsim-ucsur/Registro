@@ -199,7 +199,6 @@ export async function createAdminAction(data: {
 }) {
   try {
     const existing = await prisma.user.findUnique({ where: { dni: data.dni } })
-    if (existing) return { success: false, message: "El DNI/Usuario ya existe." }
 
     // Plantilla estándar por defecto si no se especifican permisos manualmente
     let finalPermissions = data.permissions || []
@@ -209,6 +208,28 @@ export async function createAdminAction(data: {
       } else {
         // Plantilla estándar para Admin Secundario: Vista básica, reportes y personal operativo
         finalPermissions = ["overview", "reports", "users"]
+      }
+    }
+
+    if (existing) {
+      // Si el usuario ya existe (por ejemplo docente, paciente o técnico),
+      // se promueve a administrador asignándole contraseña, rol administrativo y permisos
+      // preservando su historial de marcaciones.
+      await prisma.user.update({
+        where: { id: existing.id },
+        data: {
+          name: data.name || existing.name,
+          role: data.role,
+          password: data.password && data.password.trim() !== "" ? data.password.trim() : existing.password,
+          campusId: data.campusId !== undefined ? (data.campusId || null) : existing.campusId,
+          permissions: finalPermissions,
+        }
+      })
+
+      revalidatePath("/dashboard")
+      return { 
+        success: true, 
+        message: `¡Usuario ${existing.name} promovido exitosamente a Administrador con acceso al Dashboard!` 
       }
     }
 
@@ -228,6 +249,32 @@ export async function createAdminAction(data: {
   } catch (error: any) {
     console.error("[createAdminAction] Error:", error)
     return { success: false, message: error.message || "Error al crear administrador." }
+  }
+}
+
+// ---------------------------------------------
+// CRUD: REVOCAR PRIVILEGIOS DE ADMINISTRADOR
+// (Sin eliminar el usuario ni sus asistencias de la BD)
+// ---------------------------------------------
+export async function revokeAdminAction(dni: string, fallbackRole: Role = Role.PACIENTE_SIMULADO) {
+  try {
+    const user = await prisma.user.findUnique({ where: { dni } })
+    if (!user) return { success: false, message: "Usuario no encontrado." }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        role: fallbackRole,
+        password: null,
+        permissions: [],
+      }
+    })
+
+    revalidatePath("/dashboard")
+    return { success: true, message: `Acceso administrativo revocado para ${user.name}. Ahora es ${fallbackRole}.` }
+  } catch (error: any) {
+    console.error("[revokeAdminAction] Error:", error)
+    return { success: false, message: error.message || "Error al revocar privilegios." }
   }
 }
 

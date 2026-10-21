@@ -5,9 +5,9 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Search, Edit, Trash2, Users, AlertTriangle, Loader2, UserPlus, UserCircle, FileSpreadsheet } from "lucide-react"
+import { Search, Edit, Trash2, Users, AlertTriangle, Loader2, UserPlus, UserCircle, FileSpreadsheet, Shield } from "lucide-react"
 import { toast } from "sonner"
-import { editUserAction, deleteUserAction, createUserAction } from "@/actions/users"
+import { editUserAction, deleteUserAction, createUserAction, createAdminAction } from "@/actions/users"
 import { Role } from "@prisma/client"
 
 // Componente Modal Minimalista Integrado con Portal
@@ -42,6 +42,7 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
   
   const [addingMethod, setAddingMethod] = useState(false)
   const [addingUser, setAddingUser] = useState<any | null>(null)
+  const [promotingUser, setPromotingUser] = useState<any | null>(null)
   
   const [isProcessing, setIsProcessing] = useState(false)
 
@@ -88,6 +89,32 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
     } catch (err: any) {
       console.error("Error al editar usuario:", err)
       toast.error(err?.message || "Ocurrió un error inesperado al guardar los cambios.")
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handlePromoteToAdmin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!promotingUser) return
+    setIsProcessing(true)
+    try {
+      const res = await createAdminAction({
+        name: promotingUser.name,
+        dni: promotingUser.dni,
+        role: (promotingUser.adminRole || Role.ADMIN_SECUNDARIO) as Role,
+        password: promotingUser.password,
+        campusId: promotingUser.campusId || null,
+      })
+
+      if (res.success) {
+        toast.success(res.message)
+        setPromotingUser(null)
+      } else {
+        toast.error(res.message)
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Error al asignar cargo administrativo.")
     } finally {
       setIsProcessing(false)
     }
@@ -211,7 +238,16 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                           <span className="text-slate-400 font-normal">—</span>
                         )}
                       </TableCell>
-                      <TableCell className="px-6 text-right space-x-3">
+                      <TableCell className="px-6 text-right space-x-2">
+                        <Button 
+                          variant="outline" 
+                          size="icon" 
+                          title="Habilitar Acceso Administrativo (Dashboard)"
+                          onClick={() => setPromotingUser({ ...user, adminRole: "ADMIN_SECUNDARIO", password: "" })} 
+                          className="h-9 w-9 text-indigo-600 border-indigo-200 hover:bg-indigo-50 hover:text-indigo-800 rounded-xl transition-colors shadow-sm"
+                        >
+                          <Shield size={16} />
+                        </Button>
                         <Button variant="outline" size="icon" onClick={() => setEditingUser({ ...user, oldDni: user.dni, campusId: user.campusId || "", defaultShift: user.defaultShift || "" })} className="h-9 w-9 text-blue-600 border-blue-200 hover:bg-blue-100 hover:text-blue-800 rounded-xl transition-colors shadow-sm">
                           <Edit size={16} />
                         </Button>
@@ -429,6 +465,55 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                 {isProcessing ? <Loader2 className="animate-spin" /> : "Guardar Cambios"}
               </Button>
             </div>
+         </form>
+      </Modal>
+
+      {/* MODAL PROMOVER A ADMINISTRADOR */}
+      <Modal isOpen={!!promotingUser} onClose={() => !isProcessing && setPromotingUser(null)} title="Asignar Cargo de Administrador">
+         <form onSubmit={handlePromoteToAdmin} className="space-y-5">
+           <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl text-xs text-indigo-900 flex items-start gap-3">
+             <Shield className="text-indigo-600 shrink-0 mt-0.5" size={20} />
+             <div>
+               <p className="font-bold text-sm">Acceso al Dashboard Administrativo</p>
+               <p className="mt-1 leading-relaxed text-indigo-700">
+                 <strong>{promotingUser?.name}</strong> (DNI: {promotingUser?.dni}) mantendrá su registro y podrá seguir marcando su asistencia de <strong>{promotingUser?.role}</strong>, pero ahora tendrá credenciales para iniciar sesión en el panel y ver todas las marcaciones.
+               </p>
+             </div>
+           </div>
+
+           <div>
+             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Nivel de Administrador</label>
+             <select 
+               value={promotingUser?.adminRole || "ADMIN_SECUNDARIO"} 
+               onChange={e => setPromotingUser({ ...promotingUser, adminRole: e.target.value })}
+               className="w-full h-12 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-600 transition-all"
+             >
+               <option value="ADMIN_SECUNDARIO">Admin Secundario (Gestión y Reportes)</option>
+               <option value="SUPER_ADMIN">Super Administrador (Control Total del Sistema)</option>
+             </select>
+           </div>
+
+           <div>
+             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Contraseña para Iniciar Sesión</label>
+             <Input 
+               type="password"
+               value={promotingUser?.password || ""} 
+               onChange={e => setPromotingUser({ ...promotingUser, password: e.target.value })}
+               className="h-12 bg-slate-50 border-slate-200 font-medium focus-visible:ring-indigo-600 rounded-xl"
+               placeholder="Mínimo 6 caracteres"
+               required
+             />
+             <p className="text-[11px] text-slate-400 mt-1">Con su DNI ({promotingUser?.dni}) y esta contraseña podrá ingresar al Dashboard.</p>
+           </div>
+
+           <div className="flex gap-4 pt-4 border-t border-slate-100">
+             <Button type="button" variant="outline" className="flex-1 h-12 rounded-xl font-bold border-slate-200 hover:bg-slate-50 text-slate-600" onClick={() => setPromotingUser(null)} disabled={isProcessing}>
+               Cancelar
+             </Button>
+             <Button type="submit" className="flex-1 h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-md shadow-indigo-600/20" disabled={isProcessing}>
+               {isProcessing ? <Loader2 className="animate-spin" /> : "Otorgar Acceso Admin"}
+             </Button>
+           </div>
          </form>
       </Modal>
 

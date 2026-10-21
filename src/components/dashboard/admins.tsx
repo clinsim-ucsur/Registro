@@ -23,7 +23,7 @@ import {
   Lock
 } from "lucide-react"
 import { toast } from "sonner"
-import { editAdminAction, deleteUserAction, createAdminAction } from "@/actions/users"
+import { editAdminAction, deleteUserAction, createAdminAction, revokeAdminAction } from "@/actions/users"
 import { Role } from "@prisma/client"
 
 export const AVAILABLE_MODULES = [
@@ -64,7 +64,7 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
   const handleDelete = async () => {
     if (!deletingAdmin) return
     setIsProcessing(true)
-    const res = await deleteUserAction(deletingAdmin.dni)
+    const res = await revokeAdminAction(deletingAdmin.dni)
     if (res.success) {
       toast.success(res.message)
       setDeletingAdmin(null)
@@ -285,7 +285,7 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
 
       {/* MODAL CREAR ADMIN (PORTAL) */}
       {typeof document !== "undefined" && !!addingAdmin && createPortal(
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
           <div className="bg-white w-full max-w-2xl max-h-[90vh] overflow-y-auto no-scrollbar rounded-[2rem] shadow-2xl p-6 md:p-8 relative">
             <button
               onClick={() => !isProcessing && setAddingAdmin(null)}
@@ -465,7 +465,7 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
 
       {/* MODAL EDITAR ADMIN (PORTAL) */}
       {typeof document !== "undefined" && !!editingAdmin && createPortal(
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
           <div className="bg-white w-full max-w-2xl max-h-[90vh] overflow-y-auto no-scrollbar rounded-[2rem] shadow-2xl p-6 md:p-8 relative">
             <button
               onClick={() => !isProcessing && setEditingAdmin(null)}
@@ -638,7 +638,7 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
 
       {/* MODAL ELIMINAR (PORTAL) */}
       {typeof document !== "undefined" && !!deletingAdmin && createPortal(
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
           <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-6 md:p-8 relative text-center">
             <div className="w-16 h-16 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center border border-rose-100 mx-auto mb-4">
               <AlertTriangle size={32} />

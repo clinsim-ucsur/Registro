@@ -534,7 +534,7 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
 
       {/* MODAL CAMPUS (PORTAL) */}
       {typeof document !== "undefined" && campusModal?.isOpen && createPortal(
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
           <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-6 md:p-8 relative">
             <button
               onClick={() => !isProcessing && setCampusModal(null)}
@@ -598,7 +598,7 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
 
       {/* MODAL GEOCERCA (PORTAL) */}
       {typeof document !== "undefined" && geoModal && createPortal(
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
           <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-6 md:p-8 relative">
             <button
               onClick={() => !isProcessing && setGeoModal(null)}
@@ -692,7 +692,7 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
 
       {/* MODAL CURSO (PORTAL) */}
       {typeof document !== "undefined" && courseModal?.isOpen && createPortal(
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
           <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-6 md:p-8 relative">
             <button
               onClick={() => !isProcessing && setCourseModal(null)}
@@ -756,7 +756,7 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
 
       {/* MODAL ELIMINAR CONFIRM (PORTAL) */}
       {typeof document !== "undefined" && deleteConfirm?.isOpen && createPortal(
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
           <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-6 md:p-8 relative text-center">
             <div className="w-16 h-16 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center border border-rose-100 mx-auto mb-4">
               <AlertTriangle size={32} />
