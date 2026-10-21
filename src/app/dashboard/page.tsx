@@ -286,7 +286,11 @@ export default async function DashboardPage() {
 
             {hasAccess("rules") && (
               <TabsContent value="rules" className="m-0 p-0 outline-none">
-                <DashboardRules rules={rules} campuses={campuses} />
+                <DashboardRules
+                  rules={rules}
+                  campuses={campuses}
+                  technicians={users.filter((u) => u.role === "TECNICO") as any}
+                />
               </TabsContent>
             )}
 

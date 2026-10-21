@@ -2,12 +2,13 @@
 
 import { useState, useTransition, useEffect } from "react"
 import { createPortal } from "react-dom"
-import { Role } from "@prisma/client"
+import { Role, Shift } from "@prisma/client"
 import { TECHNICIAN_SHIFT_PRESETS, type ShiftPreset } from "@/lib/schedule-constants"
 import { toast } from "sonner"
 import {
   Clock, Plus, Settings2, Trash2, Edit3, ShieldAlert, CheckCircle2,
-  AlertTriangle, HelpCircle, Sparkles, Building2, UserCircle2, Loader2, PlayCircle
+  AlertTriangle, HelpCircle, Sparkles, Building2, UserCircle2, Loader2,
+  PlayCircle, Users, Sun, Sunset, Moon, Coffee, Eye
 } from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -20,8 +21,10 @@ import {
   type ToleranceRuleInput
 } from "@/actions/tolerance"
 
-type ToleranceRuleItem = {
+export type ToleranceRuleItem = {
   id: string
+  name?: string | null
+  shift?: Shift | null
   campusId: string | null
   campus: { id: string; name: string } | null
   role: Role | null
@@ -31,10 +34,70 @@ type ToleranceRuleItem = {
   lateToleranceMinutes: number
 }
 
+export type TechnicianUser = {
+  id: string
+  name: string
+  dni: string
+  campusId: string | null
+  campus?: { id: string; name: string } | null
+  defaultShift?: Shift | null
+}
+
 const ROLE_LABELS: Record<string, string> = {
   DOCENTE: "Docentes",
   TECNICO: "Técnicos",
   PACIENTE_SIMULADO: "Pacientes Simulados",
+}
+
+const SHIFT_CONFIG: Record<
+  string,
+  { label: string; icon: any; color: string; bgBadge: string; borderBadge: string; textBadge: string; desc: string }
+> = {
+  TODOS: {
+    label: "Todas las Reglas",
+    icon: Settings2,
+    color: "from-slate-700 to-slate-900",
+    bgBadge: "bg-slate-100",
+    borderBadge: "border-slate-300",
+    textBadge: "text-slate-700",
+    desc: "Vista completa de todas las reglas configuradas",
+  },
+  MANANA: {
+    label: "Turno Mañana",
+    icon: Sun,
+    color: "from-amber-500 to-orange-500",
+    bgBadge: "bg-amber-50",
+    borderBadge: "border-amber-200",
+    textBadge: "text-amber-700",
+    desc: "Horario estándar ~06:00 AM",
+  },
+  INTERMEDIO: {
+    label: "Turno Intermedio",
+    icon: Coffee,
+    color: "from-cyan-500 to-blue-500",
+    bgBadge: "bg-cyan-50",
+    borderBadge: "border-cyan-200",
+    textBadge: "text-cyan-700",
+    desc: "Horario estándar ~08:00 - 10:00 AM",
+  },
+  TARDE: {
+    label: "Turno Tarde",
+    icon: Sunset,
+    color: "from-purple-500 to-pink-500",
+    bgBadge: "bg-purple-50",
+    borderBadge: "border-purple-200",
+    textBadge: "text-purple-700",
+    desc: "Horario estándar ~01:00 PM (13:00)",
+  },
+  NOCHE: {
+    label: "Turno Noche / Guardia",
+    icon: Moon,
+    color: "from-indigo-600 to-slate-900",
+    bgBadge: "bg-indigo-50",
+    borderBadge: "border-indigo-200",
+    textBadge: "text-indigo-700",
+    desc: "Horario estándar ~09:00 PM (21:00)",
+  },
 }
 
 function timeStringToMinutes(timeStr: string): number {
@@ -54,20 +117,28 @@ function minutesToTimeString(minutes: number): string {
 export function DashboardRules({
   rules,
   campuses,
+  technicians = [],
 }: {
   rules: ToleranceRuleItem[]
   campuses: { id: string; name: string }[]
+  technicians?: TechnicianUser[]
 }) {
   const [isPending, startTransition] = useTransition()
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingRule, setEditingRule] = useState<ToleranceRuleItem | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [activeShiftFilter, setActiveShiftFilter] = useState<string>("TODOS")
+
+  // Modal para ver los técnicos afectados por una regla
+  const [inspectingRule, setInspectingRule] = useState<ToleranceRuleItem | null>(null)
 
   // Form state
   const [formData, setFormData] = useState<ToleranceRuleInput>({
+    name: "",
+    shift: Shift.MANANA,
     campusId: "",
-    role: null,
-    expectedEntryTime: "08:00",
+    role: Role.TECNICO,
+    expectedEntryTime: "06:00",
     earlyEntryToleranceMinutes: 15,
     gracePeriodMinutes: 10,
     lateToleranceMinutes: 30,
@@ -78,12 +149,57 @@ export function DashboardRules({
   const [testCampusId, setTestCampusId] = useState("")
   const [testRole, setTestRole] = useState<Role | "">("")
 
-  const openCreateModal = () => {
+  // Determinar a qué técnicos afecta una regla dada
+  const getAffectedTechnicians = (rule: ToleranceRuleItem): TechnicianUser[] => {
+    // Si la regla tiene un rol que NO es TECNICO (ej: DOCENTE), no afecta técnicos
+    if (rule.role && rule.role !== Role.TECNICO) return []
+
+    return technicians.filter((tech) => {
+      // 1. Filtrar por sede si la regla es específica de sede
+      if (rule.campusId && tech.campusId !== rule.campusId) {
+        return false
+      }
+
+      // 2. Si la regla tiene turno asignado, debe coincidir con el defaultShift del técnico
+      if (rule.shift) {
+        return tech.defaultShift === rule.shift
+      }
+
+      // 3. Si la regla no tiene turno explícito pero tiene hora esperada, comparamos hora base
+      if (rule.expectedEntryTime === "06:00" && tech.defaultShift === Shift.MANANA) return true
+      if (["08:00", "09:00", "10:00"].includes(rule.expectedEntryTime) && tech.defaultShift === Shift.INTERMEDIO) return true
+      if (rule.expectedEntryTime === "13:00" && tech.defaultShift === Shift.TARDE) return true
+      if (["19:00", "20:00", "21:00"].includes(rule.expectedEntryTime) && tech.defaultShift === Shift.NOCHE) return true
+
+      // Si es global total sin sede ni turno ni rol, afecta a los que no tienen regla más específica
+      if (!rule.campusId && !rule.role && !rule.shift) return true
+
+      return false
+    })
+  }
+
+  const openCreateModal = (prefillShift?: Shift) => {
     setEditingRule(null)
+    const targetShift = prefillShift || (activeShiftFilter !== "TODOS" ? (activeShiftFilter as Shift) : Shift.MANANA)
+    let defEntry = "06:00"
+    let defName = "Regla Turno Mañana"
+    if (targetShift === Shift.INTERMEDIO) {
+      defEntry = "09:00"
+      defName = "Regla Turno Intermedio"
+    } else if (targetShift === Shift.TARDE) {
+      defEntry = "13:00"
+      defName = "Regla Turno Tarde"
+    } else if (targetShift === Shift.NOCHE) {
+      defEntry = "21:00"
+      defName = "Regla Turno Noche / Guardia"
+    }
+
     setFormData({
+      name: defName,
+      shift: targetShift,
       campusId: "",
-      role: null,
-      expectedEntryTime: "08:00",
+      role: Role.TECNICO,
+      expectedEntryTime: defEntry,
       earlyEntryToleranceMinutes: 15,
       gracePeriodMinutes: 10,
       lateToleranceMinutes: 30,
@@ -95,6 +211,8 @@ export function DashboardRules({
     setEditingRule(rule)
     setFormData({
       id: rule.id,
+      name: rule.name || "",
+      shift: rule.shift || null,
       campusId: rule.campusId ?? "",
       role: rule.role,
       expectedEntryTime: rule.expectedEntryTime,
@@ -144,7 +262,7 @@ export function DashboardRules({
     })
   }
 
-  // Live simulation calculation for the test widget
+  // Quick evaluation simulation
   const evaluateTest = () => {
     if (rules.length === 0) return { status: "A_TIEMPO", diff: 0, ruleUsed: null, message: null }
 
@@ -185,11 +303,116 @@ export function DashboardRules({
     setMounted(true)
   }, [])
 
+  // Filtrado de reglas por turno activo
+  const filteredRules = rules.filter((r) => {
+    if (activeShiftFilter === "TODOS") return true
+    if (r.shift === activeShiftFilter) return true
+    // Fallback por hora si la regla no tenía shift seteado
+    if (!r.shift) {
+      if (activeShiftFilter === "MANANA" && r.expectedEntryTime === "06:00") return true
+      if (activeShiftFilter === "INTERMEDIO" && ["08:00", "09:00", "10:00"].includes(r.expectedEntryTime)) return true
+      if (activeShiftFilter === "TARDE" && r.expectedEntryTime === "13:00") return true
+      if (activeShiftFilter === "NOCHE" && ["19:00", "20:00", "21:00"].includes(r.expectedEntryTime)) return true
+    }
+    return false
+  })
+
+  // Conteo de reglas por turno
+  const shiftCounts = {
+    TODOS: rules.length,
+    MANANA: rules.filter(r => r.shift === "MANANA" || (!r.shift && r.expectedEntryTime === "06:00")).length,
+    INTERMEDIO: rules.filter(r => r.shift === "INTERMEDIO" || (!r.shift && ["08:00", "09:00", "10:00"].includes(r.expectedEntryTime))).length,
+    TARDE: rules.filter(r => r.shift === "TARDE" || (!r.shift && r.expectedEntryTime === "13:00")).length,
+    NOCHE: rules.filter(r => r.shift === "NOCHE" || (!r.shift && ["19:00", "20:00", "21:00"].includes(r.expectedEntryTime))).length,
+  }
+
   // Preview numbers for the modal live bar
   const formExpectedMins = timeStringToMinutes(formData.expectedEntryTime)
   const formEarlyLimitMins = formExpectedMins - (Number(formData.earlyEntryToleranceMinutes) || 15)
   const formGraceLimitMins = formExpectedMins + (Number(formData.gracePeriodMinutes) || 0)
   const formLateLimitMins = formExpectedMins + (Number(formData.lateToleranceMinutes) || 0)
+
+  // Modal para ver los colaboradores afectados
+  const inspectModalContent = inspectingRule && (
+    <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in-up">
+      <div className="bg-white w-full max-w-lg rounded-[2.5rem] shadow-2xl p-6 md:p-8 relative max-h-[90vh] overflow-y-auto no-scrollbar">
+        <button
+          onClick={() => setInspectingRule(null)}
+          className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full w-9 h-9 flex items-center justify-center transition-colors"
+        >
+          ✕
+        </button>
+
+        <div className="flex items-center gap-3 mb-4">
+          <div className="p-3 bg-blue-50 text-[#1967D2] rounded-2xl">
+            <Users size={24} />
+          </div>
+          <div>
+            <h3 className="text-xl font-black text-[#0B1B3D]">Personal Afectado por esta Regla</h3>
+            <p className="text-xs text-slate-500 font-medium">
+              {inspectingRule.name || `Regla ${inspectingRule.expectedEntryTime}`}
+              {inspectingRule.campus ? ` · ${inspectingRule.campus.name}` : " · Todas las sedes"}
+            </p>
+          </div>
+        </div>
+
+        {(() => {
+          const affected = getAffectedTechnicians(inspectingRule)
+          return (
+            <div className="space-y-4">
+              <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-2xl flex items-center justify-between text-xs font-bold text-slate-700">
+                <span>Total de técnicos vinculados:</span>
+                <span className="bg-[#1967D2] text-white px-2.5 py-0.5 rounded-full font-black text-xs">
+                  {affected.length}
+                </span>
+              </div>
+
+              {affected.length === 0 ? (
+                <div className="text-center py-8 text-slate-400 text-sm font-medium">
+                  No hay técnicos registrados con este turno o sede en sus perfiles base actualmente.
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1">
+                  {affected.map((t) => (
+                    <div
+                      key={t.id}
+                      className="p-3 rounded-2xl bg-white border border-slate-200/80 hover:border-blue-300 hover:bg-blue-50/30 transition-all flex items-center justify-between shadow-xs"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#1967D2] to-indigo-600 text-white font-black flex items-center justify-center text-xs shadow-sm">
+                          {t.name.split(" ").map(w => w[0]).slice(0, 2).join("")}
+                        </div>
+                        <div>
+                          <p className="text-xs font-black text-slate-800">{t.name}</p>
+                          <p className="text-[11px] text-slate-500 font-mono">DNI: {t.dni}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md block">
+                          📍 {t.campus?.name || "Sin sede base"}
+                        </span>
+                        <span className="text-[10px] font-black text-amber-700 uppercase tracking-wider mt-1 block">
+                          {t.defaultShift || "Sin turno"}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <Button
+                type="button"
+                onClick={() => setInspectingRule(null)}
+                className="w-full h-12 bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold rounded-xl"
+              >
+                Cerrar Lista
+              </Button>
+            </div>
+          )
+        })()}
+      </div>
+    </div>
+  )
 
   const modalContent = isModalOpen && (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in-up">
@@ -209,20 +432,61 @@ export function DashboardRules({
             <h3 className="text-2xl font-black text-[#0B1B3D]">
               {editingRule ? "Editar Regla de Horario" : "Nueva Regla de Horario"}
             </h3>
-            <p className="text-xs text-slate-400 font-medium">Configura los parámetros para este alcance</p>
+            <p className="text-xs text-slate-400 font-medium">Asigna el nombre, grupo de turno y tolerancias</p>
           </div>
         </div>
 
         <form onSubmit={handleSave} className="space-y-4 mt-5">
+          {/* Nombre descriptivo y Turno */}
+          <div className="space-y-3 p-4 bg-slate-50 border border-slate-200/80 rounded-2xl">
+            <div>
+              <label className="text-[11px] font-black uppercase tracking-wider text-slate-700 block mb-1">
+                Nombre de la Regla / Grupo (Identificador)
+              </label>
+              <Input
+                type="text"
+                placeholder="Ej: Turno Mañana Villa, Guardia Noche Ate..."
+                value={formData.name || ""}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                className="h-11 rounded-xl bg-white font-bold text-sm text-slate-800"
+              />
+            </div>
+
+            <div>
+              <label className="text-[11px] font-black uppercase tracking-wider text-slate-700 block mb-1">
+                Turno Correspondiente
+              </label>
+              <select
+                value={formData.shift || ""}
+                onChange={(e) => {
+                  const s = (e.target.value as Shift) || null
+                  let newEntry = formData.expectedEntryTime
+                  if (s === Shift.MANANA && newEntry !== "06:00") newEntry = "06:00"
+                  if (s === Shift.INTERMEDIO && !["08:00", "09:00", "10:00"].includes(newEntry)) newEntry = "09:00"
+                  if (s === Shift.TARDE && newEntry !== "13:00") newEntry = "13:00"
+                  if (s === Shift.NOCHE && !["19:00", "20:00", "21:00"].includes(newEntry)) newEntry = "21:00"
+                  setFormData({ ...formData, shift: s, expectedEntryTime: newEntry })
+                }}
+                className="w-full h-11 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
+              >
+                <option value="">(Sin clasificar / Global general)</option>
+                <option value="MANANA">🌅 Turno Mañana (~06:00 AM)</option>
+                <option value="INTERMEDIO">⛅ Turno Intermedio (~09:00 AM)</option>
+                <option value="TARDE">🌆 Turno Tarde (~01:00 PM / 13:00)</option>
+                <option value="NOCHE">🌙 Turno Noche / Guardia (~09:00 PM / 21:00)</option>
+              </select>
+            </div>
+          </div>
+
           {/* Presets Rápidos de Turnos para Técnicos */}
           <div className="p-3.5 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/80 rounded-2xl">
             <div className="flex items-center justify-between mb-2">
               <span className="text-[11px] font-black uppercase tracking-wider text-[#1967D2] flex items-center gap-1.5">
-                <Sparkles size={14} /> Horarios Oficiales de Turnos de Técnicos
+                <Sparkles size={14} /> Presets Oficiales
               </span>
               <span className="text-[10px] text-slate-500 font-bold">Clic para autocompletar</span>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {TECHNICIAN_SHIFT_PRESETS.map((p) => (
                 <button
                   key={p.id}
@@ -230,29 +494,29 @@ export function DashboardRules({
                   onClick={() => {
                     setFormData((prev) => ({
                       ...prev,
+                      name: p.name,
+                      shift: p.shift,
                       role: Role.TECNICO,
                       expectedEntryTime: p.entry,
                       earlyEntryToleranceMinutes: p.early,
                       gracePeriodMinutes: p.grace,
                       lateToleranceMinutes: p.late,
                     }))
-                    toast.info(`Cargado horario: ${p.name} (${p.entry})`)
+                    toast.info(`Cargado: ${p.name} (${p.entry})`)
                   }}
-                  className="text-left p-2.5 rounded-xl border border-blue-200/60 bg-white hover:bg-blue-100/50 hover:border-[#1967D2] transition-all group shadow-xs"
+                  className="text-left p-2 rounded-xl border border-blue-200/60 bg-white hover:bg-blue-100/50 hover:border-[#1967D2] transition-all group shadow-xs"
                 >
-                  <p className="text-xs font-black text-slate-800 group-hover:text-[#1967D2] flex items-center justify-between">
-                    <span>{p.name}</span>
-                    <span className="font-mono text-[11px] font-bold text-[#1967D2] bg-blue-50 px-1.5 py-0.5 rounded-md">
-                      {p.entry}
-                    </span>
+                  <p className="text-[11px] font-black text-slate-800 group-hover:text-[#1967D2] truncate">
+                    {p.name}
                   </p>
-                  <p className="text-[10px] text-slate-500 font-medium mt-0.5">
-                    {p.scheduleText}
-                  </p>
+                  <span className="font-mono text-[10px] font-bold text-[#1967D2] bg-blue-50 px-1 py-0.5 rounded mt-0.5 inline-block">
+                    {p.entry}
+                  </span>
                 </button>
               ))}
             </div>
           </div>
+
           {/* Sede y Rol en dos columnas */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             <div>
@@ -262,7 +526,7 @@ export function DashboardRules({
                 onChange={(e) => setFormData({ ...formData, campusId: e.target.value })}
                 className="w-full h-11 mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
               >
-                <option value="">Todas (Global)</option>
+                <option value="">Todas las Sedes (Global)</option>
                 {campuses.map((c) => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
@@ -270,7 +534,7 @@ export function DashboardRules({
             </div>
 
             <div>
-              <label className="text-[11px] font-black uppercase tracking-wider text-slate-700">Rol</label>
+              <label className="text-[11px] font-black uppercase tracking-wider text-slate-700">Rol Afectado</label>
               <select
                 value={formData.role ?? ""}
                 onChange={(e) => setFormData({ ...formData, role: (e.target.value as Role) || null })}
@@ -284,7 +548,7 @@ export function DashboardRules({
             </div>
           </div>
 
-          {/* Hora Oficial, Anticipación, Gracia y Tolerancia en una grilla responsiva */}
+          {/* Hora Oficial, Anticipación, Gracia y Tolerancia */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div>
               <label className="text-[11px] font-black uppercase tracking-wider text-slate-700">Hora Entrada</label>
@@ -413,321 +677,402 @@ export function DashboardRules({
       <div className="space-y-8 animate-fade-in-up pb-12">
         {/* Header Banner */}
         <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#0B1B3D] via-[#12306b] to-[#1967D2] p-8 text-white shadow-xl shadow-blue-900/20">
-        <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
-        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.25em] text-blue-200">
-              <Clock size={16} /> Motor de Horarios y Tolerancias
-            </div>
-            <h2 className="mt-2 text-3xl font-black tracking-tight">Reglas de Tolerancia de Asistencia</h2>
-            <p className="mt-2 text-sm text-blue-100/80 max-w-2xl font-medium">
-              Define los horarios oficiales de entrada, minutos de cortesía y límites de tardanza por Sede y Rol operativo. El sistema evalúa automáticamente cada marcación según estas reglas.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap gap-3">
-            {rules.length === 0 && (
-              <Button
-                onClick={handleSeedDefault}
-                disabled={isPending}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-12 px-6 rounded-2xl shadow-lg shadow-emerald-900/30 transition-transform hover:scale-105"
-              >
-                <Sparkles className="mr-2" size={18} /> Inicializar Regla Predeterminada
-              </Button>
-            )}
-            <Button
-              onClick={openCreateModal}
-              disabled={isPending}
-              className="bg-white hover:bg-blue-50 text-[#0B1B3D] font-extrabold h-12 px-6 rounded-2xl shadow-lg shadow-black/10 transition-transform hover:scale-105"
-            >
-              <Plus className="mr-2" size={20} /> Nueva Regla
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      {/* Grid: Reglas Activas + Simulador en Tiempo Real */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* LISTADO DE REGLAS */}
-        <div className="lg:col-span-2 space-y-4">
-          <div className="flex items-center justify-between px-1">
-            <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
-              <Settings2 size={20} className="text-[#1967D2]" /> Reglas Configuradas en el Sistema
-            </h3>
-            <span className="text-xs font-bold text-slate-400 bg-slate-100 px-3 py-1 rounded-full">
-              {rules.length} {rules.length === 1 ? "regla activa" : "reglas activas"}
-            </span>
-          </div>
-
-          {rules.length === 0 ? (
-            <Card className="rounded-3xl border-2 border-dashed border-slate-200 bg-white p-12 text-center">
-              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 text-[#1967D2] mb-4">
-                <Clock size={32} />
-              </div>
-              <h4 className="text-xl font-black text-slate-800">No hay reglas de tolerancia configuradas</h4>
-              <p className="mt-2 text-sm text-slate-500 max-w-md mx-auto">
-                Todas las entradas se están marcando actualmente como &quot;A tiempo&quot;. Crea una regla predeterminada para que el sistema empiece a detectar tardanzas y faltas automáticamente.
-              </p>
-              <Button
-                onClick={handleSeedDefault}
-                disabled={isPending}
-                className="mt-6 bg-[#1967D2] hover:bg-blue-700 text-white font-bold px-8 h-12 rounded-xl"
-              >
-                <Sparkles className="mr-2" size={18} /> Crear Regla Global 08:00 AM
-              </Button>
-            </Card>
-          ) : (
-            <div className="space-y-4">
-              {rules.map((rule) => {
-                const expMins = timeStringToMinutes(rule.expectedEntryTime)
-                const graceMins = expMins + rule.gracePeriodMinutes
-                const lateMins = expMins + rule.lateToleranceMinutes
-                const isGlobal = !rule.campusId && !rule.role
-
-                return (
-                  <Card
-                    key={rule.id}
-                    className="group rounded-3xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-200/40 transition-all duration-300 hover:shadow-xl hover:border-blue-200"
-                  >
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          {isGlobal ? (
-                            <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-3 py-1 text-xs font-black text-indigo-700 border border-indigo-100">
-                              <Sparkles size={13} /> Regla Global (Todas las sedes y roles)
-                            </span>
-                          ) : (
-                            <>
-                              {rule.campus ? (
-                                <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-700 border border-blue-100">
-                                  <Building2 size={13} /> {rule.campus.name}
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
-                                  Todas las sedes
-                                </span>
-                              )}
-
-                              {rule.role ? (
-                                <span className="inline-flex items-center gap-1.5 rounded-full bg-purple-50 px-3 py-1 text-xs font-black text-purple-700 border border-purple-100">
-                                  <UserCircle2 size={13} /> {ROLE_LABELS[rule.role] || rule.role}
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
-                                  Todos los roles
-                                </span>
-                              )}
-                            </>
-                          )}
-                        </div>
-                        <p className="text-xs text-slate-400 font-medium pt-0.5">
-                          Prioridad: {rule.campusId && rule.role ? "Alta (Sede + Rol)" : rule.campusId ? "Media (Sede específica)" : rule.role ? "Media (Rol específico)" : "Base (Global)"}
-                        </p>
-                      </div>
-
-                      {/* Botones de acción */}
-                      <div className="flex items-center gap-2 self-end sm:self-center">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => openEditModal(rule)}
-                          className="h-10 px-4 rounded-xl font-bold text-slate-700 hover:text-[#1967D2] hover:bg-blue-50 border-slate-200"
-                        >
-                          <Edit3 size={15} className="mr-1.5" /> Editar
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleDelete(rule.id)}
-                          disabled={isPending}
-                          className="h-10 px-4 rounded-xl font-bold text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-100"
-                        >
-                          <Trash2 size={15} className="mr-1.5" /> Eliminar
-                        </Button>
-                      </div>
-                    </div>
-
-                    {/* Resumen numérico en 4 columnas */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4">
-                      <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
-                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Hora Oficial</p>
-                        <p className="text-xl font-black text-slate-800 mt-0.5">{rule.expectedEntryTime}</p>
-                        <p className="text-[11px] font-medium text-slate-500 mt-0.5">{minutesToTimeString(expMins)}</p>
-                      </div>
-
-                      <div className="rounded-2xl bg-sky-50/70 p-3.5 border border-sky-100">
-                        <p className="text-[10px] font-black uppercase tracking-wider text-sky-700">Anticipación Máx</p>
-                        <p className="text-xl font-black text-sky-800 mt-0.5">{rule.earlyEntryToleranceMinutes ?? 15} min</p>
-                        <p className="text-[11px] font-medium text-sky-700 mt-0.5">Desde {minutesToTimeString(expMins - (rule.earlyEntryToleranceMinutes ?? 15))}</p>
-                      </div>
-
-                      <div className="rounded-2xl bg-emerald-50/60 p-3.5 border border-emerald-100">
-                        <p className="text-[10px] font-black uppercase tracking-wider text-emerald-700">Cortesía / Gracia</p>
-                        <p className="text-xl font-black text-emerald-800 mt-0.5">+{rule.gracePeriodMinutes} min</p>
-                        <p className="text-[11px] font-medium text-emerald-700 mt-0.5">Puntual hasta {minutesToTimeString(graceMins)}</p>
-                      </div>
-
-                      <div className="rounded-2xl bg-amber-50/60 p-3.5 border border-amber-100">
-                        <p className="text-[10px] font-black uppercase tracking-wider text-amber-700">Límite Tardanza</p>
-                        <p className="text-xl font-black text-amber-800 mt-0.5">+{rule.lateToleranceMinutes} min</p>
-                        <p className="text-[11px] font-medium text-amber-700 mt-0.5">Falta desde {minutesToTimeString(lateMins + 1)}</p>
-                      </div>
-                    </div>
-
-                    {/* Timeline visual */}
-                    <div className="mt-4 pt-3 border-t border-slate-100">
-                      <div className="flex items-center justify-between text-[11px] font-bold text-slate-400 mb-1.5">
-                        <span>Llegada</span>
-                        <span>08:00 oficial</span>
-                        <span>Límite falta</span>
-                      </div>
-                      <div className="h-3 w-full rounded-full bg-slate-100 overflow-hidden flex">
-                        <div
-                          className="bg-emerald-500 h-full transition-all"
-                          style={{ width: `${Math.min(60, Math.max(20, (rule.gracePeriodMinutes / (rule.lateToleranceMinutes || 1)) * 60))}%` }}
-                          title={`A Tiempo: hasta ${minutesToTimeString(graceMins)}`}
-                        />
-                        <div
-                          className="bg-amber-400 h-full flex-1 transition-all"
-                          title={`Tardanza: hasta ${minutesToTimeString(lateMins)}`}
-                        />
-                        <div
-                          className="bg-rose-500 h-full w-16 transition-all"
-                          title={`Falta: a partir de ${minutesToTimeString(lateMins + 1)}`}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between text-[10px] font-black mt-2">
-                        <span className="text-emerald-600">● A Tiempo (&lt;= {rule.gracePeriodMinutes}m)</span>
-                        <span className="text-amber-600">● Tardanza (&lt;= {rule.lateToleranceMinutes}m)</span>
-                        <span className="text-rose-600">● Falta (&gt; {rule.lateToleranceMinutes}m)</span>
-                      </div>
-                    </div>
-                  </Card>
-                )
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* SIMULADOR EN VIVO */}
-        <div className="space-y-4">
-          <div className="flex items-center justify-between px-1">
-            <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
-              <PlayCircle size={20} className="text-emerald-600" /> Simulador de Marcación
-            </h3>
-            <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full">
-              En tiempo real
-            </span>
-          </div>
-
-          <Card className="rounded-3xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-200/50 space-y-5">
+          <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
+          <div className="relative flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <p className="text-xs font-medium text-slate-500">
-                Prueba cómo clasificará el sistema a un colaborador que marque a una hora específica.
+              <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.25em] text-blue-200">
+                <Clock size={16} /> Motor de Grupos de Turnos y Tolerancias
+              </div>
+              <h2 className="mt-2 text-3xl font-black tracking-tight">Turnos y Reglas de Tolerancia</h2>
+              <p className="mt-2 text-sm text-blue-100/80 max-w-2xl font-medium">
+                Visualiza y gestiona claramente qué reglas pertenecen al turno Mañana, Intermedio, Tarde o Noche, y consulta exactamente a qué técnicos afecta cada horario configurado.
               </p>
             </div>
 
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-600">Hora de Marcación a probar</label>
-                <Input
-                  type="time"
-                  value={testTime}
-                  onChange={(e) => setTestTime(e.target.value)}
-                  className="h-12 mt-1 rounded-xl text-lg font-black bg-slate-50"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-600">Sede (Opcional)</label>
-                <select
-                  value={testCampusId}
-                  onChange={(e) => setTestCampusId(e.target.value)}
-                  className="w-full h-11 mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-bold text-slate-700 outline-none"
+            <div className="flex flex-wrap gap-3">
+              {rules.length === 0 && (
+                <Button
+                  onClick={handleSeedDefault}
+                  disabled={isPending}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold h-12 px-6 rounded-2xl shadow-lg shadow-emerald-900/30 transition-transform hover:scale-105"
                 >
-                  <option value="">Todas las sedes (Global)</option>
-                  {campuses.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="text-xs font-bold uppercase tracking-wider text-slate-600">Rol (Opcional)</label>
-                <select
-                  value={testRole}
-                  onChange={(e) => setTestRole(e.target.value as Role | "")}
-                  className="w-full h-11 mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-bold text-slate-700 outline-none"
-                >
-                  <option value="">Cualquier Rol</option>
-                  <option value="DOCENTE">Docente</option>
-                  <option value="TECNICO">Técnico</option>
-                  <option value="PACIENTE_SIMULADO">Paciente Simulado</option>
-                </select>
-              </div>
+                  <Sparkles className="mr-2" size={18} /> Inicializar Regla Predeterminada
+                </Button>
+              )}
+              <Button
+                onClick={() => openCreateModal()}
+                disabled={isPending}
+                className="bg-white hover:bg-blue-50 text-[#0B1B3D] font-extrabold h-12 px-6 rounded-2xl shadow-lg shadow-black/10 transition-transform hover:scale-105"
+              >
+                <Plus className="mr-2" size={20} /> Nueva Regla
+              </Button>
             </div>
-
-            {/* Resultado de la simulación */}
-            <div className="rounded-2xl p-5 border text-center transition-all bg-slate-50/80">
-              <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">Resultado Evaluado</p>
-              
-              <div className="mt-3">
-                {testResult.status === "BLOQUEADO" && (
-                  <div className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 text-white px-5 py-2.5 font-black text-lg shadow-lg">
-                    <ShieldAlert size={24} className="text-rose-400" /> ENTRADA BLOQUEADA
-                  </div>
-                )}
-                {testResult.status === "A_TIEMPO" && (
-                  <div className="inline-flex items-center gap-2 rounded-2xl bg-emerald-100/80 px-5 py-2.5 text-emerald-800 font-black text-lg">
-                    <CheckCircle2 size={24} className="text-emerald-600" /> A TIEMPO (Puntual)
-                  </div>
-                )}
-                {testResult.status === "TARDANZA" && (
-                  <div className="inline-flex items-center gap-2 rounded-2xl bg-amber-100/80 px-5 py-2.5 text-amber-800 font-black text-lg">
-                    <AlertTriangle size={24} className="text-amber-600" /> TARDANZA
-                  </div>
-                )}
-                {testResult.status === "FALTA" && (
-                  <div className="inline-flex items-center gap-2 rounded-2xl bg-rose-100/80 px-5 py-2.5 text-rose-800 font-black text-lg">
-                    <ShieldAlert size={24} className="text-rose-600" /> FALTA
-                  </div>
-                )}
-              </div>
-
-              <div className="mt-3 text-xs text-slate-600 space-y-1">
-                {testResult.message && (
-                  <p className="text-rose-600 font-bold bg-rose-50 p-2 rounded-lg border border-rose-100">
-                    ⚠️ {testResult.message}
-                  </p>
-                )}
-                {testResult.ruleUsed ? (
-                  <>
-                    <p className="font-bold">
-                      Diferencia: {testResult.diff > 0 ? `+${testResult.diff} min tarde` : `${Math.abs(testResult.diff)} min antes de hora`}
-                    </p>
-                    <p className="text-slate-400">
-                      Regla aplicada: {testResult.ruleUsed.campus?.name || "Global"} ({testResult.ruleUsed.expectedEntryTime} oficial)
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-slate-400 italic">No hay regla configurada (Se asume A tiempo por defecto)</p>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-2xl bg-blue-50/50 p-4 border border-blue-100 text-xs text-blue-900 flex items-start gap-2.5">
-              <HelpCircle size={18} className="text-[#1967D2] shrink-0 mt-0.5" />
-              <p className="leading-relaxed">
-                <strong>¿Cómo funciona la prioridad?</strong> El sistema busca primero una regla que coincida con la Sede y Rol del usuario. Si no encuentra, busca por Sede, luego por Rol, y finalmente usa la Regla Global.
-              </p>
-            </div>
-          </Card>
+          </div>
         </div>
-      </div>
 
+        {/* NAVEGACIÓN POR PESTAÑAS DE TURNOS */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          {(["TODOS", "MANANA", "INTERMEDIO", "TARDE", "NOCHE"] as const).map((shiftKey) => {
+            const conf = SHIFT_CONFIG[shiftKey]
+            const Icon = conf.icon
+            const isSelected = activeShiftFilter === shiftKey
+            const count = shiftCounts[shiftKey]
+
+            return (
+              <button
+                key={shiftKey}
+                onClick={() => setActiveShiftFilter(shiftKey)}
+                className={`p-4 rounded-2xl border-2 text-left transition-all duration-300 relative overflow-hidden flex flex-col justify-between ${
+                  isSelected
+                    ? "bg-white border-[#1967D2] shadow-lg shadow-blue-500/10 scale-[1.02]"
+                    : "bg-white/70 border-slate-200/80 hover:bg-white hover:border-slate-300"
+                }`}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <div className={`p-2 rounded-xl text-white bg-gradient-to-br ${conf.color}`}>
+                    <Icon size={18} />
+                  </div>
+                  <span className={`text-xs font-black px-2 py-0.5 rounded-full ${conf.bgBadge} ${conf.textBadge} border ${conf.borderBadge}`}>
+                    {count} {count === 1 ? "regla" : "reglas"}
+                  </span>
+                </div>
+                <div>
+                  <p className={`text-sm font-black ${isSelected ? "text-[#1967D2]" : "text-slate-800"}`}>
+                    {conf.label}
+                  </p>
+                  <p className="text-[11px] font-medium text-slate-400 mt-0.5">
+                    {conf.desc}
+                  </p>
+                </div>
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Grid: Reglas Activas Filtradas + Simulador en Tiempo Real */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* LISTADO DE REGLAS */}
+          <div className="lg:col-span-2 space-y-4">
+            <div className="flex items-center justify-between px-1">
+              <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
+                <Settings2 size={20} className="text-[#1967D2]" />
+                Reglas del Grupo: {SHIFT_CONFIG[activeShiftFilter]?.label}
+              </h3>
+              <span className="text-xs font-bold text-slate-400 bg-slate-100 px-3 py-1 rounded-full">
+                {filteredRules.length} {filteredRules.length === 1 ? "regla activa" : "reglas activas"}
+              </span>
+            </div>
+
+            {filteredRules.length === 0 ? (
+              <Card className="rounded-3xl border-2 border-dashed border-slate-200 bg-white p-12 text-center">
+                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-50 text-[#1967D2] mb-4">
+                  <Clock size={32} />
+                </div>
+                <h4 className="text-xl font-black text-slate-800">
+                  No hay reglas configuradas para {SHIFT_CONFIG[activeShiftFilter]?.label}
+                </h4>
+                <p className="mt-2 text-sm text-slate-500 max-w-md mx-auto">
+                  Puedes crear una regla específica para este turno indicando la sede y horas de entrada permitidas.
+                </p>
+                <Button
+                  onClick={() => openCreateModal(activeShiftFilter !== "TODOS" ? (activeShiftFilter as Shift) : undefined)}
+                  disabled={isPending}
+                  className="mt-6 bg-[#1967D2] hover:bg-blue-700 text-white font-bold px-8 h-12 rounded-xl"
+                >
+                  <Plus className="mr-2" size={18} /> Crear Regla para este Turno
+                </Button>
+              </Card>
+            ) : (
+              <div className="space-y-4">
+                {filteredRules.map((rule) => {
+                  const expMins = timeStringToMinutes(rule.expectedEntryTime)
+                  const graceMins = expMins + rule.gracePeriodMinutes
+                  const lateMins = expMins + rule.lateToleranceMinutes
+                  const isGlobal = !rule.campusId && !rule.role
+                  const affectedTechs = getAffectedTechnicians(rule)
+
+                  // Resolver grupo visual del turno
+                  const shiftKey = rule.shift || (
+                    rule.expectedEntryTime === "06:00" ? "MANANA" :
+                    ["08:00", "09:00", "10:00"].includes(rule.expectedEntryTime) ? "INTERMEDIO" :
+                    rule.expectedEntryTime === "13:00" ? "TARDE" :
+                    ["19:00", "20:00", "21:00"].includes(rule.expectedEntryTime) ? "NOCHE" : null
+                  )
+                  const shiftConf = shiftKey ? SHIFT_CONFIG[shiftKey] : null
+
+                  return (
+                    <Card
+                      key={rule.id}
+                      className="group rounded-3xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-200/40 transition-all duration-300 hover:shadow-xl hover:border-blue-200"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-4 border-b border-slate-100">
+                        <div className="space-y-1.5">
+                          {/* Nombre de la Regla */}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h4 className="text-lg font-black text-slate-800">
+                              {rule.name || `Regla de Entrada ${rule.expectedEntryTime}`}
+                            </h4>
+                            {shiftConf && (
+                              <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-0.5 text-xs font-black ${shiftConf.bgBadge} ${shiftConf.textBadge} border ${shiftConf.borderBadge}`}>
+                                {shiftConf.label}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Alcance: Sede y Rol */}
+                          <div className="flex items-center gap-2 flex-wrap text-xs">
+                            {isGlobal ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-0.5 text-indigo-700 font-bold border border-indigo-100">
+                                <Sparkles size={12} /> Global (Todas las sedes y roles)
+                              </span>
+                            ) : (
+                              <>
+                                {rule.campus ? (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-blue-700 font-bold border border-blue-100">
+                                    <Building2 size={12} /> {rule.campus.name}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-slate-600 font-bold">
+                                    Todas las sedes
+                                  </span>
+                                )}
+
+                                {rule.role ? (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-purple-50 px-2.5 py-0.5 text-purple-700 font-bold border border-purple-100">
+                                    <UserCircle2 size={12} /> {ROLE_LABELS[rule.role] || rule.role}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-slate-600 font-bold">
+                                    Todos los roles
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Botones de acción */}
+                        <div className="flex items-center gap-2 self-end sm:self-center">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => openEditModal(rule)}
+                            className="h-9 px-3.5 rounded-xl font-bold text-slate-700 hover:text-[#1967D2] hover:bg-blue-50 border-slate-200"
+                          >
+                            <Edit3 size={14} className="mr-1.5" /> Editar
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleDelete(rule.id)}
+                            disabled={isPending}
+                            className="h-9 px-3.5 rounded-xl font-bold text-rose-600 hover:text-rose-700 hover:bg-rose-50 border-rose-100"
+                          >
+                            <Trash2 size={14} className="mr-1.5" /> Eliminar
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* Resumen numérico en 4 columnas */}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4">
+                        <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Hora Oficial</p>
+                          <p className="text-xl font-black text-slate-800 mt-0.5">{rule.expectedEntryTime}</p>
+                          <p className="text-[11px] font-medium text-slate-500 mt-0.5">{minutesToTimeString(expMins)}</p>
+                        </div>
+
+                        <div className="rounded-2xl bg-sky-50/70 p-3.5 border border-sky-100">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-sky-700">Anticipación Máx</p>
+                          <p className="text-xl font-black text-sky-800 mt-0.5">{rule.earlyEntryToleranceMinutes ?? 15} min</p>
+                          <p className="text-[11px] font-medium text-sky-700 mt-0.5">Desde {minutesToTimeString(expMins - (rule.earlyEntryToleranceMinutes ?? 15))}</p>
+                        </div>
+
+                        <div className="rounded-2xl bg-emerald-50/60 p-3.5 border border-emerald-100">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-emerald-700">Cortesía / Gracia</p>
+                          <p className="text-xl font-black text-emerald-800 mt-0.5">+{rule.gracePeriodMinutes} min</p>
+                          <p className="text-[11px] font-medium text-emerald-700 mt-0.5">Puntual hasta {minutesToTimeString(graceMins)}</p>
+                        </div>
+
+                        <div className="rounded-2xl bg-amber-50/60 p-3.5 border border-amber-100">
+                          <p className="text-[10px] font-black uppercase tracking-wider text-amber-700">Límite Tardanza</p>
+                          <p className="text-xl font-black text-amber-800 mt-0.5">+{rule.lateToleranceMinutes} min</p>
+                          <p className="text-[11px] font-medium text-amber-700 mt-0.5">Falta desde {minutesToTimeString(lateMins + 1)}</p>
+                        </div>
+                      </div>
+
+                      {/* SECCIÓN VISUAL: A QUIÉNES AFECTA ESTA REGLA */}
+                      <div className="mt-4 pt-3.5 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/70 -mx-6 -mb-6 px-6 py-3.5 rounded-b-3xl">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
+                            <Users size={16} className="text-[#1967D2]" />
+                            Afecta a:
+                          </span>
+
+                          {affectedTechs.length > 0 ? (
+                            <div className="flex items-center -space-x-2 overflow-hidden">
+                              {affectedTechs.slice(0, 5).map((t) => (
+                                <div
+                                  key={t.id}
+                                  title={`${t.name} (${t.campus?.name || "Sin sede"})`}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-[10px] font-black text-white ring-2 ring-white"
+                                >
+                                  {t.name.split(" ").map(w => w[0]).slice(0, 2).join("")}
+                                </div>
+                              ))}
+                              {affectedTechs.length > 5 && (
+                                <div className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-200 text-[10px] font-black text-slate-700 ring-2 ring-white">
+                                  +{affectedTechs.length - 5}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-slate-400 font-medium italic">
+                              Sin técnicos base asignados
+                            </span>
+                          )}
+
+                          <span className="text-xs font-black text-slate-700 ml-1">
+                            {affectedTechs.length} {affectedTechs.length === 1 ? "técnico" : "técnicos"}
+                          </span>
+                        </div>
+
+                        {affectedTechs.length > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setInspectingRule(rule)}
+                            className="text-xs font-bold text-[#1967D2] hover:text-blue-800 hover:bg-blue-50 h-8 px-2.5 rounded-lg flex items-center gap-1"
+                          >
+                            <Eye size={14} /> Ver nombres completos
+                          </Button>
+                        )}
+                      </div>
+                    </Card>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* SIMULADOR EN VIVO */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between px-1">
+              <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
+                <PlayCircle size={20} className="text-emerald-600" /> Simulador de Marcación
+              </h3>
+              <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full">
+                En tiempo real
+              </span>
+            </div>
+
+            <Card className="rounded-3xl border border-slate-200/80 bg-white p-6 shadow-sm shadow-slate-200/50 space-y-5">
+              <div>
+                <p className="text-xs font-medium text-slate-500">
+                  Prueba cómo clasificará el sistema a un colaborador que marque a una hora específica.
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-600">Hora de Marcación a probar</label>
+                  <Input
+                    type="time"
+                    value={testTime}
+                    onChange={(e) => setTestTime(e.target.value)}
+                    className="h-12 mt-1 rounded-xl text-lg font-black bg-slate-50"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-600">Sede (Opcional)</label>
+                  <select
+                    value={testCampusId}
+                    onChange={(e) => setTestCampusId(e.target.value)}
+                    className="w-full h-11 mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-bold text-slate-700 outline-none"
+                  >
+                    <option value="">Todas las sedes (Global)</option>
+                    {campuses.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-600">Rol (Opcional)</label>
+                  <select
+                    value={testRole}
+                    onChange={(e) => setTestRole(e.target.value as Role | "")}
+                    className="w-full h-11 mt-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm font-bold text-slate-700 outline-none"
+                  >
+                    <option value="">Cualquier Rol</option>
+                    <option value="DOCENTE">Docente</option>
+                    <option value="TECNICO">Técnico</option>
+                    <option value="PACIENTE_SIMULADO">Paciente Simulado</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Resultado de la simulación */}
+              <div className="rounded-2xl p-5 border text-center transition-all bg-slate-50/80">
+                <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">Resultado Evaluado</p>
+                
+                <div className="mt-3">
+                  {testResult.status === "BLOQUEADO" && (
+                    <div className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 text-white px-5 py-2.5 font-black text-lg shadow-lg">
+                      <ShieldAlert size={24} className="text-rose-400" /> ENTRADA BLOQUEADA
+                    </div>
+                  )}
+                  {testResult.status === "A_TIEMPO" && (
+                    <div className="inline-flex items-center gap-2 rounded-2xl bg-emerald-100/80 px-5 py-2.5 text-emerald-800 font-black text-lg">
+                      <CheckCircle2 size={24} className="text-emerald-600" /> A TIEMPO (Puntual)
+                    </div>
+                  )}
+                  {testResult.status === "TARDANZA" && (
+                    <div className="inline-flex items-center gap-2 rounded-2xl bg-amber-100/80 px-5 py-2.5 text-amber-800 font-black text-lg">
+                      <AlertTriangle size={24} className="text-amber-600" /> TARDANZA
+                    </div>
+                  )}
+                  {testResult.status === "FALTA" && (
+                    <div className="inline-flex items-center gap-2 rounded-2xl bg-rose-100/80 px-5 py-2.5 text-rose-800 font-black text-lg">
+                      <ShieldAlert size={24} className="text-rose-600" /> FALTA
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-3 text-xs text-slate-600 space-y-1">
+                  {testResult.message && (
+                    <p className="text-rose-600 font-bold bg-rose-50 p-2 rounded-lg border border-rose-100">
+                      ⚠️ {testResult.message}
+                    </p>
+                  )}
+                  {testResult.ruleUsed ? (
+                    <>
+                      <p className="font-bold">
+                        Diferencia: {testResult.diff > 0 ? `+${testResult.diff} min tarde` : `${Math.abs(testResult.diff)} min antes de hora`}
+                      </p>
+                      <p className="text-slate-400">
+                        Regla aplicada: {testResult.ruleUsed.name || testResult.ruleUsed.campus?.name || "Global"} ({testResult.ruleUsed.expectedEntryTime} oficial)
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-slate-400 italic">No hay regla configurada (Se asume A tiempo por defecto)</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-2xl bg-blue-50/50 p-4 border border-blue-100 text-xs text-blue-900 flex items-start gap-2.5">
+                <HelpCircle size={18} className="text-[#1967D2] shrink-0 mt-0.5" />
+                <p className="leading-relaxed">
+                  <strong>¿Cómo funciona la prioridad?</strong> El sistema busca primero una regla que coincida con la Sede y Rol del usuario. Si no encuentra, busca por Sede, luego por Rol, y finalmente usa la Regla Global.
+                </p>
+              </div>
+            </Card>
+          </div>
+        </div>
       </div>
 
       {mounted && typeof document !== "undefined" && modalContent && createPortal(modalContent, document.body)}
+      {mounted && typeof document !== "undefined" && inspectModalContent && createPortal(inspectModalContent, document.body)}
     </>
   )
 }

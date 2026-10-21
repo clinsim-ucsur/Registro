@@ -111,7 +111,7 @@ export async function editUserAction(
     dni: string
     role: Role
     campusId?: string | null
-    defaultShift?: "MANANA" | "INTERMEDIO" | "TARDE" | null
+    defaultShift?: "MANANA" | "INTERMEDIO" | "TARDE" | "NOCHE" | null
   }
 ) {
   try {
@@ -141,7 +141,7 @@ export async function createUserAction(data: {
   dni: string
   role: Role
   campusId?: string | null
-  defaultShift?: "MANANA" | "INTERMEDIO" | "TARDE" | null
+  defaultShift?: "MANANA" | "INTERMEDIO" | "TARDE" | "NOCHE" | null
 }) {
   try {
     const existing = await prisma.user.findUnique({ where: { dni: data.dni } })

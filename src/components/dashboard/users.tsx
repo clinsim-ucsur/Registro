@@ -236,11 +236,27 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                           )}
                         </TableCell>
                         <TableCell className="text-xs font-bold text-slate-600">
-                          {user.defaultShift ? (
-                            <span className="px-2.5 py-1 rounded-md bg-amber-50 text-amber-700 border border-amber-100 uppercase tracking-wider text-[10px]">
-                              ⏰ {user.defaultShift}
+                          {user.defaultShift === "MANANA" && (
+                            <span className="px-2.5 py-1 rounded-md bg-amber-50 text-amber-700 border border-amber-200 uppercase tracking-wider text-[10px] font-black">
+                              🌅 Mañana
                             </span>
-                          ) : (
+                          )}
+                          {user.defaultShift === "INTERMEDIO" && (
+                            <span className="px-2.5 py-1 rounded-md bg-cyan-50 text-cyan-700 border border-cyan-200 uppercase tracking-wider text-[10px] font-black">
+                              ⛅ Intermedio
+                            </span>
+                          )}
+                          {user.defaultShift === "TARDE" && (
+                            <span className="px-2.5 py-1 rounded-md bg-purple-50 text-purple-700 border border-purple-200 uppercase tracking-wider text-[10px] font-black">
+                              🌆 Tarde
+                            </span>
+                          )}
+                          {user.defaultShift === "NOCHE" && (
+                            <span className="px-2.5 py-1 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200 uppercase tracking-wider text-[10px] font-black">
+                              🌙 Noche
+                            </span>
+                          )}
+                          {!user.defaultShift && (
                             <span className="text-slate-400 font-normal">—</span>
                           )}
                         </TableCell>
@@ -370,6 +386,7 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                 <option value="MANANA">Mañana (6:00 AM — 3:00 PM)</option>
                 <option value="INTERMEDIO">Intermedio (9:00 AM — 6:00 PM / Sáb 8 AM / Dom 10 AM)</option>
                 <option value="TARDE">Tarde (1:00 PM — 10:00 PM)</option>
+                <option value="NOCHE">Noche / Guardia (9:00 PM — 6:00 AM)</option>
               </select>
             </div>
           )}
@@ -461,6 +478,7 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                 <option value="MANANA">Mañana (6:00 AM — 3:00 PM)</option>
                 <option value="INTERMEDIO">Intermedio (9:00 AM — 6:00 PM / Sáb 8 AM / Dom 10 AM)</option>
                 <option value="TARDE">Tarde (1:00 PM — 10:00 PM)</option>
+                <option value="NOCHE">Noche / Guardia (9:00 PM — 6:00 AM)</option>
               </select>
             </div>
           )}

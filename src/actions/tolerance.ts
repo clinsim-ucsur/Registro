@@ -3,10 +3,12 @@
 import { revalidatePath } from "next/cache"
 import prisma from "@/lib/prisma"
 import { requireAdmin } from "@/lib/session"
-import { Role } from "@prisma/client"
+import { Shift, Role } from "@prisma/client"
 
 export type ToleranceRuleInput = {
   id?: string
+  name?: string | null
+  shift?: Shift | null
   campusId?: string | null
   role?: Role | null
   expectedEntryTime: string // "HH:mm"
@@ -44,12 +46,16 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
 
     const cleanCampusId = data.campusId && data.campusId.trim() !== "" ? data.campusId : null
     const cleanRole = data.role ? data.role : null
+    const cleanName = data.name && data.name.trim() !== "" ? data.name.trim() : null
+    const cleanShift = data.shift ? data.shift : null
 
     // Si tiene ID, actualizamos directamente
     if (data.id) {
       await prisma.toleranceRule.update({
         where: { id: data.id },
         data: {
+          name: cleanName,
+          shift: cleanShift,
           campusId: cleanCampusId,
           role: cleanRole,
           expectedEntryTime: data.expectedEntryTime,
@@ -62,11 +68,12 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
       return { success: true, message: "Regla de horario actualizada con éxito." }
     }
 
-    // Si no tiene ID, verificamos si ya existe una regla con el mismo alcance (sede + rol)
+    // Si no tiene ID, verificamos si ya existe una regla con el mismo alcance (sede + rol + hora/turno)
     const existing = await prisma.toleranceRule.findFirst({
       where: {
         campusId: cleanCampusId,
         role: cleanRole,
+        expectedEntryTime: data.expectedEntryTime,
       },
     })
 
@@ -74,18 +81,21 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
       await prisma.toleranceRule.update({
         where: { id: existing.id },
         data: {
-          expectedEntryTime: data.expectedEntryTime,
+          name: cleanName ?? existing.name,
+          shift: cleanShift ?? existing.shift,
           earlyEntryToleranceMinutes: early,
           gracePeriodMinutes: grace,
           lateToleranceMinutes: late,
         },
       })
       revalidatePath("/dashboard")
-      return { success: true, message: "Se actualizó la regla existente para este alcance." }
+      return { success: true, message: "Se actualizó la regla existente para este horario y alcance." }
     }
 
     await prisma.toleranceRule.create({
       data: {
+        name: cleanName,
+        shift: cleanShift,
         campusId: cleanCampusId,
         role: cleanRole,
         expectedEntryTime: data.expectedEntryTime,

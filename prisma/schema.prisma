@@ -37,9 +37,10 @@ enum RecordStatus {
 }
 
 enum Shift {
-  MANANA      // ~07:00 / 08:00
-  INTERMEDIO  // ~11:00 / 12:00
-  TARDE       // ~14:00 / 15:00
+  MANANA      // ~06:00 / 08:00
+  INTERMEDIO  // ~09:00 / 11:00
+  TARDE       // ~13:00 / 14:00
+  NOCHE       // ~19:00 / 20:00 / 21:00
   DESCANSO    // Día libre programado / descanso semanal
 }
 
@@ -140,6 +141,9 @@ model AttendanceRecord {
 
 model ToleranceRule {
   id                    String   @id @default(cuid())
+  
+  name                  String?  // Nombre descriptivo (ej: "Turno Mañana Villa", "Guardia Nocturna")
+  shift                 Shift?   // Turno al que pertenece la regla (MANANA, INTERMEDIO, TARDE, NOCHE)
   
   campusId              String?  
   campus                Campus?  @relation(fields: [campusId], references: [id])
