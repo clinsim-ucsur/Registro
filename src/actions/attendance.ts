@@ -72,32 +72,73 @@ export async function validateUserAction(dni: string, role: Role) {
       return { success: false, message: "⚠ El DNI existe, pero el rol seleccionado es incorrecto." }
     }
 
-    // Si es técnico, consultar si hoy tiene descanso programado o turno específico
-    let todayScheduleNote: string | null = null
-    let isRestDay = false
-    if (role === Role.TECNICO) {
-      const now = new Date()
-      const limaDateStr = new Intl.DateTimeFormat("en-CA", {
-        timeZone: "America/Lima",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      }).format(now)
+    // Consultar en paralelo: último registro de hoy y cronograma de técnico (si aplica)
+    const now = new Date()
+    const limaOffset = -5 * 60 * 60 * 1000
+    const limaToday = new Date(now.getTime() + limaOffset)
+    limaToday.setUTCHours(0, 0, 0, 0)
+    const startOfDayUTC = new Date(limaToday.getTime() - limaOffset)
+    const endOfDayUTC = new Date(startOfDayUTC.getTime() + 24 * 60 * 60 * 1000)
 
-      const sched = await prisma.technicianSchedule.findUnique({
+    const limaDateStr = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Lima",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(now)
+
+    const [lastRecord, todaySched] = await Promise.all([
+      prisma.attendanceRecord.findFirst({
         where: {
-          userId_date: {
-            userId: user.id,
-            date: limaDateStr,
-          },
+          userId: user.id,
+          timestamp: { gte: startOfDayUTC, lt: endOfDayUTC },
         },
-        include: { campus: true }
-      })
+        orderBy: { timestamp: "desc" },
+        select: { type: true },
+      }),
+      role === Role.TECNICO
+        ? prisma.technicianSchedule.findUnique({
+            where: {
+              userId_date: {
+                userId: user.id,
+                date: limaDateStr,
+              },
+            },
+            include: { campus: true },
+          })
+        : Promise.resolve(null),
+    ])
 
-      if (sched?.shift === Shift.DESCANSO) {
-        return {
-          success: false,
-          message: `🏖️ Hola ${user.name}, hoy tienes asignado tu DÍA DE DESCANSO según el cronograma oficial. No requieres registrar asistencia.`,
+    if (role === Role.TECNICO && todaySched?.shift === Shift.DESCANSO) {
+      return {
+        success: false,
+        message: `🏖️ Hola ${user.name}, hoy tienes asignado tu DÍA DE DESCANSO según el cronograma oficial. No requieres registrar asistencia.`,
+      }
+    }
+
+    let technicianAssignment: {
+      campusName: string | null
+      shift: string
+      expectedEntryTime: string
+      source: "SCHEDULE" | "DEFAULT_PROFILE"
+    } | null = null
+
+    if (role === Role.TECNICO) {
+      if (todaySched) {
+        technicianAssignment = {
+          campusName: todaySched.campus?.name || user.campus?.name || null,
+          shift: todaySched.shift,
+          expectedEntryTime: todaySched.expectedEntryTime,
+          source: "SCHEDULE",
+        }
+      } else {
+        const defaultShift = user.defaultShift || Shift.MANANA
+        const preset = DEFAULT_SHIFT_TIMES[defaultShift] || DEFAULT_SHIFT_TIMES.MANANA
+        technicianAssignment = {
+          campusName: user.campus?.name || null,
+          shift: defaultShift,
+          expectedEntryTime: preset.entry,
+          source: "DEFAULT_PROFILE",
         }
       }
     }
@@ -111,6 +152,8 @@ export async function validateUserAction(dni: string, role: Role) {
         campusName: user.campus?.name || null,
         defaultShift: user.defaultShift,
       },
+      lastRecordType: lastRecord?.type ?? null,
+      technicianAssignment,
     }
   } catch (error) {
     console.error("[validateUserAction] Error:", error)

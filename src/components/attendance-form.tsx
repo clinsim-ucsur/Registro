@@ -8,7 +8,10 @@ import { Role, RecordType, Shift } from "@prisma/client"
 import { validateUserAction, registerAttendanceAction, syncOfflineRecordsAction, getTodayAttendanceStateAction } from "@/actions/attendance"
 import { getTodayTechnicianAssignmentAction } from "@/actions/schedules"
 import { toast } from "sonner"
-import { Loader2, LogIn, LogOut, Search, UserCheck, CheckCircle2, WifiOff } from "lucide-react"
+import {
+  Loader2, LogIn, LogOut, Search, UserCheck, CheckCircle2, WifiOff,
+  Wifi, RefreshCw, ShieldCheck, AlertCircle, AlertTriangle
+} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
@@ -72,6 +75,10 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
   const [isOffline, setIsOffline] = useState(false)
   const [todayLastRecord, setTodayLastRecord] = useState<RecordType | null | "loading">(null)
 
+  const [isContingencyMode, setIsContingencyMode] = useState(false)
+  const [connectionError, setConnectionError] = useState(false)
+  const [pendingOfflineCount, setPendingOfflineCount] = useState(0)
+
   const availableCampuses = (propCampuses && propCampuses.length > 0)
     ? propCampuses.map(c => c.name)
     : DEFAULT_CAMPUSES
@@ -89,29 +96,46 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
   })
 
   // Detección y Sincronización Offline
+  const syncOfflineRecords = async () => {
+    if (typeof window === "undefined") return
+    const localData = localStorage.getItem('offline_records')
+    if (!localData) {
+      setPendingOfflineCount(0)
+      return
+    }
+
+    try {
+      const records = JSON.parse(localData)
+      if (!Array.isArray(records) || records.length === 0) {
+        setPendingOfflineCount(0)
+        return
+      }
+
+      setPendingOfflineCount(records.length)
+      const res = await syncOfflineRecordsAction(records)
+      if (res.success) {
+        localStorage.removeItem('offline_records')
+        setPendingOfflineCount(0)
+        setIsContingencyMode(false)
+        toast.success(`Se sincronizaron automáticamente ${res.syncedCount} registros locales.`)
+        if (res.errorCount && res.errorCount > 0) {
+          toast.warning(`Se ignoraron ${res.errorCount} registros (DNI inválidos).`)
+        }
+      }
+    } catch (error) {
+      console.error("No se pudo sincronizar", error)
+    }
+  }
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       setIsOffline(!navigator.onLine)
-    }
-
-    const syncOfflineRecords = async () => {
       const localData = localStorage.getItem('offline_records')
-      if (!localData) return
-      
-      const records = JSON.parse(localData)
-      if (records.length === 0) return
-
-      try {
-        const res = await syncOfflineRecordsAction(records)
-        if (res.success) {
-          localStorage.removeItem('offline_records')
-          toast.success(`Se sincronizaron automáticamente ${res.syncedCount} registros offline.`)
-          if (res.errorCount && res.errorCount > 0) {
-            toast.warning(`Se ignoraron ${res.errorCount} registros (DNI inválidos).`)
-          }
-        }
-      } catch (error) {
-        console.error("No se pudo sincronizar", error)
+      if (localData) {
+        try {
+          const recs = JSON.parse(localData)
+          setPendingOfflineCount(Array.isArray(recs) ? recs.length : 0)
+        } catch {}
       }
     }
 
@@ -127,7 +151,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
 
     window.addEventListener('online', handleOnline)
     window.addEventListener('offline', handleOffline)
-    
+
     if (typeof window !== "undefined" && navigator.onLine) {
       syncOfflineRecords()
     }
@@ -148,56 +172,61 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
     } else {
       setValidatedUser(null)
       setTodayLastRecord(null)
+      setConnectionError(false)
     }
   }, [watchDni, watchRole])
 
-  const validateDni = async (dni: string, role: Role) => {
-    if (isOffline) {
-      setValidatedUser({ id: 'offline_user', name: `Pendiente de validación` })
+  const validateDni = async (dni: string, role: Role, retryAttempts = 1) => {
+    if (isOffline || isContingencyMode) {
+      setValidatedUser({ id: `offline_${dni}`, name: `Usuario DNI: ${dni} (Modo Local)` })
       setTodayLastRecord(null)
       setTechnicianAssignment(null)
+      setConnectionError(false)
       return
     }
 
     setIsValidating(true)
+    setConnectionError(false)
+
     try {
-      const res = await validateUserAction(dni, role)
+      let res: any = null
+      let lastError: any = null
+
+      for (let attempt = 0; attempt <= retryAttempts; attempt++) {
+        try {
+          res = await validateUserAction(dni, role)
+          break
+        } catch (err) {
+          lastError = err
+          if (attempt < retryAttempts) {
+            await new Promise((r) => setTimeout(r, 600))
+          }
+        }
+      }
+
+      if (!res && lastError) {
+        throw lastError
+      }
+
       if (res.success && res.user) {
         setValidatedUser(res.user)
         toast.success(`Usuario encontrado: ${res.user.name}`)
 
-        // Si es técnico, consultar su asignación de sede y turno para hoy
-        if (role === Role.TECNICO) {
-          try {
-            const assign = await getTodayTechnicianAssignmentAction(res.user.id)
-            if (assign?.campus?.name) {
-              setTechnicianAssignment({
-                campusName: assign.campus.name,
-                shift: assign.shift,
-                expectedEntryTime: assign.expectedEntryTime,
-                source: assign.source,
-              })
-              setSelectedShift((assign.shift as Shift) || null)
-              // Asignar la sede al formulario
-              form.setValue("campusId", assign.campus.name)
-            } else {
-              setTechnicianAssignment(null)
-              setSelectedShift(null)
-            }
-          } catch (e) {
-            console.error("Error al obtener asignación de técnico:", e)
-            setTechnicianAssignment(null)
-            setSelectedShift(null)
+        // Asignación de técnico recibida directamente en 1 roundtrip
+        if (role === Role.TECNICO && res.technicianAssignment) {
+          setTechnicianAssignment(res.technicianAssignment)
+          setSelectedShift((res.technicianAssignment.shift as Shift) || null)
+          if (res.technicianAssignment.campusName) {
+            form.setValue("campusId", res.technicianAssignment.campusName)
           }
         } else {
           setTechnicianAssignment(null)
           setSelectedShift(null)
         }
 
-        // Consultar estado de asistencia hoy (ENTRADA / SALIDA)
-        setTodayLastRecord("loading")
-        const stateRes = await getTodayAttendanceStateAction(res.user.id)
-        setTodayLastRecord(stateRes.lastRecordType)
+        // Estado del día recibido directamente
+        setTodayLastRecord(res.lastRecordType ?? null)
+        setConnectionError(false)
       } else {
         setValidatedUser(null)
         setTodayLastRecord(null)
@@ -206,7 +235,9 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         toast.error(res.message || "Usuario no encontrado")
       }
     } catch (error) {
-      toast.error("Error de conexión al validar")
+      console.error("Error al validar DNI:", error)
+      setConnectionError(true)
+      toast.error("Error de conexión al validar. Puede reintentar o activar el Modo Local.")
     } finally {
       setIsValidating(false)
     }
@@ -256,8 +287,8 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
     })
 
   const onSubmit = async (data: z.infer<typeof formSchema>, type: RecordType) => {
-    if (!validatedUser) {
-      toast.error("Debe validar su DNI primero")
+    if (!validatedUser && !isOffline && !isContingencyMode) {
+      toast.error("Debe ingresar un DNI válido primero")
       return
     }
 
@@ -276,7 +307,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       longitude: c.longitude ?? null,
       radiusMeters: c.radiusMeters ?? 300,
     }))
-    const targetCampusName = data.campusId || technicianAssignment?.campusName || validatedUser.campusName || undefined
+    const targetCampusName = data.campusId || technicianAssignment?.campusName || validatedUser?.campusName || undefined
 
     const needsGeo = targetCampusName
       ? geoCampuses.some((c) => c.name.toLowerCase() === targetCampusName.toLowerCase() && isGeoActive(c))
@@ -297,12 +328,14 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       }
     }
     
-    if (isOffline) {
+    // Si está offline o en modo contingencia local por red inestable
+    if (isOffline || isContingencyMode) {
+      const fallbackCampus = targetCampusName || "Campus Villa"
       const newRecord = {
         dni: data.dni,
         role: data.role,
         type: type,
-        campusId: data.campusId,
+        campusId: fallbackCampus,
         courseId: data.courseId,
         location,
         timestamp: new Date().toISOString()
@@ -310,8 +343,9 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       const localData = JSON.parse(localStorage.getItem('offline_records') || '[]')
       localData.push(newRecord)
       localStorage.setItem('offline_records', JSON.stringify(localData))
-      
-      toast.success("Registro guardado en la memoria del dispositivo.")
+      setPendingOfflineCount(localData.length)
+
+      toast.success(`✅ Marcación (${type === "ENTRADA" ? "Ingreso" : "Salida"}) guardada en la memoria local del dispositivo. Se sincronizará automáticamente.`, { duration: 7000 })
       form.reset({ role: watchRole, dni: "", campusId: data.campusId, courseId: data.courseId })
       setValidatedUser(null)
       setIsSubmitting(null)
@@ -320,7 +354,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
 
     try {
       const res = await registerAttendanceAction({
-        userId: validatedUser.id,
+        userId: validatedUser!.id,
         role: data.role,
         type: type,
         shift: selectedShift || undefined,
@@ -342,7 +376,29 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         toast.error(res.message)
       }
     } catch (error: any) {
-      toast.error(error?.message || "Ocurrió un error inesperado al registrar.")
+      console.warn("Fallo de red en registro online, activando respaldo local:", error)
+      // Respaldo automático local para que el colaborador no pierda su marcación ni su hora
+      const fallbackCampus = targetCampusName || "Campus Villa"
+      const newRecord = {
+        dni: data.dni,
+        role: data.role,
+        type: type,
+        campusId: fallbackCampus,
+        courseId: data.courseId,
+        location,
+        timestamp: new Date().toISOString()
+      }
+      const localData = JSON.parse(localStorage.getItem('offline_records') || '[]')
+      localData.push(newRecord)
+      localStorage.setItem('offline_records', JSON.stringify(localData))
+      setPendingOfflineCount(localData.length)
+
+      toast.warning(`La red se interrumpió, pero su marcación (${type}) fue guardada de inmediato en el dispositivo y se sincronizará automáticamente.`, { duration: 8000 })
+      form.reset({ role: watchRole, dni: "", campusId: undefined, courseId: undefined })
+      setValidatedUser(null)
+      setTodayLastRecord(null)
+      setTechnicianAssignment(null)
+      setSelectedShift(null)
     } finally {
       setIsSubmitting(null)
     }
@@ -352,13 +408,39 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
     <div className="bg-white rounded-[2rem] p-8 md:p-10 shadow-[0_45px_75px_-15px_rgba(0,0,0,0.6)] w-full relative overflow-hidden transition-all duration-500 hover:-translate-y-2">
       <div className="absolute top-0 left-0 w-full h-2.5 bg-gradient-to-r from-blue-400 to-[#1967D2]"></div>
 
+      {/* Barra de Estado de Conexión y Diagnóstico de Red */}
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-6 p-2.5 rounded-2xl bg-slate-50 border border-slate-200/80 text-xs">
+        <div className="flex items-center gap-2">
+          {isOffline ? (
+            <span className="flex items-center gap-1.5 font-black text-rose-600 bg-rose-50 px-3 py-1 rounded-full border border-rose-200">
+              <WifiOff size={14} /> Modo Sin Conexión (Offline)
+            </span>
+          ) : isContingencyMode ? (
+            <span className="flex items-center gap-1.5 font-black text-amber-700 bg-amber-50 px-3 py-1 rounded-full border border-amber-200">
+              <ShieldCheck size={14} className="text-amber-600" /> Modo Contingencia Local Activo
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
+              <Wifi size={14} className="text-emerald-600" /> Servidor Conectado (En Línea)
+            </span>
+          )}
+        </div>
+
+        {pendingOfflineCount > 0 && (
+          <button
+            type="button"
+            onClick={syncOfflineRecords}
+            className="flex items-center gap-1.5 font-black text-[#1967D2] hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded-full border border-blue-200 transition-colors cursor-pointer"
+            title="Sincronizar registros guardados en la memoria del dispositivo con la base de datos"
+          >
+            <RefreshCw size={12} className="animate-spin" />
+            {pendingOfflineCount} {pendingOfflineCount === 1 ? "registro pendiente" : "registros pendientes"} • Sincronizar
+          </button>
+        )}
+      </div>
+
       <h2 className="text-2xl md:text-3xl font-black text-slate-800 mb-8 text-center tracking-wide">
         Registro de Asistencia
-        {isOffline && (
-          <div className="flex items-center justify-center gap-2 mt-3 text-sm font-bold text-rose-500 bg-rose-50 w-fit mx-auto px-4 py-1.5 rounded-full border border-rose-100 animate-pulse">
-            <WifiOff size={16} /> MODO OFFLINE ACTIVADO
-          </div>
-        )}
       </h2>
 
       <Form {...form}>
@@ -478,6 +560,44 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                     )}
                   </div>
                 </FormControl>
+
+                {connectionError && (
+                  <div className="rounded-2xl border border-amber-300 bg-amber-50/90 p-4 text-xs space-y-2.5 mt-3 animate-fade-in-up shadow-xs">
+                    <div className="flex items-center gap-2 font-black text-amber-900">
+                      <WifiOff size={16} className="text-amber-700" />
+                      <span>Problema de conexión con el servidor en esta red</span>
+                    </div>
+                    <p className="text-amber-800 leading-relaxed font-medium">
+                      Ocurrió un problema de enlace o lentitud en la red Wi-Fi de esta sede. Para no retrasar su marcación ni perder su hora oficial de ingreso/salida, puede activar el <strong>Modo Local</strong> o reintentar la conexión.
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => validateDni(watchDni, watchRole, 2)}
+                        disabled={isValidating}
+                        className="h-9 px-4 rounded-xl font-black bg-amber-600 hover:bg-amber-700 text-white shadow-xs"
+                      >
+                        <RefreshCw size={14} className={`mr-1.5 ${isValidating ? "animate-spin" : ""}`} /> Reintentar Conexión
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setIsContingencyMode(true)
+                          setValidatedUser({ id: `offline_${watchDni}`, name: `Usuario DNI: ${watchDni} (Modo Local)` })
+                          setConnectionError(false)
+                          toast.info("Modo contingencia activado: Su marcación se guardará de inmediato en el dispositivo.")
+                        }}
+                        className="h-9 px-4 rounded-xl font-black border-amber-400 bg-white text-amber-900 hover:bg-amber-100 shadow-xs"
+                      >
+                        <ShieldCheck size={14} className="mr-1.5 text-emerald-600" /> Marcar en Modo Local
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
                 {validatedUser && (
                   <div className="space-y-2 mt-2">
                     <p className="text-emerald-600 text-sm flex items-center gap-1.5 font-bold bg-emerald-50 p-2.5 rounded-md border border-emerald-100">
@@ -593,12 +713,14 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
             // Técnicos y Pacientes Sim. pueden marcar salida; Docentes registran solo Entrada
             const canMarkSalida = watchRole !== Role.DOCENTE
 
+            const isButtonDisabled = (!validatedUser && !isOffline && !isContingencyMode) || isSubmitting !== null || isLoadingState
+
             return (
               <div className="grid grid-cols-1 gap-5 pt-4">
                 {showEntrada && (
                   <Button
                     type="button"
-                    disabled={!validatedUser || isSubmitting !== null || isLoadingState}
+                    disabled={isButtonDisabled}
                     onClick={form.handleSubmit((d) => onSubmit(d, RecordType.ENTRADA))}
                     className="h-20 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(25,103,210,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(25,103,210,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none"
                   >
@@ -612,7 +734,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                 {showSalida && canMarkSalida && (
                   <Button
                     type="button"
-                    disabled={!validatedUser || isSubmitting !== null || isLoadingState}
+                    disabled={isButtonDisabled}
                     onClick={form.handleSubmit((d) => onSubmit(d, RecordType.SALIDA))}
                     className="h-20 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(15,23,42,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(15,23,42,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none"
                   >
