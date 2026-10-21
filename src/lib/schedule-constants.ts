@@ -36,6 +36,7 @@ export type ShiftPreset = {
   name: string
   scheduleText: string
   entry: string
+  daysOfWeek?: string
   early: number
   grace: number
   late: number
@@ -48,6 +49,7 @@ export const TECHNICIAN_SHIFT_PRESETS: ShiftPreset[] = [
     name: "Mañana (Todos los días)",
     scheduleText: "6:00 AM — 3:00 PM",
     entry: "06:00",
+    daysOfWeek: "1,2,3,4,5,6,0",
     early: 15,
     grace: 10,
     late: 30,
@@ -55,9 +57,10 @@ export const TECHNICIAN_SHIFT_PRESETS: ShiftPreset[] = [
   {
     id: "INTERMEDIO_LV",
     shift: Shift.INTERMEDIO,
-    name: "Intermedio Lunes a Viernes",
+    name: "Intermedio L-V y Domingo",
     scheduleText: "9:00 AM — 6:00 PM",
     entry: "09:00",
+    daysOfWeek: "1,2,3,4,5,0",
     early: 15,
     grace: 10,
     late: 30,
@@ -68,6 +71,7 @@ export const TECHNICIAN_SHIFT_PRESETS: ShiftPreset[] = [
     name: "Intermedio Sábado",
     scheduleText: "8:00 AM — 5:00 PM",
     entry: "08:00",
+    daysOfWeek: "6",
     early: 15,
     grace: 10,
     late: 30,
@@ -75,9 +79,10 @@ export const TECHNICIAN_SHIFT_PRESETS: ShiftPreset[] = [
   {
     id: "INTERMEDIO_DOM",
     shift: Shift.INTERMEDIO,
-    name: "Intermedio Domingo",
+    name: "Intermedio Domingo Tardío",
     scheduleText: "10:00 AM — 7:00 PM",
     entry: "10:00",
+    daysOfWeek: "0",
     early: 15,
     grace: 10,
     late: 30,
@@ -88,6 +93,7 @@ export const TECHNICIAN_SHIFT_PRESETS: ShiftPreset[] = [
     name: "Tarde (Todos los días)",
     scheduleText: "1:00 PM — 10:00 PM",
     entry: "13:00",
+    daysOfWeek: "1,2,3,4,5,6,0",
     early: 15,
     grace: 10,
     late: 30,
@@ -98,6 +104,7 @@ export const TECHNICIAN_SHIFT_PRESETS: ShiftPreset[] = [
     name: "Noche / Guardia",
     scheduleText: "9:00 PM — 6:00 AM",
     entry: "21:00",
+    daysOfWeek: "1,2,3,4,5,6,0",
     early: 15,
     grace: 10,
     late: 30,

@@ -356,26 +356,48 @@ export async function getTodayTechnicianAssignmentAction(userId: string) {
     })
 
     const userShift = user?.defaultShift || Shift.MANANA
-    const def = DEFAULT_SHIFT_TIMES[userShift]
+    const def = DEFAULT_SHIFT_TIMES[userShift] || DEFAULT_SHIFT_TIMES.MANANA
 
-    // Consultar si existe una regla personalizada para este turno y sede
+    // Día de la semana en Lima (0=Dom, 1=Lun, ..., 6=Sáb)
+    const currentDayOfWeek = new Date(`${limaDateStr}T12:00:00Z`).getUTCDay()
+
+    // Consultar si existe una regla personalizada para este turno, sede y día de la semana
+    let expectedEntry = def.entry
     let early = def.early
     let grace = def.grace
     let late = def.late
-    if (user?.campus?.id) {
-      const shiftRule = await prisma.toleranceRule.findFirst({
-        where: {
-          role: Role.TECNICO,
-          expectedEntryTime: def.entry,
-          OR: [{ campusId: user.campus.id }, { campusId: null }],
-        },
-        orderBy: [{ campusId: "desc" }],
-      })
-      if (shiftRule) {
-        early = shiftRule.earlyEntryToleranceMinutes ?? early
-        grace = shiftRule.gracePeriodMinutes ?? grace
-        late = shiftRule.lateToleranceMinutes ?? late
-      }
+
+    const shiftRules = await prisma.toleranceRule.findMany({
+      where: {
+        role: Role.TECNICO,
+        OR: [
+          ...(user?.campus?.id ? [{ campusId: user.campus.id }] : []),
+          { campusId: null },
+        ],
+      },
+      orderBy: [{ campusId: "desc" }],
+    })
+
+    // Reglas que coinciden con su turno
+    const matchingRules = shiftRules.filter((r) => {
+      if (r.shift) return r.shift === userShift
+      if (userShift === Shift.INTERMEDIO) return ["08:00", "09:00", "10:00"].includes(r.expectedEntryTime)
+      return r.expectedEntryTime === def.entry
+    })
+
+    // Reglas para el día de hoy según daysOfWeek
+    const rulesForToday = matchingRules.filter((r) => {
+      if (!r.daysOfWeek || r.daysOfWeek.trim() === "" || r.daysOfWeek === "ALL") return true
+      const days = r.daysOfWeek.split(",").map((d) => Number(d.trim()))
+      return days.includes(currentDayOfWeek)
+    })
+
+    const activeRule = rulesForToday[0] || matchingRules[0]
+    if (activeRule) {
+      expectedEntry = activeRule.expectedEntryTime
+      early = activeRule.earlyEntryToleranceMinutes ?? early
+      grace = activeRule.gracePeriodMinutes ?? grace
+      late = activeRule.lateToleranceMinutes ?? late
     }
 
     return {
@@ -384,7 +406,7 @@ export async function getTodayTechnicianAssignmentAction(userId: string) {
       date: limaDateStr,
       campus: user?.campus || null,
       shift: userShift,
-      expectedEntryTime: def.entry,
+      expectedEntryTime: expectedEntry,
       earlyEntryToleranceMinutes: early,
       gracePeriodMinutes: grace,
       lateToleranceMinutes: late,

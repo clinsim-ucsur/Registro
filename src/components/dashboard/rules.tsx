@@ -8,7 +8,7 @@ import { toast } from "sonner"
 import {
   Clock, Plus, Settings2, Trash2, Edit3, ShieldAlert, CheckCircle2,
   AlertTriangle, HelpCircle, Sparkles, Building2, UserCircle2, Loader2,
-  PlayCircle, Users, Sun, Sunset, Moon, Coffee, Eye
+  PlayCircle, Users, Sun, Sunset, Moon, Coffee, Eye, CalendarDays, CalendarCheck2
 } from "lucide-react"
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -25,6 +25,7 @@ export type ToleranceRuleItem = {
   id: string
   name?: string | null
   shift?: Shift | null
+  daysOfWeek?: string | null
   campusId: string | null
   campus: { id: string; name: string } | null
   role: Role | null
@@ -32,6 +33,117 @@ export type ToleranceRuleItem = {
   earlyEntryToleranceMinutes?: number
   gracePeriodMinutes: number
   lateToleranceMinutes: number
+}
+
+export const DAYS_OF_WEEK = [
+  { id: 1, short: "L", label: "Lun", full: "Lunes" },
+  { id: 2, short: "M", label: "Mar", full: "Martes" },
+  { id: 3, short: "M", label: "Mié", full: "Miércoles" },
+  { id: 4, short: "J", label: "Jue", full: "Jueves" },
+  { id: 5, short: "V", label: "Vie", full: "Viernes" },
+  { id: 6, short: "S", label: "Sáb", full: "Sábado" },
+  { id: 0, short: "D", label: "Dom", full: "Domingo" },
+]
+
+export function parseActiveDays(daysStr?: string | null): number[] {
+  if (!daysStr || daysStr.trim() === "" || daysStr === "ALL") {
+    return [1, 2, 3, 4, 5, 6, 0]
+  }
+  return daysStr
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => !isNaN(n))
+}
+
+export function getDaysSummary(daysStr?: string | null): {
+  title: string
+  subtext: string
+  badgeBg: string
+  badgeText: string
+  badgeBorder: string
+  activeDays: number[]
+} {
+  const active = parseActiveDays(daysStr)
+  if (active.length === 7) {
+    return {
+      title: "Todos los días (L — D)",
+      subtext: "Lunes a Domingo",
+      badgeBg: "bg-blue-50",
+      badgeText: "text-blue-700",
+      badgeBorder: "border-blue-200",
+      activeDays: active,
+    }
+  }
+
+  const isLV = active.length === 5 && [1, 2, 3, 4, 5].every((d) => active.includes(d))
+  if (isLV) {
+    return {
+      title: "Lunes a Viernes (L — V)",
+      subtext: "Horario estándar semanal",
+      badgeBg: "bg-emerald-50",
+      badgeText: "text-emerald-700",
+      badgeBorder: "border-emerald-200",
+      activeDays: active,
+    }
+  }
+
+  const isLVDom = active.length === 6 && [1, 2, 3, 4, 5, 0].every((d) => active.includes(d))
+  if (isLVDom) {
+    return {
+      title: "L-V y Domingos",
+      subtext: "Lunes a Viernes + Domingo",
+      badgeBg: "bg-teal-50",
+      badgeText: "text-teal-700",
+      badgeBorder: "border-teal-200",
+      activeDays: active,
+    }
+  }
+
+  const isSab = active.length === 1 && active.includes(6)
+  if (isSab) {
+    return {
+      title: "Solo Sábados (S)",
+      subtext: "Horario especial de fin de semana",
+      badgeBg: "bg-amber-50",
+      badgeText: "text-amber-800",
+      badgeBorder: "border-amber-200",
+      activeDays: active,
+    }
+  }
+
+  const isDom = active.length === 1 && active.includes(0)
+  if (isDom) {
+    return {
+      title: "Solo Domingos (D)",
+      subtext: "Guardia o turno dominical",
+      badgeBg: "bg-purple-50",
+      badgeText: "text-purple-700",
+      badgeBorder: "border-purple-200",
+      activeDays: active,
+    }
+  }
+
+  const isFinde = active.length === 2 && active.includes(6) && active.includes(0)
+  if (isFinde) {
+    return {
+      title: "Fines de Semana (S — D)",
+      subtext: "Sábados y Domingos",
+      badgeBg: "bg-indigo-50",
+      badgeText: "text-indigo-700",
+      badgeBorder: "border-indigo-200",
+      activeDays: active,
+    }
+  }
+
+  const names = active.map((d) => DAYS_OF_WEEK.find((item) => item.id === d)?.label || String(d)).join(", ")
+  return {
+    title: names,
+    subtext: "Días específicos",
+    badgeBg: "bg-slate-100",
+    badgeText: "text-slate-700",
+    badgeBorder: "border-slate-200",
+    activeDays: active,
+  }
 }
 
 export type TechnicianUser = {
@@ -136,6 +248,7 @@ export function DashboardRules({
   const [formData, setFormData] = useState<ToleranceRuleInput>({
     name: "",
     shift: Shift.MANANA,
+    daysOfWeek: "1,2,3,4,5,6,0",
     campusId: "",
     role: Role.TECNICO,
     expectedEntryTime: "06:00",
@@ -183,9 +296,11 @@ export function DashboardRules({
     const targetShift = prefillShift || (activeShiftFilter !== "TODOS" ? (activeShiftFilter as Shift) : Shift.MANANA)
     let defEntry = "06:00"
     let defName = "Regla Turno Mañana"
+    let defDays = "1,2,3,4,5,6,0"
     if (targetShift === Shift.INTERMEDIO) {
       defEntry = "09:00"
       defName = "Regla Turno Intermedio"
+      defDays = "1,2,3,4,5,0"
     } else if (targetShift === Shift.TARDE) {
       defEntry = "13:00"
       defName = "Regla Turno Tarde"
@@ -197,6 +312,7 @@ export function DashboardRules({
     setFormData({
       name: defName,
       shift: targetShift,
+      daysOfWeek: defDays,
       campusId: "",
       role: Role.TECNICO,
       expectedEntryTime: defEntry,
@@ -213,6 +329,7 @@ export function DashboardRules({
       id: rule.id,
       name: rule.name || "",
       shift: rule.shift || null,
+      daysOfWeek: rule.daysOfWeek || "1,2,3,4,5,6,0",
       campusId: rule.campusId ?? "",
       role: rule.role,
       expectedEntryTime: rule.expectedEntryTime,
@@ -357,11 +474,24 @@ export function DashboardRules({
         </div>
 
         {(() => {
+          const daysSummary = getDaysSummary(inspectingRule.daysOfWeek)
           const affected = getAffectedTechnicians(inspectingRule)
           return (
             <div className="space-y-4">
+              <div className="p-3 bg-blue-50/80 border border-blue-200/80 rounded-2xl flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <CalendarDays size={16} className="text-[#1967D2]" />
+                  <span className="text-xs font-bold text-slate-700">
+                    Días en que aplica: <strong className="text-[#1967D2]">{daysSummary.title}</strong>
+                  </span>
+                </div>
+                <span className="text-xs font-mono font-black text-[#1967D2] bg-white px-2.5 py-0.5 rounded-lg border border-blue-200">
+                  Ingreso: {inspectingRule.expectedEntryTime}
+                </span>
+              </div>
+
               <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-2xl flex items-center justify-between text-xs font-bold text-slate-700">
-                <span>Total de técnicos vinculados:</span>
+                <span>Total de técnicos vinculados a este turno:</span>
                 <span className="bg-[#1967D2] text-white px-2.5 py-0.5 rounded-full font-black text-xs">
                   {affected.length}
                 </span>
@@ -498,6 +628,7 @@ export function DashboardRules({
                       shift: p.shift,
                       role: Role.TECNICO,
                       expectedEntryTime: p.entry,
+                      daysOfWeek: p.daysOfWeek || "1,2,3,4,5,6,0",
                       earlyEntryToleranceMinutes: p.early,
                       gracePeriodMinutes: p.grace,
                       lateToleranceMinutes: p.late,
@@ -514,6 +645,81 @@ export function DashboardRules({
                   </span>
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* DÍAS DE APLICACIÓN DEL TURNO */}
+          <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2.5">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                <CalendarDays size={14} className="text-[#1967D2]" /> Días en que aplica esta regla
+              </label>
+              <span className="text-[10px] font-extrabold text-[#1967D2] bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
+                {getDaysSummary(formData.daysOfWeek).title}
+              </span>
+            </div>
+
+            {/* Presets rápidos de días */}
+            <div className="flex flex-wrap gap-1.5">
+              {[
+                { label: "L-V (Lunes a Viernes)", val: "1,2,3,4,5" },
+                { label: "L-V y Domingo", val: "1,2,3,4,5,0" },
+                { label: "Solo Sábados", val: "6" },
+                { label: "Solo Domingos", val: "0" },
+                { label: "Fines de Semana (S-D)", val: "6,0" },
+                { label: "Todos los días (L-D)", val: "1,2,3,4,5,6,0" },
+              ].map((preset) => {
+                const isCurrent = formData.daysOfWeek === preset.val
+                return (
+                  <button
+                    key={preset.val}
+                    type="button"
+                    onClick={() => setFormData({ ...formData, daysOfWeek: preset.val })}
+                    className={`text-[10px] font-bold px-2.5 py-1 rounded-lg border transition-all ${
+                      isCurrent
+                        ? "bg-[#1967D2] text-white border-[#1967D2] shadow-xs"
+                        : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Toggle individual por cada día L M M J V S D */}
+            <div className="grid grid-cols-7 gap-1 pt-0.5">
+              {DAYS_OF_WEEK.map((d) => {
+                const currentActive = parseActiveDays(formData.daysOfWeek)
+                const isSelected = currentActive.includes(d.id)
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => {
+                      let next: number[]
+                      if (isSelected) {
+                        next = currentActive.filter((id) => id !== d.id)
+                      } else {
+                        next = [...currentActive, d.id]
+                      }
+                      if (next.length === 0) {
+                        toast.warning("Debe seleccionar al menos un día.")
+                        return
+                      }
+                      setFormData({ ...formData, daysOfWeek: next.join(",") })
+                    }}
+                    className={`py-1.5 px-1 rounded-xl border flex flex-col items-center justify-center transition-all ${
+                      isSelected
+                        ? "bg-blue-600 border-blue-600 text-white font-black shadow-xs ring-2 ring-blue-300"
+                        : "bg-white border-slate-200 text-slate-400 hover:bg-slate-100 font-bold"
+                    }`}
+                  >
+                    <span className="text-[11px] font-black">{d.short}</span>
+                    <span className="text-[9px] uppercase tracking-tighter opacity-90">{d.label}</span>
+                  </button>
+                )
+              })}
             </div>
           </div>
 
@@ -799,6 +1005,7 @@ export function DashboardRules({
                     ["19:00", "20:00", "21:00"].includes(rule.expectedEntryTime) ? "NOCHE" : null
                   )
                   const shiftConf = shiftKey ? SHIFT_CONFIG[shiftKey] : null
+                  const daysSummary = getDaysSummary(rule.daysOfWeek)
 
                   return (
                     <Card
@@ -873,8 +1080,40 @@ export function DashboardRules({
                         </div>
                       </div>
 
+                      {/* DÍAS EN QUE APLICA ESTA REGLA */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3.5 my-3.5 rounded-2xl bg-gradient-to-r from-slate-50 via-blue-50/20 to-slate-50 border border-slate-200/80">
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-black border ${daysSummary.badgeBg} ${daysSummary.badgeText} ${daysSummary.badgeBorder}`}>
+                            <CalendarDays size={13} /> {daysSummary.title}
+                          </span>
+                          <span className="text-[11px] text-slate-500 font-semibold hidden sm:inline">
+                            {daysSummary.subtext}
+                          </span>
+                        </div>
+
+                        {/* Mini chips circulares de días L M M J V S D */}
+                        <div className="flex items-center gap-1">
+                          {DAYS_OF_WEEK.map((d) => {
+                            const isActive = daysSummary.activeDays.includes(d.id)
+                            return (
+                              <span
+                                key={d.id}
+                                title={`${d.full}: ${isActive ? "Regla activa este día" : "No aplica"}`}
+                                className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] transition-all ${
+                                  isActive
+                                    ? "bg-[#1967D2] text-white font-black shadow-xs ring-1 ring-[#1967D2]"
+                                    : "bg-slate-200/60 text-slate-400 opacity-40 font-bold"
+                                }`}
+                              >
+                                {d.short}
+                              </span>
+                            )
+                          })}
+                        </div>
+                      </div>
+
                       {/* Resumen numérico en 4 columnas */}
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-4">
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
                         <div className="rounded-2xl bg-slate-50 p-3.5 border border-slate-100">
                           <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Hora Oficial</p>
                           <p className="text-xl font-black text-slate-800 mt-0.5">{rule.expectedEntryTime}</p>

@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache"
 import { PrismaClient, Role, RecordType, RecordStatus } from "@prisma/client"
 
 import prisma from "@/lib/prisma"
-import { limaMinutesOfDay } from "@/lib/timezone"
+import { limaMinutesOfDay, limaDayOfWeek } from "@/lib/timezone"
 import { checkGeofence } from "@/lib/geofence"
 import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
 import { Shift } from "@prisma/client"
@@ -233,9 +233,10 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
             shiftName: scheduledShift.shift,
           }
         } else {
-          // Si no tiene cronograma hoy, buscar regla específica para su turno base en su sede
+          // Si no tiene cronograma hoy, buscar regla específica para su turno base en su sede y día de la semana
           const userShift = (user.defaultShift || Shift.MANANA) as Shift
           const defShift = DEFAULT_SHIFT_TIMES[userShift] || DEFAULT_SHIFT_TIMES.MANANA
+          const currentDayOfWeek = limaDayOfWeek(recordTimestamp)
           
           const shiftRules = await prisma.toleranceRule.findMany({
             where: {
@@ -248,11 +249,41 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
             orderBy: [{ campusId: 'desc' }],
           })
 
-          // Buscar regla cuya hora de entrada coincida con su turno base
-          const matchedShiftRule = shiftRules.find(r => r.expectedEntryTime === defShift.entry)
+          // Filtrar reglas que correspondan a su turno
+          const matchingShiftRules = shiftRules.filter(r => {
+            if (r.shift) return r.shift === userShift
+            if (userShift === Shift.INTERMEDIO) return ["08:00", "09:00", "10:00"].includes(r.expectedEntryTime)
+            if (userShift === Shift.MANANA) return r.expectedEntryTime === "06:00"
+            if (userShift === Shift.TARDE) return r.expectedEntryTime === "13:00"
+            if (userShift === Shift.NOCHE) return r.expectedEntryTime === "21:00"
+            return r.expectedEntryTime === defShift.entry
+          })
+
+          // Filtrar por día de la semana según daysOfWeek
+          const rulesForToday = matchingShiftRules.filter(r => {
+            if (!r.daysOfWeek || r.daysOfWeek.trim() === "" || r.daysOfWeek === "ALL") return true
+            const days = r.daysOfWeek.split(",").map(d => Number(d.trim()))
+            return days.includes(currentDayOfWeek)
+          })
+
+          // Si hay varias reglas para hoy (ej: Domingo 9 AM y 10 AM en Turno Intermedio),
+          // seleccionar la regla más cercana a la hora de marcación del técnico
+          let matchedShiftRule = null
+          const candidateRules = rulesForToday.length > 0 ? rulesForToday : matchingShiftRules
+
+          if (candidateRules.length > 0) {
+            candidateRules.sort((a, b) => {
+              const diffA = Math.abs(getShiftDiffInMinutes(recordTimestamp, a.expectedEntryTime).diffInMinutes)
+              const diffB = Math.abs(getShiftDiffInMinutes(recordTimestamp, b.expectedEntryTime).diffInMinutes)
+              return diffA - diffB
+            })
+            matchedShiftRule = candidateRules[0]
+          }
+
+          const entryTime = matchedShiftRule?.expectedEntryTime ?? defShift.entry
 
           techRule = {
-            expectedEntryTime: defShift.entry,
+            expectedEntryTime: entryTime,
             earlyEntryToleranceMinutes: matchedShiftRule?.earlyEntryToleranceMinutes ?? defShift.early,
             gracePeriodMinutes: matchedShiftRule?.gracePeriodMinutes ?? defShift.grace,
             lateToleranceMinutes: matchedShiftRule?.lateToleranceMinutes ?? defShift.late,

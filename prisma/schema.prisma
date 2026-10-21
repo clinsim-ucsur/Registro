@@ -144,6 +144,7 @@ model ToleranceRule {
   
   name                  String?  // Nombre descriptivo (ej: "Turno Mañana Villa", "Guardia Nocturna")
   shift                 Shift?   // Turno al que pertenece la regla (MANANA, INTERMEDIO, TARDE, NOCHE)
+  daysOfWeek            String?  // Días aplicables: ej: "1,2,3,4,5" (1=Lun..5=Vie, 6=Sáb, 0=Dom), null = Todos los días
   
   campusId              String?  
   campus                Campus?  @relation(fields: [campusId], references: [id])

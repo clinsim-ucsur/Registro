@@ -9,6 +9,7 @@ export type ToleranceRuleInput = {
   id?: string
   name?: string | null
   shift?: Shift | null
+  daysOfWeek?: string | null
   campusId?: string | null
   role?: Role | null
   expectedEntryTime: string // "HH:mm"
@@ -48,6 +49,7 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
     const cleanRole = data.role ? data.role : null
     const cleanName = data.name && data.name.trim() !== "" ? data.name.trim() : null
     const cleanShift = data.shift ? data.shift : null
+    const cleanDays = data.daysOfWeek && data.daysOfWeek.trim() !== "" ? data.daysOfWeek.trim() : null
 
     // Si tiene ID, actualizamos directamente
     if (data.id) {
@@ -56,6 +58,7 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
         data: {
           name: cleanName,
           shift: cleanShift,
+          daysOfWeek: cleanDays,
           campusId: cleanCampusId,
           role: cleanRole,
           expectedEntryTime: data.expectedEntryTime,
@@ -68,12 +71,13 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
       return { success: true, message: "Regla de horario actualizada con éxito." }
     }
 
-    // Si no tiene ID, verificamos si ya existe una regla con el mismo alcance (sede + rol + hora/turno)
+    // Si no tiene ID, verificamos si ya existe una regla con el mismo alcance (sede + rol + hora/turno + días)
     const existing = await prisma.toleranceRule.findFirst({
       where: {
         campusId: cleanCampusId,
         role: cleanRole,
         expectedEntryTime: data.expectedEntryTime,
+        daysOfWeek: cleanDays,
       },
     })
 
@@ -83,6 +87,7 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
         data: {
           name: cleanName ?? existing.name,
           shift: cleanShift ?? existing.shift,
+          daysOfWeek: cleanDays ?? existing.daysOfWeek,
           earlyEntryToleranceMinutes: early,
           gracePeriodMinutes: grace,
           lateToleranceMinutes: late,
@@ -96,6 +101,7 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
       data: {
         name: cleanName,
         shift: cleanShift,
+        daysOfWeek: cleanDays,
         campusId: cleanCampusId,
         role: cleanRole,
         expectedEntryTime: data.expectedEntryTime,

@@ -12,8 +12,13 @@ const WEEKDAYS = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"]
 const MONTHS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 
 /** Devuelve un Date "desplazado" cuyos getters UTC representan la hora de Lima. */
-function shiftToLima(date: Date): Date {
+export function shiftToLima(date: Date): Date {
   return new Date(date.getTime() + LIMA_OFFSET_MS)
+}
+
+/** Día de la semana en Lima: 0 = Domingo, 1 = Lunes, ..., 6 = Sábado */
+export function limaDayOfWeek(date: Date): number {
+  return shiftToLima(date).getUTCDay()
 }
 
 /** Clave de día en Lima: "YYYY-MM-DD" */
