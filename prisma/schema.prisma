@@ -52,7 +52,12 @@ model User {
   dni                 String               @unique
   email               String?              @unique 
   password            String?
+  // Rol operativo de asistencia (DOCENTE, TECNICO, PACIENTE_SIMULADO)
   role                Role                 @default(DOCENTE)
+
+  // Rol administrativo secundario/superadmin (si tiene acceso al dashboard)
+  adminRole           Role?
+
   permissions         String[]             @default([])
   
   // Sede base (predeterminada) del usuario

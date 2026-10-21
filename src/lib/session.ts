@@ -35,19 +35,21 @@ export async function getAdminSession(): Promise<AdminSession | null> {
 
   const user = await prisma.user.findUnique({
     where: { id: token },
-    select: { id: true, name: true, role: true, permissions: true, campusId: true, mustChangePassword: true, campus: { select: { name: true } } },
+    select: { id: true, name: true, role: true, adminRole: true, permissions: true, campusId: true, mustChangePassword: true, campus: { select: { name: true } } },
   })
 
-  if (!user || (user.role !== "SUPER_ADMIN" && user.role !== "ADMIN_SECUNDARIO")) return null
+  const effectiveAdminRole = (user?.adminRole || (user?.role === "SUPER_ADMIN" || user?.role === "ADMIN_SECUNDARIO" ? user.role : null)) as ("SUPER_ADMIN" | "ADMIN_SECUNDARIO" | null)
+
+  if (!user || !effectiveAdminRole) return null
 
   return {
     id: user.id,
     name: user.name,
-    role: user.role,
+    role: effectiveAdminRole,
     campusId: user.campusId,
     campusName: user.campus?.name ?? null,
     mustChangePassword: Boolean(user.mustChangePassword),
-    permissions: user.role === "SUPER_ADMIN" && (!user.permissions || user.permissions.length === 0)
+    permissions: effectiveAdminRole === "SUPER_ADMIN" && (!user.permissions || user.permissions.length === 0)
       ? ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins"]
       : (user.permissions ?? []),
   }

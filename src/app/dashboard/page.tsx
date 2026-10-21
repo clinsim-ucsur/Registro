@@ -51,13 +51,23 @@ export default async function DashboardPage() {
       }
     }),
     prisma.user.findMany({
-      where: { role: { in: ['DOCENTE', 'TECNICO', 'PACIENTE_SIMULADO'] } },
+      where: {
+        OR: [
+          { role: { in: ['DOCENTE', 'TECNICO', 'PACIENTE_SIMULADO'] } },
+          { adminRole: { not: null } }
+        ]
+      },
       include: { campus: { select: { id: true, name: true } } },
       orderBy: { name: 'asc' },
-      take: 200 // MVP limit
+      take: 300 // MVP limit
     }),
     prisma.user.findMany({
-      where: { role: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } },
+      where: {
+        OR: [
+          { adminRole: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } },
+          { role: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } }
+        ]
+      },
       include: { campus: { select: { id: true, name: true } } },
       orderBy: { name: 'asc' },
     }),

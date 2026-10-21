@@ -215,9 +215,16 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                         <TableCell className="px-6 font-bold text-slate-800">{user.name}</TableCell>
                         <TableCell className="font-semibold text-slate-500">{user.dni}</TableCell>
                         <TableCell>
-                          <span className="px-3 py-1 bg-slate-100 rounded-lg text-[10px] font-black tracking-widest text-slate-600 uppercase">
-                            {user.role}
-                          </span>
+                          <div className="flex flex-wrap gap-1 items-center">
+                            <span className="px-3 py-1 bg-slate-100 rounded-lg text-[10px] font-black tracking-widest text-slate-600 uppercase">
+                              {user.role}
+                            </span>
+                            {(user.adminRole || user.role === "SUPER_ADMIN" || user.role === "ADMIN_SECUNDARIO") && (
+                              <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-md text-[9px] font-bold tracking-wider uppercase flex items-center gap-1">
+                                <Shield size={10} /> Admin
+                              </span>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell className="text-xs font-bold text-slate-600">
                           {user.campus?.name ? (

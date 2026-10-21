@@ -213,14 +213,14 @@ export async function createAdminAction(data: {
 
     if (existing) {
       // Si el usuario ya existe (por ejemplo docente, paciente o técnico),
-      // se promueve a administrador asignándole contraseña, rol administrativo y permisos
-      // preservando su historial de marcaciones.
+      // se le otorga adminRole sin alterar su rol operativo (DOCENTE, TECNICO, PACIENTE_SIMULADO)
+      // preservando su historial de marcaciones y su aparición en las listas de personal operativo.
       const newPass = data.password && data.password.trim() !== "" ? data.password.trim() : existing.password
       await prisma.user.update({
         where: { id: existing.id },
         data: {
           name: data.name || existing.name,
-          role: data.role,
+          adminRole: data.role, // Guarda el rol administrativo aquí
           password: newPass,
           mustChangePassword: true,
           campusId: data.campusId !== undefined ? (data.campusId || null) : existing.campusId,
@@ -242,6 +242,7 @@ export async function createAdminAction(data: {
         name: data.name.trim(),
         dni: data.dni.trim(),
         role: data.role,
+        adminRole: data.role,
         password: cleanPass,
         mustChangePassword: true,
         campusId: data.campusId || null,
@@ -261,22 +262,30 @@ export async function createAdminAction(data: {
 // CRUD: REVOCAR PRIVILEGIOS DE ADMINISTRADOR
 // (Sin eliminar el usuario ni sus asistencias de la BD)
 // ---------------------------------------------
-export async function revokeAdminAction(dni: string, fallbackRole: Role = Role.PACIENTE_SIMULADO) {
+export async function revokeAdminAction(dni: string, fallbackRole?: Role) {
   try {
     const user = await prisma.user.findUnique({ where: { dni } })
     if (!user) return { success: false, message: "Usuario no encontrado." }
 
+    const updateData: any = {
+      adminRole: null,
+      password: null,
+      permissions: [],
+    }
+
+    // Si el usuario tenía como rol operativo SUPER_ADMIN o ADMIN_SECUNDARIO original,
+    // se le asigna el fallbackRole para que no quede con rol admin inválido
+    if (user.role === Role.SUPER_ADMIN || user.role === Role.ADMIN_SECUNDARIO) {
+      updateData.role = fallbackRole || Role.PACIENTE_SIMULADO
+    }
+
     await prisma.user.update({
       where: { id: user.id },
-      data: {
-        role: fallbackRole,
-        password: null,
-        permissions: [],
-      }
+      data: updateData,
     })
 
     revalidatePath("/dashboard")
-    return { success: true, message: `Acceso administrativo revocado para ${user.name}. Ahora es ${fallbackRole}.` }
+    return { success: true, message: `Acceso administrativo revocado para ${user.name}.` }
   } catch (error: any) {
     console.error("[revokeAdminAction] Error:", error)
     return { success: false, message: error.message || "Error al revocar privilegios." }
@@ -298,7 +307,7 @@ export async function editAdminAction(oldDni: string, data: {
     const updateData: any = {
       name: data.name,
       dni: data.dni,
-      role: data.role,
+      adminRole: data.role,
     }
 
     if (data.campusId !== undefined) {

@@ -224,9 +224,14 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                             )}
                           </TableCell>
                           <TableCell>
-                            <span className={`px-3 py-1 rounded-lg text-[10px] font-black tracking-widest uppercase ${admin.role === 'SUPER_ADMIN' ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-slate-100 text-slate-600'}`}>
-                              {admin.role === 'SUPER_ADMIN' ? 'Super Admin' : 'Admin'}
-                            </span>
+                            {(() => {
+                              const effRole = admin.adminRole || admin.role
+                              return (
+                                <span className={`px-3 py-1 rounded-lg text-[10px] font-black tracking-widest uppercase ${effRole === 'SUPER_ADMIN' ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-slate-100 text-slate-600'}`}>
+                                  {effRole === 'SUPER_ADMIN' ? 'Super Admin' : 'Admin'}
+                                </span>
+                              )
+                            })()}
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-wrap gap-1 max-w-xs">

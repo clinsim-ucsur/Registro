@@ -26,7 +26,14 @@ export async function loginAction(dni: string, pass: string) {
           { email: { equals: cleanInput, mode: "insensitive" } },
         ],
         password: cleanPass,
-        role: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] }
+        AND: [
+          {
+            OR: [
+              { role: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } },
+              { adminRole: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } }
+            ]
+          }
+        ]
       }
     })
 
@@ -63,10 +70,17 @@ export async function changeInitialPasswordAction(newPassword: string) {
 
     const user = await prisma.user.findUnique({
       where: { id: token },
-      select: { id: true, role: true },
+      select: { id: true, role: true, adminRole: true },
     })
 
-    if (!user || (user.role !== "SUPER_ADMIN" && user.role !== "ADMIN_SECUNDARIO")) {
+    const isAuthorized = user && (
+      user.role === "SUPER_ADMIN" || 
+      user.role === "ADMIN_SECUNDARIO" ||
+      user.adminRole === "SUPER_ADMIN" ||
+      user.adminRole === "ADMIN_SECUNDARIO"
+    )
+
+    if (!isAuthorized) {
       return { success: false, message: "Usuario no autorizado." }
     }
 
