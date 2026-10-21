@@ -3,13 +3,14 @@
 import prisma from "@/lib/prisma"
 import { requireAdmin } from "@/lib/session"
 import { startOfLimaDay, addDaysToKey, isValidDayKey } from "@/lib/timezone"
-import { Role, RecordType, RecordStatus } from "@prisma/client"
+import { Role, RecordType, RecordStatus, Shift } from "@prisma/client"
 
 export type ReportFilterParams = {
   startDate?: string // "YYYY-MM-DD"
   endDate?: string // "YYYY-MM-DD"
   campusId?: string // Campus ID o ""
   role?: Role | "ALL"
+  shift?: Shift | "ALL"
   type?: RecordType | "ALL"
   status?: RecordStatus | "ALL"
   search?: string
@@ -42,6 +43,11 @@ export async function fetchFilteredRecordsAction(filters: ReportFilterParams) {
       where.user = { ...(where.user || {}), role: filters.role }
     }
 
+    // Filtro por Turno Base (para técnicos / personal)
+    if (filters.shift && filters.shift !== "ALL") {
+      where.user = { ...(where.user || {}), defaultShift: filters.shift }
+    }
+
     // Filtro por Tipo (Entrada / Salida)
     if (filters.type && filters.type !== "ALL") {
       where.type = filters.type
@@ -67,9 +73,18 @@ export async function fetchFilteredRecordsAction(filters: ReportFilterParams) {
     const records = await prisma.attendanceRecord.findMany({
       where,
       orderBy: { timestamp: "desc" },
-      take: 2000, // Límite amplio para consolidación de reportes
+      take: 5000, // Ampliado para reportes masivos y exportaciones consolidadas
       include: {
-        user: { select: { id: true, name: true, dni: true, role: true } },
+        user: {
+          select: {
+            id: true,
+            name: true,
+            dni: true,
+            role: true,
+            defaultShift: true,
+            campus: { select: { id: true, name: true } },
+          },
+        },
         campus: { select: { id: true, name: true } },
         course: { select: { id: true, name: true } },
       },

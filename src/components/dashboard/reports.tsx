@@ -7,17 +7,20 @@ import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   FileText, FileSpreadsheet, DownloadCloud, Filter, Calendar, Search, RefreshCw,
-  Building2, Users, CheckCircle2, Clock, AlertTriangle, ShieldAlert, Sparkles, Loader2, ArrowRight
+  Building2, Users, CheckCircle2, Clock, AlertTriangle, ShieldAlert, Sparkles, Loader2,
+  FileDown, Layers, BarChart3, TrendingUp, TrendingDown, Sun, Sunset, Moon, Coffee,
+  Award, AlertCircle, FileCode, CheckSquare, Eye, ArrowUpDown, ArrowRight
 } from "lucide-react"
 import * as XLSX from "xlsx"
 import jsPDF from "jspdf"
 import autoTable from "jspdf-autotable"
 import { toast } from "sonner"
-import { Role, RecordType, RecordStatus } from "@prisma/client"
+import { Role, RecordType, RecordStatus, Shift } from "@prisma/client"
 import { fetchFilteredRecordsAction, type ReportFilterParams } from "@/actions/reports"
 import { formatLimaDate, formatLimaTime, limaDayKey, addDaysToKey } from "@/lib/timezone"
+import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
 
-type AttendanceItem = {
+export type AttendanceItem = {
   id: string
   timestamp: string | Date
   type: RecordType
@@ -27,15 +30,36 @@ type AttendanceItem = {
     name: string
     dni: string
     role: Role
+    defaultShift?: Shift | null
+    campus?: { id: string; name: string } | null
   }
   campus: { id: string; name: string } | null
   course: { id: string; name: string } | null
+}
+
+export type StaffConsolidated = {
+  userId: string
+  name: string
+  dni: string
+  role: Role
+  shift: Shift | "SIN_TURNO"
+  campusName: string
+  totalEntradas: number
+  totalSalidas: number
+  aTiempo: number
+  tardanzas: number
+  faltas: number
+  excepciones: number
+  punctualityRate: number
+  statusLevel: "EXCELENTE" | "REGULAR" | "CRITICO"
 }
 
 const ROLE_LABELS: Record<string, string> = {
   DOCENTE: "Docente",
   TECNICO: "Técnico",
   PACIENTE_SIMULADO: "Paciente Sim.",
+  SUPER_ADMIN: "Super Admin",
+  ADMIN_SECUNDARIO: "Coordinador",
 }
 
 const STATUS_LABELS: Record<string, { label: string; color: string; badge: string }> = {
@@ -43,6 +67,14 @@ const STATUS_LABELS: Record<string, { label: string; color: string; badge: strin
   TARDANZA: { label: "Tardanza", color: "#f59e0b", badge: "bg-amber-50 text-amber-700 border-amber-200" },
   FALTA: { label: "Falta", color: "#f43f5e", badge: "bg-rose-50 text-rose-700 border-rose-200" },
   EXCEPCION: { label: "Excepción", color: "#8b5cf6", badge: "bg-purple-50 text-purple-700 border-purple-200" },
+}
+
+const SHIFT_LABELS: Record<Shift, { label: string; icon: any; color: string }> = {
+  MANANA: { label: "Mañana (06:00 / 08:00)", icon: Sun, color: "text-amber-600 bg-amber-50 border-amber-200" },
+  INTERMEDIO: { label: "Intermedio (09:00 / 11:00)", icon: Coffee, color: "text-blue-600 bg-blue-50 border-blue-200" },
+  TARDE: { label: "Tarde (13:00 / 14:00)", icon: Sunset, color: "text-orange-600 bg-orange-50 border-orange-200" },
+  NOCHE: { label: "Noche (19:00 / 21:00)", icon: Moon, color: "text-indigo-600 bg-indigo-50 border-indigo-200" },
+  DESCANSO: { label: "Descanso / Libre", icon: Coffee, color: "text-slate-500 bg-slate-50 border-slate-200" },
 }
 
 export function DashboardReports({
@@ -55,7 +87,10 @@ export function DashboardReports({
   const [records, setRecords] = useState<AttendanceItem[]>(initialRecords)
   const [isPending, startTransition] = useTransition()
 
-  // Preset de fechas (por defecto: últimos 30 días hasta hoy)
+  // Vista activa de la tabla: "DETALLADO" | "CONSOLIDADO"
+  const [activeViewTab, setActiveViewTab] = useState<"DETALLADO" | "CONSOLIDADO">("DETALLADO")
+
+  // Filtros de fecha (por defecto: últimos 30 días hasta hoy)
   const todayKey = useMemo(() => limaDayKey(new Date()), [])
   const thirtyDaysAgoKey = useMemo(() => addDaysToKey(todayKey, -30), [todayKey])
 
@@ -63,9 +98,13 @@ export function DashboardReports({
   const [endDate, setEndDate] = useState(todayKey)
   const [campusId, setCampusId] = useState("")
   const [role, setRole] = useState<Role | "ALL">("ALL")
+  const [shift, setShift] = useState<Shift | "ALL">("ALL")
   const [type, setType] = useState<RecordType | "ALL">("ALL")
   const [status, setStatus] = useState<RecordStatus | "ALL">("ALL")
   const [searchTerm, setSearchTerm] = useState("")
+
+  // Ordenamiento en la vista de consolidado
+  const [consolidatedSort, setConsolidatedSort] = useState<"tardanzas" | "faltas" | "puntualidad" | "nombre">("tardanzas")
 
   // Aplicar filtros en el servidor
   const handleApplyFilters = () => {
@@ -75,6 +114,7 @@ export function DashboardReports({
         endDate: endDate || undefined,
         campusId: campusId || undefined,
         role,
+        shift,
         type,
         status,
         search: searchTerm || undefined,
@@ -112,6 +152,7 @@ export function DashboardReports({
     setEndDate(todayKey)
     setCampusId("")
     setRole("ALL")
+    setShift("ALL")
     setType("ALL")
     setStatus("ALL")
     setSearchTerm("")
@@ -127,65 +168,328 @@ export function DashboardReports({
     })
   }
 
-  // Preparar datos tabulares para exportación
-  const getFormattedData = () => {
-    return records.map((record) => {
-      const dateObj = new Date(record.timestamp)
-      const dateStr = formatLimaDate(dateObj)
-      const timeStr = formatLimaTime(dateObj)
-      const st = STATUS_LABELS[record.status]?.label || record.status
+  // =====================================================================
+  // MÉTRICAS DE CONTROL CALCULADAS DINÁMICAMENTE
+  // =====================================================================
+  const controlMetrics = useMemo(() => {
+    const total = records.length
+    const entradas = records.filter((r) => r.type === "ENTRADA").length
+    const salidas = records.filter((r) => r.type === "SALIDA").length
+    const aTiempo = records.filter((r) => r.status === "A_TIEMPO" || r.status === "EXCEPCION").length
+    const tardanzas = records.filter((r) => r.status === "TARDANZA").length
+    const faltas = records.filter((r) => r.status === "FALTA").length
+    const excepciones = records.filter((r) => r.status === "EXCEPCION").length
+
+    const punctualityRate = entradas > 0 ? Math.round((aTiempo / entradas) * 1000) / 10 : 100
+    const tardinessRate = entradas > 0 ? Math.round((tardanzas / entradas) * 1000) / 10 : 0
+    const absenceRate = entradas > 0 ? Math.round((faltas / entradas) * 1000) / 10 : 0
+    const exitCoverage = entradas > 0 ? Math.round((salidas / entradas) * 1000) / 10 : 0
+
+    const activeUsers = new Set(records.map((r) => r.user.id))
+
+    return {
+      total,
+      entradas,
+      salidas,
+      aTiempo,
+      tardanzas,
+      faltas,
+      excepciones,
+      punctualityRate,
+      tardinessRate,
+      absenceRate,
+      exitCoverage,
+      uniqueStaff: activeUsers.size,
+    }
+  }, [records])
+
+  // =====================================================================
+  // CONSOLIDADO POR COLABORADOR (AUDITORÍA RRHH Y NÓMINA)
+  // =====================================================================
+  const staffConsolidated = useMemo(() => {
+    const map = new Map<string, StaffConsolidated>()
+
+    for (const r of records) {
+      const u = r.user
+      const existing = map.get(u.id) || {
+        userId: u.id,
+        name: u.name || "Sin nombre",
+        dni: u.dni || "-",
+        role: u.role,
+        shift: u.defaultShift || "SIN_TURNO",
+        campusName: r.campus?.name || u.campus?.name || "Sin sede",
+        totalEntradas: 0,
+        totalSalidas: 0,
+        aTiempo: 0,
+        tardanzas: 0,
+        faltas: 0,
+        excepciones: 0,
+        punctualityRate: 100,
+        statusLevel: "EXCELENTE" as const,
+      }
+
+      if (r.type === "SALIDA") {
+        existing.totalSalidas++
+      } else {
+        existing.totalEntradas++
+        if (r.status === "A_TIEMPO") existing.aTiempo++
+        else if (r.status === "TARDANZA") existing.tardanzas++
+        else if (r.status === "FALTA") existing.faltas++
+        else if (r.status === "EXCEPCION") {
+          existing.excepciones++
+          existing.aTiempo++
+        }
+      }
+
+      map.set(u.id, existing)
+    }
+
+    const list = Array.from(map.values()).map((item) => {
+      const rate = item.totalEntradas > 0
+        ? Math.round((item.aTiempo / item.totalEntradas) * 1000) / 10
+        : 100
+      let statusLevel: "EXCELENTE" | "REGULAR" | "CRITICO" = "EXCELENTE"
+      if (rate < 80 || item.faltas >= 2) statusLevel = "CRITICO"
+      else if (rate < 95 || item.tardanzas >= 2) statusLevel = "REGULAR"
 
       return {
-        "Fecha": dateStr,
-        "Hora": timeStr,
-        "DNI": record.user?.dni || "-",
-        "Nombre Completo": record.user?.name || "Desconocido",
-        "Rol": ROLE_LABELS[record.user?.role] || record.user?.role || "-",
-        "Tipo": record.type === "ENTRADA" ? "Ingreso" : "Salida",
-        "Estado": st,
-        "Sede": record.campus?.name || "No especificada",
-        "Curso / Actividad": record.course?.name || "No especificado",
+        ...item,
+        punctualityRate: rate,
+        statusLevel,
       }
     })
-  }
 
-  // EXPORTAR EXCEL (XLSX)
-  const handleExportExcel = () => {
+    // Ordenamiento configurable
+    return list.sort((a, b) => {
+      if (consolidatedSort === "tardanzas") return b.tardanzas - a.tardanzas
+      if (consolidatedSort === "faltas") return b.faltas - a.faltas
+      if (consolidatedSort === "puntualidad") return a.punctualityRate - b.punctualityRate
+      return a.name.localeCompare(b.name)
+    })
+  }, [records, consolidatedSort])
+
+  // =====================================================================
+  // RESUMEN DE CONTROL POR SEDE
+  // =====================================================================
+  const campusSummary = useMemo(() => {
+    const map = new Map<string, { name: string; entradas: number; salidas: number; aTiempo: number; tardanzas: number; faltas: number }>()
+
+    for (const r of records) {
+      const cName = r.campus?.name || "Sin sede"
+      const item = map.get(cName) || { name: cName, entradas: 0, salidas: 0, aTiempo: 0, tardanzas: 0, faltas: 0 }
+      if (r.type === "SALIDA") item.salidas++
+      else {
+        item.entradas++
+        if (r.status === "A_TIEMPO" || r.status === "EXCEPCION") item.aTiempo++
+        else if (r.status === "TARDANZA") item.tardanzas++
+        else if (r.status === "FALTA") item.faltas++
+      }
+      map.set(cName, item)
+    }
+
+    return Array.from(map.values()).map((c) => ({
+      ...c,
+      rate: c.entradas > 0 ? Math.round((c.aTiempo / c.entradas) * 1000) / 10 : 100,
+    })).sort((a, b) => b.entradas - a.entradas)
+  }, [records])
+
+  // =====================================================================
+  // RESUMEN DE CONTROL POR TURNO
+  // =====================================================================
+  const shiftSummary = useMemo(() => {
+    const map = new Map<string, { shiftName: string; entradas: number; aTiempo: number; tardanzas: number; faltas: number }>()
+
+    for (const r of records) {
+      if (r.type !== "ENTRADA") continue
+      const s = r.user.defaultShift || "NO_ASIGNADO"
+      const sLabel = s === "NO_ASIGNADO" ? "Sin turno específico" : (SHIFT_LABELS[s as Shift]?.label || s)
+      const item = map.get(sLabel) || { shiftName: sLabel, entradas: 0, aTiempo: 0, tardanzas: 0, faltas: 0 }
+      item.entradas++
+      if (r.status === "A_TIEMPO" || r.status === "EXCEPCION") item.aTiempo++
+      else if (r.status === "TARDANZA") item.tardanzas++
+      else if (r.status === "FALTA") item.faltas++
+      map.set(sLabel, item)
+    }
+
+    return Array.from(map.values()).map((s) => ({
+      ...s,
+      rate: s.entradas > 0 ? Math.round((s.aTiempo / s.entradas) * 1000) / 10 : 100,
+    })).sort((a, b) => b.entradas - a.entradas)
+  }, [records])
+
+  // =====================================================================
+  // EXPORTACIÓN 1: EXCEL MULTI-HOJA COMPLETO (.XLSX)
+  // =====================================================================
+  const handleExportExcelFull = () => {
     if (!records || records.length === 0) {
       toast.error("No hay registros en el listado para exportar.")
       return
     }
 
     try {
-      const data = getFormattedData()
-      const worksheet = XLSX.utils.json_to_sheet(data)
       const workbook = XLSX.utils.book_new()
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Control Asistencia")
 
-      // Auto-ajustar anchos de columna
-      worksheet["!cols"] = [
-        { wch: 14 }, // Fecha
-        { wch: 14 }, // Hora
-        { wch: 14 }, // DNI
-        { wch: 42 }, // Nombre Completo
-        { wch: 20 }, // Rol
-        { wch: 14 }, // Tipo
-        { wch: 16 }, // Estado
-        { wch: 22 }, // Sede
-        { wch: 34 }, // Curso
+      // HOJA 1: Marcaciones Detalladas
+      const detailedData = records.map((record) => {
+        const dateObj = new Date(record.timestamp)
+        const dateStr = formatLimaDate(dateObj)
+        const timeStr = formatLimaTime(dateObj)
+        const st = STATUS_LABELS[record.status]?.label || record.status
+        const shiftStr = record.user?.defaultShift
+          ? (SHIFT_LABELS[record.user.defaultShift]?.label || record.user.defaultShift)
+          : "No asignado"
+
+        return {
+          "Fecha": dateStr,
+          "Hora": timeStr,
+          "DNI": record.user?.dni || "-",
+          "Nombre Completo": record.user?.name || "Desconocido",
+          "Rol": ROLE_LABELS[record.user?.role] || record.user?.role || "-",
+          "Turno Base": shiftStr,
+          "Tipo": record.type === "ENTRADA" ? "Ingreso" : "Salida",
+          "Estado Asistencia": st,
+          "Sede": record.campus?.name || "No especificada",
+          "Curso / Actividad": record.course?.name || "No especificado",
+        }
+      })
+      const wsDetailed = XLSX.utils.json_to_sheet(detailedData)
+      wsDetailed["!cols"] = [
+        { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 40 }, { wch: 20 },
+        { wch: 26 }, { wch: 14 }, { wch: 18 }, { wch: 24 }, { wch: 34 },
       ]
+      XLSX.utils.book_append_sheet(workbook, wsDetailed, "1. Detalle Asistencias")
+
+      // HOJA 2: Consolidado por Colaborador (RRHH)
+      const consolidatedData = staffConsolidated.map((staff) => ({
+        "DNI": staff.dni,
+        "Colaborador": staff.name,
+        "Rol": ROLE_LABELS[staff.role] || staff.role,
+        "Turno": staff.shift === "SIN_TURNO" ? "No asignado" : (SHIFT_LABELS[staff.shift]?.label || staff.shift),
+        "Sede Principal": staff.campusName,
+        "Total Entradas": staff.totalEntradas,
+        "A Tiempo": staff.aTiempo,
+        "Tardanzas": staff.tardanzas,
+        "Faltas": staff.faltas,
+        "Total Salidas": staff.totalSalidas,
+        "% Puntualidad": `${staff.punctualityRate}%`,
+        "Nivel Cumplimiento": staff.statusLevel === "EXCELENTE" ? "Excelente" : staff.statusLevel === "REGULAR" ? "Regular" : "Crítico / En Alerta",
+      }))
+      const wsConsolidated = XLSX.utils.json_to_sheet(consolidatedData)
+      wsConsolidated["!cols"] = [
+        { wch: 14 }, { wch: 40 }, { wch: 18 }, { wch: 26 }, { wch: 24 },
+        { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 14 },
+        { wch: 16 }, { wch: 22 },
+      ]
+      XLSX.utils.book_append_sheet(workbook, wsConsolidated, "2. Consolidado RRHH")
+
+      // HOJA 3: Resumen por Sede
+      const campusData = campusSummary.map((c) => ({
+        "Sede Universitaria": c.name,
+        "Total Ingresos": c.entradas,
+        "Ingresos A Tiempo": c.aTiempo,
+        "Tardanzas": c.tardanzas,
+        "Faltas": c.faltas,
+        "Salidas": c.salidas,
+        "Índice Puntualidad": `${c.rate}%`,
+      }))
+      const wsCampus = XLSX.utils.json_to_sheet(campusData)
+      wsCampus["!cols"] = [{ wch: 30 }, { wch: 16 }, { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 20 }]
+      XLSX.utils.book_append_sheet(workbook, wsCampus, "3. Resumen por Sede")
+
+      // HOJA 4: Resumen por Turno
+      const shiftData = shiftSummary.map((s) => ({
+        "Turno": s.shiftName,
+        "Total Ingresos": s.entradas,
+        "A Tiempo": s.aTiempo,
+        "Tardanzas": s.tardanzas,
+        "Faltas": s.faltas,
+        "Índice Puntualidad": `${s.rate}%`,
+      }))
+      const wsShift = XLSX.utils.json_to_sheet(shiftData)
+      wsShift["!cols"] = [{ wch: 32 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 20 }]
+      XLSX.utils.book_append_sheet(workbook, wsShift, "4. Resumen por Turno")
+
+      // HOJA 5: Métricas de Control (KPIs)
+      const kpiData = [
+        { "Métrica de Control": "Rango de Fechas Consultado", "Valor": `${startDate || "Inicio"} al ${endDate || "Hoy"}` },
+        { "Métrica de Control": "Total de Registros Procesados", "Valor": controlMetrics.total },
+        { "Métrica de Control": "Total de Entradas (Ingresos)", "Valor": controlMetrics.entradas },
+        { "Métrica de Control": "Total de Salidas (Egresos)", "Valor": controlMetrics.salidas },
+        { "Métrica de Control": "Tasa Global de Puntualidad", "Valor": `${controlMetrics.punctualityRate}%` },
+        { "Métrica de Control": "Tasa de Incidencias de Tardanza", "Valor": `${controlMetrics.tardinessRate}% (${controlMetrics.tardanzas} tardanzas)` },
+        { "Métrica de Control": "Tasa de Faltas Injustificadas", "Valor": `${controlMetrics.absenceRate}% (${controlMetrics.faltas} faltas)` },
+        { "Métrica de Control": "Cobertura de Salidas Registradas", "Valor": `${controlMetrics.exitCoverage}%` },
+        { "Métrica de Control": "Total de Personal Único Activo", "Valor": controlMetrics.uniqueStaff },
+        { "Métrica de Control": "Fecha y Hora de Emisión", "Valor": new Date().toLocaleString("es-PE") },
+      ]
+      const wsKpis = XLSX.utils.json_to_sheet(kpiData)
+      wsKpis["!cols"] = [{ wch: 38 }, { wch: 34 }]
+      XLSX.utils.book_append_sheet(workbook, wsKpis, "5. Métricas de Control")
 
       const dateTag = `${startDate || "inicio"}_al_${endDate || "fin"}`
-      const fileName = `Reporte_UCSUR_Asistencia_${dateTag}.xlsx`
+      const fileName = `Reporte_UCSUR_Consolidado_Asistencia_${dateTag}.xlsx`
       XLSX.writeFile(workbook, fileName)
-      toast.success("Excel generado y descargado con éxito.")
+      toast.success("Libro Excel completo con 5 hojas generado con éxito.")
     } catch (e) {
       console.error(e)
-      toast.error("Hubo un error al generar el archivo Excel.")
+      toast.error("Hubo un error al generar el archivo Excel multi-hoja.")
     }
   }
 
-  // EXPORTAR PDF OFICIAL CON MEMBRETE Y FORMATO CORPORATIVO
+  // =====================================================================
+  // EXPORTACIÓN 2: CSV UNIVERSAL (UTF-8 CON BOM)
+  // =====================================================================
+  const handleExportCSV = () => {
+    if (!records || records.length === 0) {
+      toast.error("No hay registros en el listado para exportar.")
+      return
+    }
+
+    try {
+      const headers = ["Fecha", "Hora", "DNI", "Nombre", "Rol", "Turno", "Tipo", "Estado", "Sede", "Curso"]
+      const rows = records.map((record) => {
+        const dateObj = new Date(record.timestamp)
+        const dateStr = formatLimaDate(dateObj)
+        const timeStr = formatLimaTime(dateObj)
+        const st = STATUS_LABELS[record.status]?.label || record.status
+        const shiftStr = record.user?.defaultShift
+          ? (SHIFT_LABELS[record.user.defaultShift]?.label || record.user.defaultShift)
+          : "No asignado"
+
+        return [
+          `"${dateStr}"`,
+          `"${timeStr}"`,
+          `"${record.user?.dni || "-"}"`,
+          `"${(record.user?.name || "Desconocido").replace(/"/g, '""')}"`,
+          `"${ROLE_LABELS[record.user?.role] || record.user?.role || "-"}"`,
+          `"${shiftStr.replace(/"/g, '""')}"`,
+          `"${record.type === "ENTRADA" ? "Ingreso" : "Salida"}"`,
+          `"${st}"`,
+          `"${(record.campus?.name || "Sin sede").replace(/"/g, '""')}"`,
+          `"${(record.course?.name || "Sin curso").replace(/"/g, '""')}"`,
+        ].join(",")
+      })
+
+      const csvContent = "\uFEFF" + [headers.join(","), ...rows].join("\r\n")
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      const dateTag = `${startDate || "inicio"}_al_${endDate || "fin"}`
+      link.setAttribute("href", url)
+      link.setAttribute("download", `UCSUR_Asistencia_${dateTag}.csv`)
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      toast.success("CSV universal exportado con éxito (compatible con Excel/PowerBI).")
+    } catch (e) {
+      console.error(e)
+      toast.error("Error al exportar CSV.")
+    }
+  }
+
+  // =====================================================================
+  // EXPORTACIÓN 3: PDF INSTITUCIONAL CON REPORTE DE CONTROL
+  // =====================================================================
   const handleExportPDF = () => {
     if (!records || records.length === 0) {
       toast.error("No hay registros en el listado para exportar.")
@@ -194,9 +498,8 @@ export function DashboardReports({
 
     try {
       const doc = new jsPDF("landscape")
-      const data = getFormattedData()
 
-      // Header Corporativo
+      // Encabezado Corporativo UCSUR
       doc.setFillColor(11, 27, 61) // #0B1B3D
       doc.rect(0, 0, 297, 28, "F")
 
@@ -208,35 +511,54 @@ export function DashboardReports({
       doc.setFont("helvetica", "normal")
       doc.setFontSize(10)
       doc.setTextColor(147, 197, 253) // blue-300
-      doc.text("Centro de Simulación Clínica | Reporte Consolidado de Asistencia y Accesos", 14, 21)
+      doc.text("Centro de Simulación Clínica | Reporte Ejecutivo de Control de Asistencia y Puntualidad", 14, 21)
 
-      // Metadatos del Reporte
+      // Recuadro Resumen de Métricas de Control
+      doc.setFillColor(248, 250, 252) // slate-50
+      doc.setDrawColor(226, 232, 240) // slate-200
+      doc.roundedRect(14, 32, 269, 20, 2, 2, "FD")
+
+      doc.setFont("helvetica", "bold")
       doc.setFontSize(9)
-      doc.setTextColor(71, 85, 105) // slate-600
-      const generatedAt = new Date().toLocaleString("es-PE")
-      const rangeText = startDate && endDate ? `Del ${startDate} al ${endDate}` : "Todos los periodos disponibles"
+      doc.setTextColor(30, 41, 59)
 
-      doc.text(`Rango consultado: ${rangeText}`, 14, 36)
-      doc.text(`Sede: ${campusId ? campuses.find(c => c.id === campusId)?.name || "Filtrada" : "Todas las sedes"}`, 14, 41)
-      doc.text(`Total registros: ${records.length}`, 220, 36)
-      doc.text(`Fecha emisión: ${generatedAt}`, 220, 41)
+      const rangeText = startDate && endDate ? `Del ${startDate} al ${endDate}` : "Todos los periodos"
+      doc.text(`Rango: ${rangeText}`, 18, 39)
+      doc.text(`Sede: ${campusId ? campuses.find(c => c.id === campusId)?.name || "Filtrada" : "Todas las sedes"}`, 18, 47)
 
-      // Tabla de registros
-      const tableRows = data.map((row) => [
-        row.Fecha,
-        row.Hora,
-        row.DNI,
-        row["Nombre Completo"],
-        row.Rol,
-        row.Tipo,
-        row.Estado,
-        row.Sede,
-        row["Curso / Actividad"],
-      ])
+      doc.text(`Puntualidad: ${controlMetrics.punctualityRate}%`, 110, 39)
+      doc.text(`Total Entradas: ${controlMetrics.entradas}`, 110, 47)
+
+      doc.text(`Tardanzas: ${controlMetrics.tardanzas}`, 180, 39)
+      doc.text(`Faltas: ${controlMetrics.faltas}`, 180, 47)
+
+      doc.text(`Personal Activo: ${controlMetrics.uniqueStaff}`, 235, 39)
+      doc.text(`Total Filas: ${records.length}`, 235, 47)
+
+      // Tabla de Registros
+      const tableRows = records.slice(0, 1000).map((record) => {
+        const dateObj = new Date(record.timestamp)
+        const dateStr = formatLimaDate(dateObj)
+        const timeStr = formatLimaTime(dateObj)
+        const st = STATUS_LABELS[record.status]?.label || record.status
+        const shiftStr = record.user?.defaultShift ? (record.user.defaultShift) : "-"
+
+        return [
+          dateStr,
+          timeStr,
+          record.user?.dni || "-",
+          record.user?.name || "Desconocido",
+          ROLE_LABELS[record.user?.role] || record.user?.role || "-",
+          shiftStr,
+          record.type === "ENTRADA" ? "Ingreso" : "Salida",
+          st,
+          record.campus?.name || "Sin sede",
+        ]
+      })
 
       autoTable(doc, {
-        startY: 46,
-        head: [["Fecha", "Hora", "DNI", "Nombre Completo", "Rol", "Tipo", "Estado", "Sede", "Curso / Actividad"]],
+        startY: 56,
+        head: [["Fecha", "Hora", "DNI", "Nombre Completo", "Rol", "Turno", "Tipo", "Estado", "Sede"]],
         body: tableRows,
         theme: "grid",
         headStyles: {
@@ -248,28 +570,27 @@ export function DashboardReports({
         },
         styles: {
           fontSize: 8,
-          cellPadding: 2.5,
+          cellPadding: 2,
           textColor: [30, 41, 59],
         },
         columnStyles: {
           0: { cellWidth: 20 },
-          1: { cellWidth: 18 },
+          1: { cellWidth: 16 },
           2: { cellWidth: 18 },
-          3: { cellWidth: 48 },
+          3: { cellWidth: 55 },
           4: { cellWidth: 24 },
-          5: { cellWidth: 18 },
-          6: { cellWidth: 22 },
-          7: { cellWidth: 32 },
+          5: { cellWidth: 22 },
+          6: { cellWidth: 18 },
+          7: { cellWidth: 22 },
           8: { cellWidth: "auto" },
         },
         alternateRowStyles: { fillColor: [248, 250, 252] },
         didDrawPage: (dataInfo) => {
-          // Footer
           const pageCount = (doc as any).internal.getNumberOfPages()
           doc.setFontSize(8)
           doc.setTextColor(148, 163, 184)
           doc.text(
-            `Página ${dataInfo.pageNumber} de ${pageCount} — Documento oficial generado por el Sistema de Asistencia UCSUR`,
+            `Página ${dataInfo.pageNumber} de ${pageCount} — Documento oficial emitido por el Sistema de Asistencia UCSUR el ${new Date().toLocaleString("es-PE")}`,
             14,
             202
           )
@@ -286,49 +607,56 @@ export function DashboardReports({
     }
   }
 
-  // Contadores del conjunto filtrado
-  const totalFiltrados = records.length
-  const totalEntradas = records.filter((r) => r.type === "ENTRADA").length
-  const totalSalidas = records.filter((r) => r.type === "SALIDA").length
-  const totalTardanzas = records.filter((r) => r.status === "TARDANZA").length
-  const totalFaltas = records.filter((r) => r.status === "FALTA").length
-
   return (
     <div className="space-y-6 animate-fade-in-up pb-12">
-      {/* Banner Principal de Exportación */}
+      {/* ================================================================= */}
+      {/* BANNER PRINCIPAL DE CONTROL Y EXPORTACIÓN */}
+      {/* ================================================================= */}
       <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#0B1B3D] via-[#12306b] to-[#1967D2] p-8 text-white shadow-xl shadow-blue-900/20">
         <div className="absolute -right-20 -top-20 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
-        <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div className="absolute -bottom-24 left-1/3 h-64 w-64 rounded-full bg-cyan-400/20 blur-3xl" />
+
+        <div className="relative flex flex-col xl:flex-row xl:items-center justify-between gap-6">
           <div>
             <div className="flex items-center gap-2 text-xs font-black uppercase tracking-[0.25em] text-blue-200">
-              <DownloadCloud size={16} /> Módulo Unificado de Reportes
+              <DownloadCloud size={16} /> Centro de Control y Exportación de Datos
             </div>
-            <h2 className="mt-2 text-3xl font-black tracking-tight">Exportación Avanzada de Datos</h2>
+            <h2 className="mt-2 text-3xl font-black tracking-tight">Métricas de Asistencia y Reportes Oficiales</h2>
             <p className="mt-2 text-sm text-blue-100/80 max-w-2xl font-medium">
-              Filtra por fechas, sedes, roles y estados de puntualidad para generar reportes oficiales auditables en Excel y PDF con membrete institucional.
+              Supervisión de puntualidad, control de ausentismo por turno y exportación multipropósito en Excel multi-hoja, CSV universal y PDF corporativo.
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-3">
+          {/* Botones de Exportación Rápida */}
+          <div className="flex flex-wrap items-center gap-2.5">
             <Button
-              onClick={handleExportExcel}
+              onClick={handleExportExcelFull}
               disabled={isPending || records.length === 0}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white font-black h-12 px-6 rounded-2xl shadow-lg shadow-emerald-950/30 transition-transform hover:scale-105"
+              className="bg-emerald-600 hover:bg-emerald-700 text-white font-black h-11 px-5 rounded-2xl shadow-lg shadow-emerald-950/30 transition-transform hover:scale-105"
             >
-              <FileSpreadsheet className="mr-2" size={20} /> Exportar Excel (.xlsx)
+              <FileSpreadsheet className="mr-2" size={18} /> Excel Completo (.xlsx)
+            </Button>
+            <Button
+              onClick={handleExportCSV}
+              disabled={isPending || records.length === 0}
+              className="bg-sky-600 hover:bg-sky-700 text-white font-black h-11 px-4 rounded-2xl shadow-lg shadow-sky-950/30 transition-transform hover:scale-105"
+            >
+              <FileCode className="mr-2" size={18} /> CSV (.csv)
             </Button>
             <Button
               onClick={handleExportPDF}
               disabled={isPending || records.length === 0}
-              className="bg-rose-600 hover:bg-rose-700 text-white font-black h-12 px-6 rounded-2xl shadow-lg shadow-rose-950/30 transition-transform hover:scale-105"
+              className="bg-rose-600 hover:bg-rose-700 text-white font-black h-11 px-4 rounded-2xl shadow-lg shadow-rose-950/30 transition-transform hover:scale-105"
             >
-              <FileText className="mr-2" size={20} /> Generar PDF Oficial
+              <FileText className="mr-2" size={18} /> PDF Oficial (.pdf)
             </Button>
           </div>
         </div>
       </div>
 
-      {/* Tarjeta de Filtros Avanzados */}
+      {/* ================================================================= */}
+      {/* FILTROS AVANZADOS */}
+      {/* ================================================================= */}
       <Card className="rounded-3xl border border-slate-200/80 bg-white p-6 md:p-8 shadow-sm shadow-slate-200/50 space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
           <div className="flex items-center gap-2.5">
@@ -337,7 +665,7 @@ export function DashboardReports({
             </div>
             <div>
               <h3 className="text-lg font-black text-slate-800">Filtros de Búsqueda y Rango Temporal</h3>
-              <p className="text-xs text-slate-400 font-medium">Personaliza los criterios antes de descargar</p>
+              <p className="text-xs text-slate-400 font-medium">Ajusta los parámetros para enfocar el análisis y la exportación</p>
             </div>
           </div>
 
@@ -375,7 +703,7 @@ export function DashboardReports({
           </div>
         </div>
 
-        {/* Inputs de Filtro */}
+        {/* Inputs de Filtro (Grid Responsivo) */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {/* Fecha Inicio */}
           <div>
@@ -437,6 +765,24 @@ export function DashboardReports({
             </select>
           </div>
 
+          {/* Turno Base */}
+          <div>
+            <label className="text-[11px] font-black uppercase tracking-wider text-slate-600 mb-1 flex items-center gap-1.5">
+              <Sun size={13} className="text-amber-600" /> Turno Base
+            </label>
+            <select
+              value={shift}
+              onChange={(e) => setShift(e.target.value as any)}
+              className="w-full h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-[#1967D2]"
+            >
+              <option value="ALL">Todos los turnos</option>
+              <option value="MANANA">Mañana (06:00 / 08:00)</option>
+              <option value="INTERMEDIO">Intermedio (09:00 / 11:00)</option>
+              <option value="TARDE">Tarde (13:00 / 14:00)</option>
+              <option value="NOCHE">Noche (19:00 / 21:00)</option>
+            </select>
+          </div>
+
           {/* Tipo de Registro */}
           <div>
             <label className="text-[11px] font-black uppercase tracking-wider text-slate-600 mb-1 flex items-center gap-1.5">
@@ -472,27 +818,27 @@ export function DashboardReports({
           </div>
 
           {/* Buscador de Nombre o DNI */}
-          <div className="sm:col-span-2">
+          <div>
             <label className="text-[11px] font-black uppercase tracking-wider text-slate-600 mb-1 flex items-center gap-1.5">
-              <Search size={13} className="text-[#1967D2]" /> Búsqueda por Nombre o DNI
+              <Search size={13} className="text-[#1967D2]" /> Búsqueda por Nombre / DNI
             </label>
-            <div className="relative">
-              <Input
-                placeholder="Ej: 72849102 o Jean Pieer..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleApplyFilters()}
-                className="h-11 pl-4 rounded-xl bg-slate-50 border-slate-200 text-sm font-semibold"
-              />
-            </div>
+            <Input
+              placeholder="Ej: 72849102 o Jean..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleApplyFilters()}
+              className="h-11 rounded-xl bg-slate-50 border-slate-200 text-sm font-semibold"
+            />
           </div>
         </div>
 
-        {/* Botones de Acción */}
+        {/* Barra de Acciones */}
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
           <div className="text-xs text-slate-500 font-bold flex items-center gap-2">
             <span className="h-2 w-2 rounded-full bg-[#1967D2]" />
-            Registros encontrados: <span className="text-slate-800 font-black text-sm">{totalFiltrados}</span>
+            Registros encontrados: <span className="text-slate-800 font-black text-sm">{records.length}</span>
+            <span className="text-slate-300">•</span>
+            Colaboradores únicos: <span className="text-slate-800 font-black text-sm">{controlMetrics.uniqueStaff}</span>
           </div>
 
           <div className="flex items-center gap-2.5 w-full sm:w-auto">
@@ -518,97 +864,348 @@ export function DashboardReports({
         </div>
       </Card>
 
-      {/* Resumen Métrico de los Filtros Actuales */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-4">
-          <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Entradas</p>
-          <p className="text-2xl font-black text-slate-800 mt-1 tabular-nums">{totalEntradas}</p>
+      {/* ================================================================= */}
+      {/* PANEL DE MÉTRICAS DE CONTROL (KPIS CLAVE) */}
+      {/* ================================================================= */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        {/* KPI 1: Puntualidad General */}
+        <div className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50/70 to-white p-4 shadow-xs">
+          <div className="flex items-center justify-between text-emerald-700">
+            <span className="text-[10px] font-black uppercase tracking-wider">Índice Puntualidad</span>
+            <CheckCircle2 size={16} />
+          </div>
+          <p className="text-2xl font-black text-emerald-800 mt-1 tabular-nums">{controlMetrics.punctualityRate}%</p>
+          <div className="mt-1 flex items-center gap-1">
+            <span className={`inline-block w-2 h-2 rounded-full ${controlMetrics.punctualityRate >= 90 ? "bg-emerald-500" : controlMetrics.punctualityRate >= 80 ? "bg-amber-500" : "bg-rose-500"}`} />
+            <span className="text-[11px] font-bold text-slate-500">
+              {controlMetrics.punctualityRate >= 90 ? "Sobresaliente" : controlMetrics.punctualityRate >= 80 ? "Aceptable" : "En Riesgo"}
+            </span>
+          </div>
         </div>
-        <div className="rounded-2xl border border-slate-200/80 bg-white p-4">
-          <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Salidas</p>
-          <p className="text-2xl font-black text-slate-800 mt-1 tabular-nums">{totalSalidas}</p>
+
+        {/* KPI 2: Total Entradas */}
+        <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-xs">
+          <div className="flex items-center justify-between text-blue-700">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Ingresos</span>
+            <Clock size={16} />
+          </div>
+          <p className="text-2xl font-black text-slate-800 mt-1 tabular-nums">{controlMetrics.entradas}</p>
+          <p className="text-[11px] font-medium text-slate-400 mt-1">{controlMetrics.aTiempo} a tiempo</p>
         </div>
-        <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-4">
-          <p className="text-[10px] font-black uppercase tracking-wider text-amber-700">Tardanzas</p>
-          <p className="text-2xl font-black text-amber-900 mt-1 tabular-nums">{totalTardanzas}</p>
+
+        {/* KPI 3: Total Salidas */}
+        <div className="rounded-2xl border border-slate-200/80 bg-white p-4 shadow-xs">
+          <div className="flex items-center justify-between text-slate-600">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total Salidas</span>
+            <ArrowRight size={16} />
+          </div>
+          <p className="text-2xl font-black text-slate-800 mt-1 tabular-nums">{controlMetrics.salidas}</p>
+          <p className="text-[11px] font-medium text-slate-500 mt-1">{controlMetrics.exitCoverage}% cobertura</p>
         </div>
-        <div className="rounded-2xl border border-rose-200 bg-rose-50/50 p-4">
-          <p className="text-[10px] font-black uppercase tracking-wider text-rose-700">Faltas</p>
-          <p className="text-2xl font-black text-rose-900 mt-1 tabular-nums">{totalFaltas}</p>
+
+        {/* KPI 4: Tardanzas */}
+        <div className="rounded-2xl border border-amber-200 bg-amber-50/50 p-4 shadow-xs">
+          <div className="flex items-center justify-between text-amber-700">
+            <span className="text-[10px] font-black uppercase tracking-wider">Tardanzas</span>
+            <AlertTriangle size={16} />
+          </div>
+          <p className="text-2xl font-black text-amber-900 mt-1 tabular-nums">{controlMetrics.tardanzas}</p>
+          <p className="text-[11px] font-bold text-amber-700 mt-1">{controlMetrics.tardinessRate}% de ingresos</p>
+        </div>
+
+        {/* KPI 5: Faltas */}
+        <div className="rounded-2xl border border-rose-200 bg-rose-50/50 p-4 shadow-xs">
+          <div className="flex items-center justify-between text-rose-700">
+            <span className="text-[10px] font-black uppercase tracking-wider">Faltas</span>
+            <ShieldAlert size={16} />
+          </div>
+          <p className="text-2xl font-black text-rose-900 mt-1 tabular-nums">{controlMetrics.faltas}</p>
+          <p className="text-[11px] font-bold text-rose-700 mt-1">{controlMetrics.absenceRate}% ausentismo</p>
+        </div>
+
+        {/* KPI 6: Personal Evaluado */}
+        <div className="rounded-2xl border border-indigo-200 bg-indigo-50/40 p-4 shadow-xs">
+          <div className="flex items-center justify-between text-indigo-700">
+            <span className="text-[10px] font-black uppercase tracking-wider">Colaboradores</span>
+            <Users size={16} />
+          </div>
+          <p className="text-2xl font-black text-indigo-900 mt-1 tabular-nums">{controlMetrics.uniqueStaff}</p>
+          <p className="text-[11px] font-medium text-indigo-700 mt-1">Con actividad</p>
         </div>
       </div>
 
-      {/* Tabla con Vista Previa de los Registros Filtrados */}
+      {/* ================================================================= */}
+      {/* RESÚMENES EJECUTIVOS POR SEDE Y TURNO */}
+      {/* ================================================================= */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Resumen por Sede */}
+        <Card className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs">
+          <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2.5">
+            <h4 className="text-sm font-black text-slate-800 flex items-center gap-2">
+              <Building2 size={16} className="text-[#1967D2]" />
+              Control de Puntualidad por Sede
+            </h4>
+            <span className="text-xs text-slate-400 font-bold">{campusSummary.length} sedes con actividad</span>
+          </div>
+
+          <div className="space-y-2.5">
+            {campusSummary.length === 0 ? (
+              <p className="text-xs text-slate-400 italic py-2">Sin datos para las sedes seleccionadas.</p>
+            ) : (
+              campusSummary.map((c) => (
+                <div key={c.name} className="flex items-center justify-between gap-3 text-xs p-2 rounded-xl bg-slate-50 border border-slate-100">
+                  <span className="font-bold text-slate-700 truncate max-w-[160px]">{c.name}</span>
+                  <div className="flex items-center gap-4">
+                    <span className="text-slate-500 font-semibold">{c.entradas} ingresos</span>
+                    <span className="text-amber-600 font-bold">{c.tardanzas} tard.</span>
+                    <span className="text-rose-600 font-bold">{c.faltas} falt.</span>
+                    <span className={`font-black px-2 py-0.5 rounded-md ${c.rate >= 90 ? "bg-emerald-100 text-emerald-800" : c.rate >= 80 ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-800"}`}>
+                      {c.rate}%
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </Card>
+
+        {/* Resumen por Turno */}
+        <Card className="rounded-2xl border border-slate-200/80 bg-white p-5 shadow-xs">
+          <div className="flex items-center justify-between mb-3 border-b border-slate-100 pb-2.5">
+            <h4 className="text-sm font-black text-slate-800 flex items-center gap-2">
+              <Sun size={16} className="text-amber-500" />
+              Control de Cumplimiento por Turno Base
+            </h4>
+            <span className="text-xs text-slate-400 font-bold">{shiftSummary.length} turnos evaluados</span>
+          </div>
+
+          <div className="space-y-2.5">
+            {shiftSummary.length === 0 ? (
+              <p className="text-xs text-slate-400 italic py-2">Sin registros por turno en este rango.</p>
+            ) : (
+              shiftSummary.map((s) => (
+                <div key={s.shiftName} className="flex items-center justify-between gap-3 text-xs p-2 rounded-xl bg-slate-50 border border-slate-100">
+                  <span className="font-bold text-slate-700 truncate max-w-[180px]">{s.shiftName}</span>
+                  <div className="flex items-center gap-4">
+                    <span className="text-slate-500 font-semibold">{s.entradas} ingresos</span>
+                    <span className="text-amber-600 font-bold">{s.tardanzas} tard.</span>
+                    <span className="text-rose-600 font-bold">{s.faltas} falt.</span>
+                    <span className={`font-black px-2 py-0.5 rounded-md ${s.rate >= 90 ? "bg-emerald-100 text-emerald-800" : s.rate >= 80 ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-800"}`}>
+                      {s.rate}%
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </Card>
+      </div>
+
+      {/* ================================================================= */}
+      {/* VISTAS DE TABLA: DETALLADO VS CONSOLIDADO */}
+      {/* ================================================================= */}
       <Card className="rounded-3xl border border-slate-200/80 bg-white shadow-sm shadow-slate-200/50 overflow-hidden">
-        <CardHeader className="py-5 px-6 border-b border-slate-100 flex flex-row items-center justify-between">
-          <div>
-            <CardTitle className="text-lg font-black text-slate-800">Vista Previa de Registros</CardTitle>
-            <CardDescription className="text-xs font-medium">
-              Mostrando los registros que se incluirán en la exportación (ordenados por fecha más reciente).
-            </CardDescription>
+        {/* Cabecera con selector de modo de vista */}
+        <div className="py-4 px-6 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50/50">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveViewTab("DETALLADO")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all ${
+                activeViewTab === "DETALLADO"
+                  ? "bg-[#1967D2] text-white shadow-md shadow-blue-500/20"
+                  : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
+              }`}
+            >
+              <Layers size={15} /> Marcaciones Detalladas ({records.length})
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveViewTab("CONSOLIDADO")}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all ${
+                activeViewTab === "CONSOLIDADO"
+                  ? "bg-[#1967D2] text-white shadow-md shadow-blue-500/20"
+                  : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-100"
+              }`}
+            >
+              <Users size={15} /> Consolidado por Colaborador (RRHH: {staffConsolidated.length})
+            </button>
           </div>
-          <span className="text-xs font-black bg-slate-100 text-slate-700 px-3 py-1 rounded-full">
-            {records.length} filas
-          </span>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="max-h-[480px] overflow-y-auto no-scrollbar">
-            <Table>
-              <TableHeader className="bg-slate-50/70 sticky top-0 z-10 backdrop-blur-sm">
-                <TableRow className="border-slate-100">
-                  <TableHead className="font-bold text-slate-600 text-xs px-6">Colaborador / DNI</TableHead>
-                  <TableHead className="font-bold text-slate-600 text-xs">Rol</TableHead>
-                  <TableHead className="font-bold text-slate-600 text-xs">Tipo</TableHead>
-                  <TableHead className="font-bold text-slate-600 text-xs">Estado</TableHead>
-                  <TableHead className="font-bold text-slate-600 text-xs">Sede / Curso</TableHead>
-                  <TableHead className="font-bold text-slate-600 text-xs text-right px-6">Fecha y Hora</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {records.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6} className="text-center py-12 text-slate-400 font-medium">
-                      No se encontraron registros que coincidan con los filtros seleccionados.
-                    </TableCell>
+
+          {/* Opciones auxiliares según tab */}
+          {activeViewTab === "CONSOLIDADO" && (
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-bold text-slate-400">Ordenar por:</span>
+              <select
+                value={consolidatedSort}
+                onChange={(e) => setConsolidatedSort(e.target.value as any)}
+                className="h-9 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none"
+              >
+                <option value="tardanzas">Más Tardanzas</option>
+                <option value="faltas">Más Faltas</option>
+                <option value="puntualidad">Menor Puntualidad</option>
+                <option value="nombre">Nombre Alfabético</option>
+              </select>
+            </div>
+          )}
+        </div>
+
+        {/* CONTENIDO TAB 1: MARCACIONES DETALLADAS */}
+        {activeViewTab === "DETALLADO" && (
+          <CardContent className="p-0">
+            <div className="max-h-[520px] overflow-y-auto no-scrollbar">
+              <Table>
+                <TableHeader className="bg-slate-50/90 sticky top-0 z-10 backdrop-blur-sm">
+                  <TableRow className="border-slate-100">
+                    <TableHead className="font-bold text-slate-600 text-xs px-6">Colaborador / DNI</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs">Rol</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs">Turno Base</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs">Tipo</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs">Estado</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs">Sede / Curso</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs text-right px-6">Fecha y Hora</TableHead>
                   </TableRow>
-                ) : (
-                  records.map((r) => {
-                    const st = STATUS_LABELS[r.status] || { label: r.status, badge: "bg-slate-100 text-slate-700 border-slate-200" }
-                    return (
-                      <TableRow key={r.id} className="border-slate-100 hover:bg-slate-50/80 transition-colors">
-                        <TableCell className="px-6 py-3.5">
-                          <p className="font-bold text-slate-800 text-sm">{r.user?.name || "Sin nombre"}</p>
-                          <p className="text-[11px] text-slate-400 font-mono font-medium">DNI: {r.user?.dni || "-"}</p>
-                        </TableCell>
-                        <TableCell className="text-xs font-bold text-slate-600">
-                          {ROLE_LABELS[r.user?.role] || r.user?.role || "-"}
-                        </TableCell>
-                        <TableCell>
-                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-black tracking-wider ${r.type === "ENTRADA" ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-700"}`}>
-                            {r.type}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-black border ${st.badge}`}>
-                            ● {st.label}
-                          </span>
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          <p className="font-bold text-slate-700">{r.campus?.name || "Sin sede"}</p>
-                          <p className="text-[11px] text-slate-400 truncate max-w-[200px]">{r.course?.name || "Sin curso"}</p>
-                        </TableCell>
-                        <TableCell className="px-6 text-right text-xs font-bold text-slate-700">
-                          <p>{formatLimaDate(new Date(r.timestamp))}</p>
-                          <p className="text-[11px] text-slate-400">{formatLimaTime(new Date(r.timestamp))}</p>
-                        </TableCell>
-                      </TableRow>
-                    )
-                  })
-                )}
-              </TableBody>
-            </Table>
-          </div>
-        </CardContent>
+                </TableHeader>
+                <TableBody>
+                  {records.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="text-center py-12 text-slate-400 font-medium">
+                        No se encontraron registros que coincidan con los filtros seleccionados.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    records.map((r) => {
+                      const st = STATUS_LABELS[r.status] || { label: r.status, badge: "bg-slate-100 text-slate-700 border-slate-200" }
+                      const shiftCfg = r.user.defaultShift ? SHIFT_LABELS[r.user.defaultShift] : null
+
+                      return (
+                        <TableRow key={r.id} className="border-slate-100 hover:bg-slate-50/80 transition-colors">
+                          <TableCell className="px-6 py-3.5">
+                            <p className="font-bold text-slate-800 text-sm">{r.user?.name || "Sin nombre"}</p>
+                            <p className="text-[11px] text-slate-400 font-mono font-medium">DNI: {r.user?.dni || "-"}</p>
+                          </TableCell>
+                          <TableCell className="text-xs font-bold text-slate-600">
+                            {ROLE_LABELS[r.user?.role] || r.user?.role || "-"}
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            {shiftCfg ? (
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md font-bold text-[11px] border ${shiftCfg.color}`}>
+                                {shiftCfg.label.split("(")[0].trim()}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 text-xs italic">No asignado</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-black tracking-wider ${r.type === "ENTRADA" ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-700"}`}>
+                              {r.type}
+                            </span>
+                          </TableCell>
+                          <TableCell>
+                            <span className={`px-2.5 py-1 rounded-full text-[10px] font-black border ${st.badge}`}>
+                              ● {st.label}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            <p className="font-bold text-slate-700">{r.campus?.name || "Sin sede"}</p>
+                            <p className="text-[11px] text-slate-400 truncate max-w-[200px]">{r.course?.name || "Sin curso"}</p>
+                          </TableCell>
+                          <TableCell className="px-6 text-right text-xs font-bold text-slate-700">
+                            <p>{formatLimaDate(new Date(r.timestamp))}</p>
+                            <p className="text-[11px] text-slate-400">{formatLimaTime(new Date(r.timestamp))}</p>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        )}
+
+        {/* CONTENIDO TAB 2: CONSOLIDADO POR COLABORADOR */}
+        {activeViewTab === "CONSOLIDADO" && (
+          <CardContent className="p-0">
+            <div className="max-h-[520px] overflow-y-auto no-scrollbar">
+              <Table>
+                <TableHeader className="bg-slate-50/90 sticky top-0 z-10 backdrop-blur-sm">
+                  <TableRow className="border-slate-100">
+                    <TableHead className="font-bold text-slate-600 text-xs px-6">Colaborador / DNI</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs">Rol & Turno</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs">Sede Base</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs text-center">Entradas</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs text-center">A Tiempo</TableHead>
+                    <TableHead className="font-bold text-amber-700 text-xs text-center">Tardanzas</TableHead>
+                    <TableHead className="font-bold text-rose-700 text-xs text-center">Faltas</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs text-center">Salidas</TableHead>
+                    <TableHead className="font-bold text-slate-600 text-xs text-right px-6">Puntualidad</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {staffConsolidated.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={9} className="text-center py-12 text-slate-400 font-medium">
+                        No hay personal con actividad en el periodo consultado.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    staffConsolidated.map((s) => {
+                      const levelBg = s.statusLevel === "EXCELENTE"
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : s.statusLevel === "REGULAR"
+                        ? "bg-amber-50 text-amber-700 border-amber-200"
+                        : "bg-rose-50 text-rose-700 border-rose-200"
+
+                      return (
+                        <TableRow key={s.userId} className="border-slate-100 hover:bg-slate-50/80 transition-colors">
+                          <TableCell className="px-6 py-3.5">
+                            <p className="font-bold text-slate-800 text-sm">{s.name}</p>
+                            <p className="text-[11px] text-slate-400 font-mono font-medium">DNI: {s.dni}</p>
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            <p className="font-bold text-slate-700">{ROLE_LABELS[s.role] || s.role}</p>
+                            <p className="text-[11px] text-slate-500">
+                              {s.shift === "SIN_TURNO" ? "Sin turno" : s.shift}
+                            </p>
+                          </TableCell>
+                          <TableCell className="text-xs font-bold text-slate-600">
+                            {s.campusName}
+                          </TableCell>
+                          <TableCell className="text-center font-bold text-slate-800 text-sm">
+                            {s.totalEntradas}
+                          </TableCell>
+                          <TableCell className="text-center font-bold text-emerald-700 text-sm">
+                            {s.aTiempo}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <span className={`px-2 py-0.5 rounded-md text-xs font-black ${s.tardanzas > 0 ? "bg-amber-100 text-amber-900" : "text-slate-400"}`}>
+                              {s.tardanzas}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <span className={`px-2 py-0.5 rounded-md text-xs font-black ${s.faltas > 0 ? "bg-rose-100 text-rose-900" : "text-slate-400"}`}>
+                              {s.faltas}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-center font-bold text-slate-500 text-sm">
+                            {s.totalSalidas}
+                          </TableCell>
+                          <TableCell className="px-6 text-right">
+                            <span className={`px-3 py-1 rounded-full text-xs font-black border ${levelBg}`}>
+                              {s.punctualityRate}%
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        )}
       </Card>
     </div>
   )

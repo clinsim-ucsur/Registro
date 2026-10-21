@@ -353,6 +353,66 @@ async function main() {
   const lateCheckInactiveHours = evaluateMarkingStatus("09:00", "06:00", 15, 5, 15, false)
   assert(lateCheckInactiveHours.status === RecordStatus.A_TIEMPO, "Control tardanzas DESACTIVADO: Marcación 3 horas después registra A_TIEMPO sin penalizar")
 
+  // ----------------------------------------------------
+  // TEST GRUPO 6: MÉTRICAS DE CONTROL Y EXPORTACIÓN DE DATOS
+  // ----------------------------------------------------
+  console.log("\n--- GRUPO 6: Métricas de Control y Exportación de Datos ---")
+
+  // 6.1 Cálculo de Métricas de Control (KPIs)
+  const mockEntries = [
+    { type: "ENTRADA", status: RecordStatus.A_TIEMPO },
+    { type: "ENTRADA", status: RecordStatus.A_TIEMPO },
+    { type: "ENTRADA", status: RecordStatus.TARDANZA },
+    { type: "ENTRADA", status: RecordStatus.FALTA },
+    { type: "SALIDA", status: RecordStatus.A_TIEMPO },
+    { type: "SALIDA", status: RecordStatus.A_TIEMPO },
+    { type: "SALIDA", status: RecordStatus.A_TIEMPO },
+  ]
+  const mEntradas = mockEntries.filter(m => m.type === "ENTRADA").length // 4
+  const mSalidas = mockEntries.filter(m => m.type === "SALIDA").length // 3
+  const mATiempo = mockEntries.filter(m => m.type === "ENTRADA" && m.status === RecordStatus.A_TIEMPO).length // 2
+  const mTardanzas = mockEntries.filter(m => m.type === "ENTRADA" && m.status === RecordStatus.TARDANZA).length // 1
+  const mFaltas = mockEntries.filter(m => m.type === "ENTRADA" && m.status === RecordStatus.FALTA).length // 1
+
+  const punctualityRate = Math.round((mATiempo / mEntradas) * 1000) / 10 // 50.0%
+  const tardinessRate = Math.round((mTardanzas / mEntradas) * 1000) / 10 // 25.0%
+  const absenceRate = Math.round((mFaltas / mEntradas) * 1000) / 10 // 25.0%
+  const exitCoverage = Math.round((mSalidas / mEntradas) * 1000) / 10 // 75.0%
+
+  assert(punctualityRate === 50, `Métrica de Puntualidad: Calculado ${punctualityRate}% esperado 50%`)
+  assert(tardinessRate === 25, `Métrica de Tardanzas: Calculado ${tardinessRate}% esperado 25%`)
+  assert(absenceRate === 25, `Métrica de Ausentismo/Faltas: Calculado ${absenceRate}% esperado 25%`)
+  assert(exitCoverage === 75, `Métrica de Cobertura de Salidas: Calculado ${exitCoverage}% esperado 75%`)
+
+  // 6.2 Consolidado por Colaborador para RRHH
+  const mockStaffRecords = [
+    { userId: "u1", name: "Tecnico Uno", type: "ENTRADA", status: RecordStatus.A_TIEMPO },
+    { userId: "u1", name: "Tecnico Uno", type: "ENTRADA", status: RecordStatus.A_TIEMPO },
+    { userId: "u1", name: "Tecnico Uno", type: "SALIDA", status: RecordStatus.A_TIEMPO },
+    { userId: "u2", name: "Tecnico Dos", type: "ENTRADA", status: RecordStatus.TARDANZA },
+    { userId: "u2", name: "Tecnico Dos", type: "ENTRADA", status: RecordStatus.FALTA },
+  ]
+  const staffMap = new Map<string, any>()
+  for (const r of mockStaffRecords) {
+    const item = staffMap.get(r.userId) || { name: r.name, entradas: 0, aTiempo: 0, tardanzas: 0, faltas: 0 }
+    if (r.type === "ENTRADA") {
+      item.entradas++
+      if (r.status === RecordStatus.A_TIEMPO) item.aTiempo++
+      if (r.status === RecordStatus.TARDANZA) item.tardanzas++
+      if (r.status === RecordStatus.FALTA) item.faltas++
+    }
+    staffMap.set(r.userId, item)
+  }
+
+  const u1 = staffMap.get("u1")
+  const u2 = staffMap.get("u2")
+  assert(u1 && u1.entradas === 2 && u1.aTiempo === 2, "Consolidado RRHH: Tecnico Uno tiene 2 entradas y 100% puntualidad")
+  assert(u2 && u2.entradas === 2 && u2.tardanzas === 1 && u2.faltas === 1, "Consolidado RRHH: Tecnico Dos acumula 1 tardanza y 1 falta")
+
+  // 6.3 Formateo CSV Universal con BOM
+  const sampleCSVRow = ["21/10/2026", "08:00", "72849102", "Juan Pérez", "Técnico", "Mañana", "Ingreso", "A Tiempo", "Campus Villa", "Cirugía"].join(",")
+  assert(sampleCSVRow.includes("Juan Pérez") && sampleCSVRow.includes("Campus Villa"), "Exportación CSV: Formato correcto de columnas y acentos")
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")

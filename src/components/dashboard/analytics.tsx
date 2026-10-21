@@ -5,8 +5,9 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAx
 import { toast } from "sonner"
 import {
   Activity, AlarmClock, BookOpen, CalendarRange, CheckCircle2, Clock, Loader2, MapPin,
-  TrendingDown, TrendingUp, Trophy, UserX, Users, Briefcase, Stethoscope, Wrench
+  TrendingDown, TrendingUp, Trophy, UserX, Users, Briefcase, Stethoscope, Wrench, FileSpreadsheet
 } from "lucide-react"
+import * as XLSX from "xlsx"
 
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { getAnalyticsAction } from "@/actions/analytics"
@@ -162,6 +163,78 @@ export function DashboardAnalytics({ initialData, lockedCampus }: { initialData:
     })
   }
 
+  const exportAnalyticsExcel = () => {
+    try {
+      const wb = XLSX.utils.book_new()
+
+      // Hoja 1: Indicadores KPIs
+      const kpisData = [
+        { "Métrica": "Rango de Análisis", "Valor": `${formatKey(data.range.fromKey)} al ${formatKey(data.range.toKey)} (${range} días)` },
+        { "Métrica": "Sede Filtrada", "Valor": campusId ? (data.campuses.find(c => c.id === campusId)?.name || campusId) : "Todas las sedes" },
+        { "Métrica": "Índice de Puntualidad Actual", "Valor": `${kpis.punctualityRate}%` },
+        { "Métrica": "Índice de Puntualidad Periodo Anterior", "Valor": `${kpis.prevPunctualityRate}%` },
+        { "Métrica": "Total de Marcaciones", "Valor": kpis.total },
+        { "Métrica": "Total de Entradas", "Valor": kpis.entradas },
+        { "Métrica": "Total de Salidas", "Valor": kpis.salidas },
+        { "Métrica": "Asistencias A Tiempo", "Valor": kpis.aTiempo },
+        { "Métrica": "Tardanzas Registradas", "Valor": kpis.tardanzas },
+        { "Métrica": "Faltas Registradas", "Valor": kpis.faltas },
+        { "Métrica": "Excepciones / Permisos", "Valor": kpis.excepciones },
+        { "Métrica": "Colaboradores Únicos Activos", "Valor": kpis.activeUsers },
+      ]
+      const wsKpis = XLSX.utils.json_to_sheet(kpisData)
+      wsKpis["!cols"] = [{ wch: 38 }, { wch: 34 }]
+      XLSX.utils.book_append_sheet(wb, wsKpis, "1. Indicadores KPIs")
+
+      // Hoja 2: Serie Diaria
+      const dailyData = data.daily.map((d) => ({
+        "Fecha": d.day,
+        "Día": d.label,
+        "A Tiempo": d.aTiempo,
+        "Tardanzas": d.tardanza,
+        "Faltas": d.falta,
+        "Salidas": d.salidas,
+        "Total Marcaciones": d.total,
+        "% Puntualidad": d.aTiempo + d.tardanza + d.falta > 0 ? `${Math.round((d.aTiempo / (d.aTiempo + d.tardanza + d.falta)) * 1000) / 10}%` : "100%",
+      }))
+      const wsDaily = XLSX.utils.json_to_sheet(dailyData)
+      wsDaily["!cols"] = [{ wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 16 }]
+      XLSX.utils.book_append_sheet(wb, wsDaily, "2. Serie Diaria")
+
+      // Hoja 3: Resumen por Sede
+      const campusData = data.byCampus.map((c) => ({
+        "Sede Universitaria": c.name,
+        "Total Entradas": c.entradas,
+        "Tardanzas": c.tardanzas,
+        "Faltas": c.faltas,
+        "% Puntualidad": c.entradas > 0 ? `${Math.round(((c.entradas - c.tardanzas - c.faltas) / c.entradas) * 1000) / 10}%` : "100%",
+      }))
+      const wsCampus = XLSX.utils.json_to_sheet(campusData)
+      wsCampus["!cols"] = [{ wch: 28 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 16 }]
+      XLSX.utils.book_append_sheet(wb, wsCampus, "3. Resumen por Sede")
+
+      // Hoja 4: Ranking Incidencias
+      const lateData = data.topLate.map((l) => ({
+        "DNI": l.dni,
+        "Colaborador": l.name,
+        "Rol": l.role,
+        "Tardanzas": l.tardanzas,
+        "Faltas": l.faltas,
+        "Puntuación Incidencia": l.tardanzas + l.faltas * 2,
+      }))
+      const wsLate = XLSX.utils.json_to_sheet(lateData)
+      wsLate["!cols"] = [{ wch: 14 }, { wch: 34 }, { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 24 }]
+      XLSX.utils.book_append_sheet(wb, wsLate, "4. Ranking Incidencias")
+
+      const fileName = `Informe_Metricas_Analitica_UCSUR_${range}dias.xlsx`
+      XLSX.writeFile(wb, fileName)
+      toast.success("Informe analítico descargado en Excel.")
+    } catch (e) {
+      console.error(e)
+      toast.error("Error al generar el informe de analítica.")
+    }
+  }
+
   const { kpis } = data
   const statusData = data.statusBreakdown.filter((s) => s.value > 0)
   const maxCourse = Math.max(1, ...data.byCourse.map((c) => c.total))
@@ -185,6 +258,15 @@ export function DashboardAnalytics({ initialData, lockedCampus }: { initialData:
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <button
+              type="button"
+              onClick={exportAnalyticsExcel}
+              className="flex items-center gap-2 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 text-sm font-bold shadow-md shadow-emerald-950/30 transition-all hover:scale-105 cursor-pointer"
+              title="Descargar informe ejecutivo en Excel"
+            >
+              <FileSpreadsheet size={16} /> Exportar Excel
+            </button>
+
             <div className="flex rounded-2xl bg-white/10 p-1 backdrop-blur-md ring-1 ring-white/15" role="group" aria-label="Rango de fechas">
               {RANGES.map((r) => (
                 <button

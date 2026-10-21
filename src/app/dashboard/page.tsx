@@ -43,7 +43,7 @@ export default async function DashboardPage() {
   const [records, users, admins, weeklyAnalytics, initialAnalytics, rules, campuses, catalogCampuses, catalogCourses, technicianSchedules] = await Promise.all([
     prisma.attendanceRecord.findMany({
       orderBy: { timestamp: 'desc' },
-      take: 200,
+      take: 1000,
       include: {
         user: true,
         campus: { select: { id: true, name: true } },
