@@ -210,7 +210,89 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     })
   }
 
-  // Leer Excel
+    // Normalizador de texto para emparejar nombres y sedes
+  const normText = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9 ]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+
+  // Emparejar nombre de fila con un técnico registrado en el sistema
+  const matchTechFromText = (rowText: string) => {
+    const nRow = normText(rowText)
+    const rowWords = nRow.split(" ").filter((w) => w.length >= 3)
+    if (rowWords.length === 0) return null
+
+    // 1. Coincidencia por DNI
+    for (const t of technicians) {
+      if (t.dni && nRow.includes(t.dni)) return t
+    }
+
+    // 2. Coincidencia por palabras del nombre (al menos 2 coincidencias de nombres/apellidos)
+    let bestTech: any = null
+    let bestScore = 0
+
+    for (const t of technicians) {
+      const nTech = normText(t.name)
+      const techWords = nTech.split(" ").filter((w) => w.length >= 3)
+      const matches = rowWords.filter((rw) => techWords.some((tw) => tw.includes(rw) || rw.includes(tw)))
+      const score = matches.length
+
+      if (score >= 2 && score > bestScore) {
+        bestScore = score
+        bestTech = t
+      } else if (rowWords.length === 1 && score === 1 && score > bestScore) {
+        bestScore = score
+        bestTech = t
+      }
+    }
+
+    return bestTech
+  }
+
+  // Parsear contenido de celda de turno y rotación (ej: M, T, I, M(N), T(N), M(V), M(A))
+  const parseShiftCell = (cellVal: any, defaultCampusName: string) => {
+    if (!cellVal) return null
+    const str = String(cellVal).trim()
+    if (!str) return null
+
+    // Ignorar feriados o textos descriptivos
+    const upper = str.toUpperCase()
+    if (upper === "F" || upper.startsWith("FERIAD") || upper.startsWith("VAC") || upper === "V" && !str.includes("(")) {
+      return null
+    }
+
+    // Formato de rotación: LETRA(SEDE), ej: M(N), T(N), M(V), T(V), M(A)
+    const rotMatch = str.match(/^([MTI])\s*\(([NVA])\)$/i)
+    let shiftLetter = ""
+    let targetCampus = defaultCampusName
+
+    if (rotMatch) {
+      shiftLetter = rotMatch[1].toUpperCase()
+      const campusCode = rotMatch[2].toUpperCase()
+      if (campusCode === "N") targetCampus = "Campus Norte"
+      else if (campusCode === "A") targetCampus = "Campus Ate"
+      else if (campusCode === "V") targetCampus = "Campus Villa"
+    } else {
+      const singleMatch = str.match(/^([MTI])/i)
+      if (!singleMatch) return null
+      shiftLetter = singleMatch[1].toUpperCase()
+    }
+
+    let shift: Shift = Shift.MANANA
+    if (shiftLetter === "T") shift = Shift.TARDE
+    else if (shiftLetter === "I") shift = Shift.INTERMEDIO
+
+    return {
+      shift,
+      campusName: targetCampus,
+    }
+  }
+
+  // Leer Excel (soporta tanto formato tabular como matriz de rol mensual)
   const handleExcelUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -221,8 +303,113 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
         const bstr = evt.target?.result
         const wb = XLSX.read(bstr, { type: "binary" })
         const ws = wb.Sheets[wb.SheetNames[0]]
-        const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: "" })
+        const rawGrid: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" })
 
+        if (!rawGrid || rawGrid.length === 0) {
+          toast.error("El archivo está vacío.")
+          return
+        }
+
+        // Detectar si es el formato de Rol Mensual de Técnicos (Matriz con días 1 al 31)
+        let isMatrixFormat = false
+        let dayRowIndex = -1
+        let dayColMap: { col: number; day: number }[] = []
+
+        // Buscar fila que contenga los días numerados del 1 al 28+
+        for (let r = 0; r < Math.min(rawGrid.length, 10); r++) {
+          const row = rawGrid[r]
+          const numbers: { col: number; day: number }[] = []
+          for (let c = 0; c < row.length; c++) {
+            const val = Number(String(row[c]).trim())
+            if (!isNaN(val) && val >= 1 && val <= 31) {
+              numbers.push({ col: c, day: val })
+            }
+          }
+          if (numbers.length >= 15) {
+            isMatrixFormat = true
+            dayRowIndex = r
+            dayColMap = numbers
+            break
+          }
+        }
+
+        if (isMatrixFormat) {
+          // Detectar Mes y Año del encabezado o usar el actual
+          const fullText = rawGrid.slice(0, 5).map((r) => r.join(" ")).join(" ").toLowerCase()
+          const today = new Date()
+          let refYear = today.getFullYear()
+          let refMonth = today.getMonth() + 1
+
+          const monthMap: Record<string, number> = {
+            enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6,
+            julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12
+          }
+          for (const [mName, mNum] of Object.entries(monthMap)) {
+            if (fullText.includes(mName)) {
+              refMonth = mNum
+              break
+            }
+          }
+          const ym = fullText.match(/202\d/)
+          if (ym) refYear = Number(ym[0])
+
+          let currentCampus = "Campus Villa"
+          const matrixMapped: ScheduleItemInput[] = []
+
+          for (let r = dayRowIndex + 1; r < rawGrid.length; r++) {
+            const row = rawGrid[r]
+            const lineText = row.map((cell) => String(cell || "").trim()).join(" ")
+            const upperLine = lineText.toUpperCase()
+
+            // Detección de encabezado de sección de sede
+            if (upperLine.includes("SEDE VILLA")) {
+              currentCampus = "Campus Villa"
+              continue
+            } else if (upperLine.includes("SEDE NORTE")) {
+              currentCampus = "Campus Norte"
+              continue
+            } else if (upperLine.includes("SEDE ATE")) {
+              currentCampus = "Campus Ate"
+              continue
+            }
+
+            if (upperLine.includes("EVENTOS DEL MES") || upperLine.includes("FERIADO")) {
+              continue
+            }
+
+            // Primeras columnas suelen contener el nombre del técnico
+            const nameCandidate = row.slice(0, 4).filter(Boolean).map(String).join(" ").trim()
+            if (!nameCandidate || nameCandidate.length < 3) continue
+
+            const tech = matchTechFromText(nameCandidate)
+            if (!tech) continue
+
+            // Recorrer las columnas de los días
+            for (const { col, day } of dayColMap) {
+              const cellVal = row[col]
+              const parsed = parseShiftCell(cellVal, currentCampus)
+              if (parsed) {
+                const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+                matrixMapped.push({
+                  dni: tech.dni,
+                  name: tech.name,
+                  date: dateStr,
+                  campusName: parsed.campusName,
+                  shift: parsed.shift,
+                  expectedEntryTime: DEFAULT_SHIFT_TIMES[parsed.shift].entry,
+                  notes: parsed.campusName !== currentCampus ? `Rotación a ${parsed.campusName}` : "Rol mensual",
+                })
+              }
+            }
+          }
+
+          setExcelPreview(matrixMapped)
+          toast.success(`¡Rol mensual detectado! Se cargaron ${matrixMapped.length} turnos programados para ${refMonth}/${refYear}.`)
+          return
+        }
+
+        // Formato estándar tabular (DNI, Nombre, Fecha, Sede, Turno)
+        const rows: any[] = XLSX.utils.sheet_to_json(ws, { defval: "" })
         const mapped: ScheduleItemInput[] = rows.map((r) => {
           const keys = Object.keys(r)
           const getVal = (possibleKeys: string[]) => {
@@ -230,10 +417,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             return k ? String(r[k]).trim() : ""
           }
 
-          // Normalizar fecha si viene como número Excel o string YYYY-MM-DD
           let rawDate = getVal(["fecha", "date", "dia"])
           if (/^\d{5}$/.test(rawDate)) {
-            // Número serial de Excel
             const parsed = new Date((Number(rawDate) - (25567 + 1)) * 86400 * 1000)
             rawDate = parsed.toISOString().slice(0, 10)
           }
@@ -257,6 +442,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
         setExcelPreview(mapped)
         toast.success(`Se leyeron ${mapped.length} filas del archivo Excel.`)
       } catch (err) {
+        console.error(err)
         toast.error("Error al procesar el archivo Excel.")
       }
     }
@@ -319,12 +505,11 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     }
   }
 
-  // Parsear texto libre de la imagen hacia asignaciones estructuradas
+    // Parsear texto de la imagen del rol mensual con lectura de secciones de sedes y rotaciones
   const parseOcrTextToRows = (text: string) => {
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 3)
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 1)
     const detectedRows: any[] = []
 
-    // Detectar mes/año de referencia en el texto (ej: "OCTUBRE 2026")
     const today = new Date()
     let refYear = today.getFullYear()
     let refMonth = today.getMonth() + 1
@@ -342,48 +527,50 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     const yearMatch = text.match(/202\d/)
     if (yearMatch) refYear = Number(yearMatch[0])
 
+    let currentCampus = "Campus Villa"
+
     for (const line of lines) {
-      // Coincidencia con técnico conocido
-      const matchedTech = technicians.find((t) => {
-        const parts = t.name.toLowerCase().split(" ")
-        return parts.some((p) => p.length > 3 && line.toLowerCase().includes(p)) || line.includes(t.dni)
-      })
-
-      // Coincidencia con sede conocida
-      const matchedCampus = campuses.find((c) => {
-        const cLower = c.name.toLowerCase().replace("campus", "").trim()
-        return line.toLowerCase().includes(cLower)
-      })
-
-      // Coincidencia de turno
-      let detectedShift: Shift = Shift.MANANA
       const upperLine = line.toUpperCase()
-      if (upperLine.includes("TARDE") || upperLine.includes("VESPERTINO")) detectedShift = Shift.TARDE
-      else if (upperLine.includes("INTERMEDIO") || upperLine.includes("MEDIO")) detectedShift = Shift.INTERMEDIO
 
-      // Coincidencia de día (ej: "Día 15", "15/10", "15-10" o número 1-31 aislado)
-      const dayMatch = line.match(/\b([0-2]?\d|3[01])\b/)
-      let day = dayMatch ? Number(dayMatch[1]) : today.getDate()
-      if (day === 0) day = 1
-      const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+      // Detección de sección de sede
+      if (upperLine.includes("SEDE VILLA") || upperLine.includes("VILLA")) {
+        currentCampus = "Campus Villa"
+      } else if (upperLine.includes("SEDE NORTE") || upperLine.includes("NORTE")) {
+        currentCampus = "Campus Norte"
+      } else if (upperLine.includes("SEDE ATE") || upperLine.includes("ATE")) {
+        currentCampus = "Campus Ate"
+      }
 
-      if (matchedTech || matchedCampus) {
-        detectedRows.push({
-          name: matchedTech ? matchedTech.name : line.slice(0, 25),
-          dni: matchedTech?.dni || "",
-          date: dateStr,
-          campusName: matchedCampus ? matchedCampus.name : (campuses[0]?.name || "Campus Villa"),
-          shift: detectedShift,
-          entryTime: DEFAULT_SHIFT_TIMES[detectedShift].entry,
-        })
+      // Buscar si la línea corresponde a un técnico
+      const matchedTech = matchTechFromText(line)
+      if (matchedTech) {
+        // Extraer los turnos y rotaciones en la línea (ej: M, T, I, M(N), T(N), M(V))
+        const tokens = line.match(/([MTI]\s*\([NVA]\)|[MTI])/gi)
+        if (tokens && tokens.length > 0) {
+          tokens.forEach((token, idx) => {
+            const parsed = parseShiftCell(token, currentCampus)
+            if (parsed) {
+              const day = Math.min(idx + 1, 31)
+              const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+              detectedRows.push({
+                name: matchedTech.name,
+                dni: matchedTech.dni || "",
+                date: dateStr,
+                campusName: parsed.campusName,
+                shift: parsed.shift,
+                entryTime: DEFAULT_SHIFT_TIMES[parsed.shift].entry,
+              })
+            }
+          })
+        }
       }
     }
 
     setOcrParsedRows(detectedRows)
     if (detectedRows.length > 0) {
-      toast.success(`Se identificaron automáticamente ${detectedRows.length} posibles asignaciones en la imagen.`)
+      toast.success(`¡Rol reconocido! Se detectaron ${detectedRows.length} turnos para el mes ${refMonth}/${refYear}.`)
     } else {
-      toast.warning("El texto extraído no coincidió automáticamente con nombres o sedes conocidos. Puedes revisar el texto extraído o usar la carga Excel.")
+      toast.warning("No se pudo estructurar el texto de la imagen automáticamente. Te recomendamos importar directamente el archivo Excel (.xlsx) del rol que se procesa al 100% con total precisión.")
     }
   }
 

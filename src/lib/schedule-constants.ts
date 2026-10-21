@@ -4,6 +4,7 @@ export type ScheduleItemInput = {
   id?: string
   userId?: string
   dni?: string
+  name?: string
   date: string // "YYYY-MM-DD"
   campusId?: string
   campusName?: string
