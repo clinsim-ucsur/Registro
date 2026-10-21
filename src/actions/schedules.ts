@@ -358,6 +358,26 @@ export async function getTodayTechnicianAssignmentAction(userId: string) {
     const userShift = user?.defaultShift || Shift.MANANA
     const def = DEFAULT_SHIFT_TIMES[userShift]
 
+    // Consultar si existe una regla personalizada para este turno y sede
+    let early = def.early
+    let grace = def.grace
+    let late = def.late
+    if (user?.campus?.id) {
+      const shiftRule = await prisma.toleranceRule.findFirst({
+        where: {
+          role: Role.TECNICO,
+          expectedEntryTime: def.entry,
+          OR: [{ campusId: user.campus.id }, { campusId: null }],
+        },
+        orderBy: [{ campusId: "desc" }],
+      })
+      if (shiftRule) {
+        early = shiftRule.earlyEntryToleranceMinutes ?? early
+        grace = shiftRule.gracePeriodMinutes ?? grace
+        late = shiftRule.lateToleranceMinutes ?? late
+      }
+    }
+
     return {
       assignedToday: user?.campus ? true : false,
       source: "DEFAULT_PROFILE" as const,
@@ -365,9 +385,9 @@ export async function getTodayTechnicianAssignmentAction(userId: string) {
       campus: user?.campus || null,
       shift: userShift,
       expectedEntryTime: def.entry,
-      earlyEntryToleranceMinutes: def.early,
-      gracePeriodMinutes: def.grace,
-      lateToleranceMinutes: def.late,
+      earlyEntryToleranceMinutes: early,
+      gracePeriodMinutes: grace,
+      lateToleranceMinutes: late,
     }
   } catch (error) {
     console.error("[getTodayTechnicianAssignmentAction] Error:", error)

@@ -249,10 +249,10 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           })
 
           // Buscar regla cuya hora de entrada coincida con su turno base
-          const matchedShiftRule = shiftRules.find(r => r.expectedEntryTime === defShift.entry) || shiftRules[0]
+          const matchedShiftRule = shiftRules.find(r => r.expectedEntryTime === defShift.entry)
 
           techRule = {
-            expectedEntryTime: matchedShiftRule?.expectedEntryTime || defShift.entry,
+            expectedEntryTime: defShift.entry,
             earlyEntryToleranceMinutes: matchedShiftRule?.earlyEntryToleranceMinutes ?? defShift.early,
             gracePeriodMinutes: matchedShiftRule?.gracePeriodMinutes ?? defShift.grace,
             lateToleranceMinutes: matchedShiftRule?.lateToleranceMinutes ?? defShift.late,
@@ -299,7 +299,11 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       }
     })
 
-    revalidatePath("/dashboard")
+    try {
+      revalidatePath("/dashboard")
+    } catch {
+      // Ignorar si se ejecuta fuera del ciclo de Next.js
+    }
 
     return { 
       success: true, 
