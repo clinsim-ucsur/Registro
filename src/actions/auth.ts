@@ -26,22 +26,21 @@ export async function loginAction(dni: string, pass: string) {
           { email: { equals: cleanInput, mode: "insensitive" } },
         ],
         password: cleanPass,
-        AND: [
-          {
-            OR: [
-              { role: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } },
-              { adminRole: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } }
-            ]
-          }
-        ]
       }
     })
 
-    if (user) {
+    const hasAdminPrivilege = user && (
+      user.adminRole === "SUPER_ADMIN" ||
+      user.adminRole === "ADMIN_SECUNDARIO" ||
+      user.role === "SUPER_ADMIN" ||
+      user.role === "ADMIN_SECUNDARIO"
+    )
+
+    if (user && hasAdminPrivilege) {
       cookieStore.set("auth_token", user.id, { httpOnly: true, secure: true, path: "/" })
       return { 
         success: true, 
-        mustChangePassword: user.mustChangePassword ?? false 
+        mustChangePassword: Boolean(user.mustChangePassword)
       }
     }
 
