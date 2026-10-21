@@ -5,7 +5,7 @@ import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
 import { Role, RecordType } from "@prisma/client"
-import { validateUserAction, registerAttendanceAction, syncOfflineRecordsAction } from "@/actions/attendance"
+import { validateUserAction, registerAttendanceAction, syncOfflineRecordsAction, getTodayAttendanceStateAction } from "@/actions/attendance"
 import { toast } from "sonner"
 import { Loader2, LogIn, LogOut, Search, UserCheck, CheckCircle2, WifiOff } from "lucide-react"
 
@@ -56,6 +56,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
   const [isSubmitting, setIsSubmitting] = useState<RecordType | null>(null)
   const [validatedUser, setValidatedUser] = useState<{id: string, name: string} | null>(null)
   const [isOffline, setIsOffline] = useState(false)
+  const [todayLastRecord, setTodayLastRecord] = useState<RecordType | null | "loading">(null)
 
   const availableCampuses = (propCampuses && propCampuses.length > 0)
     ? propCampuses.map(c => c.name)
@@ -132,12 +133,14 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       validateDni(watchDni, watchRole)
     } else {
       setValidatedUser(null)
+      setTodayLastRecord(null)
     }
   }, [watchDni, watchRole])
 
   const validateDni = async (dni: string, role: Role) => {
     if (isOffline) {
       setValidatedUser({ id: 'offline_user', name: `Pendiente de validación` })
+      setTodayLastRecord(null)
       return
     }
 
@@ -147,8 +150,13 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       if (res.success && res.user) {
         setValidatedUser(res.user)
         toast.success(`Usuario encontrado: ${res.user.name}`)
+        // Query today's attendance state to know which button to show
+        setTodayLastRecord("loading")
+        const stateRes = await getTodayAttendanceStateAction(res.user.id)
+        setTodayLastRecord(stateRes.lastRecordType)
       } else {
         setValidatedUser(null)
+        setTodayLastRecord(null)
         toast.error(res.message || "Usuario no encontrado")
       }
     } catch (error) {
@@ -253,6 +261,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         toast.success(res.message, { duration: 5000 })
         form.reset({ role: watchRole, dni: "", campusId: data.campusId, courseId: data.courseId })
         setValidatedUser(null)
+        setTodayLastRecord(null)
       } else {
         toast.error(res.message)
       }
@@ -404,29 +413,55 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
             )}
           />
 
-          <div className="grid grid-cols-2 gap-5 pt-4">
-            <Button
-              type="button"
-              disabled={!validatedUser || isSubmitting !== null}
-              onClick={form.handleSubmit((d) => onSubmit(d, RecordType.ENTRADA))}
-              className="h-20 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(25,103,210,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(25,103,210,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none"
-            >
-              {isSubmitting === RecordType.ENTRADA ? <Loader2 size={24} className="animate-spin mr-2" /> : <LogIn size={24} className="mr-2" />}
-              ENTRADA
-            </Button>
+          {/* Botones ENTRADA / SALIDA con lógica de secuencia */}
+          {(() => {
+            // Determinar qué botón mostrar según el último registro de hoy
+            // null / "loading" = no hay registro → mostrar ENTRADA
+            // último fue ENTRADA → mostrar SALIDA
+            // último fue SALIDA → mostrar ENTRADA (posible nueva jornada o re-ingreso)
+            const isLoadingState = todayLastRecord === "loading"
+            const lastType = isLoadingState ? null : (todayLastRecord as RecordType | null)
+            const showEntrada = lastType !== RecordType.ENTRADA
+            const showSalida = lastType === RecordType.ENTRADA
+            // Técnicos y Pacientes Sim. pueden marcar salida; Docentes registran solo Entrada
+            const canMarkSalida = watchRole !== Role.DOCENTE
 
-            {watchRole !== Role.DOCENTE && (
-              <Button
-                type="button"
-                disabled={!validatedUser || isSubmitting !== null}
-                onClick={form.handleSubmit((d) => onSubmit(d, RecordType.SALIDA))}
-                className="h-20 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(15,23,42,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(15,23,42,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none"
-              >
-                {isSubmitting === RecordType.SALIDA ? <Loader2 size={24} className="animate-spin mr-2" /> : <LogOut size={24} className="mr-2" />}
-                SALIDA
-              </Button>
-            )}
-          </div>
+            return (
+              <div className="grid grid-cols-1 gap-5 pt-4">
+                {showEntrada && (
+                  <Button
+                    type="button"
+                    disabled={!validatedUser || isSubmitting !== null || isLoadingState}
+                    onClick={form.handleSubmit((d) => onSubmit(d, RecordType.ENTRADA))}
+                    className="h-20 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(25,103,210,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(25,103,210,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none"
+                  >
+                    {isLoadingState ? <Loader2 size={24} className="animate-spin mr-2" /> :
+                      isSubmitting === RecordType.ENTRADA ? <Loader2 size={24} className="animate-spin mr-2" /> :
+                      <LogIn size={24} className="mr-2" />}
+                    {isLoadingState ? "Verificando..." : "ENTRADA"}
+                  </Button>
+                )}
+
+                {showSalida && canMarkSalida && (
+                  <Button
+                    type="button"
+                    disabled={!validatedUser || isSubmitting !== null || isLoadingState}
+                    onClick={form.handleSubmit((d) => onSubmit(d, RecordType.SALIDA))}
+                    className="h-20 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(15,23,42,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(15,23,42,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none"
+                  >
+                    {isSubmitting === RecordType.SALIDA ? <Loader2 size={24} className="animate-spin mr-2" /> : <LogOut size={24} className="mr-2" />}
+                    SALIDA
+                  </Button>
+                )}
+
+                {showSalida && !canMarkSalida && (
+                  <p className="text-center text-sm font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-xl py-4">
+                    ✅ Entrada ya registrada hoy. No se requiere marca de salida para Docentes.
+                  </p>
+                )}
+              </div>
+            )
+          })()}
 
         </form>
       </Form>

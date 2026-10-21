@@ -8,6 +8,37 @@ import { limaMinutesOfDay } from "@/lib/timezone"
 import { checkGeofence } from "@/lib/geofence"
 
 // ------------------------------------------------------------------
+// 0. CONSULTA DE ESTADO DE ASISTENCIA HOY (para lógica ENTRADA/SALIDA)
+// ------------------------------------------------------------------
+export async function getTodayAttendanceStateAction(userId: string): Promise<{
+  lastRecordType: RecordType | null
+}> {
+  try {
+    // Calcular inicio del día Lima (UTC-5)
+    const now = new Date()
+    const limaOffset = -5 * 60 * 60 * 1000
+    const limaToday = new Date(now.getTime() + limaOffset)
+    limaToday.setUTCHours(0, 0, 0, 0)
+    const startOfDayUTC = new Date(limaToday.getTime() - limaOffset)
+    const endOfDayUTC = new Date(startOfDayUTC.getTime() + 24 * 60 * 60 * 1000)
+
+    const lastRecord = await prisma.attendanceRecord.findFirst({
+      where: {
+        userId,
+        timestamp: { gte: startOfDayUTC, lt: endOfDayUTC },
+      },
+      orderBy: { timestamp: "desc" },
+      select: { type: true },
+    })
+
+    return { lastRecordType: lastRecord?.type ?? null }
+  } catch (error) {
+    console.error("[getTodayAttendanceStateAction] Error:", error)
+    return { lastRecordType: null }
+  }
+}
+
+// ------------------------------------------------------------------
 // 1. REEMPLAZO DE `validarDNI(rol, dni)`
 // ------------------------------------------------------------------
 export async function validateUserAction(dni: string, role: Role) {
