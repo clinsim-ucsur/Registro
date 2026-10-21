@@ -36,26 +36,37 @@ enum RecordStatus {
   EXCEPCION
 }
 
+enum Shift {
+  MANANA      // ~07:00 / 08:00
+  INTERMEDIO  // ~11:00 / 12:00
+  TARDE       // ~14:00 / 15:00
+}
+
 // ------------------------------------------------------
 // MODELOS
 // ------------------------------------------------------
 
 model User {
-  id            String    @id @default(cuid())
-  name          String
-  dni           String    @unique
-  email         String?   @unique 
-  password      String?
-  role          Role      @default(DOCENTE)
-  permissions   String[]  @default([])
+  id                  String               @id @default(cuid())
+  name                String
+  dni                 String               @unique
+  email               String?              @unique 
+  password            String?
+  role                Role                 @default(DOCENTE)
+  permissions         String[]             @default([])
   
-  campusId      String?
-  campus        Campus?   @relation(fields: [campusId], references: [id])
+  // Sede base (predeterminada) del usuario
+  campusId            String?
+  campus              Campus?              @relation(fields: [campusId], references: [id])
+  
+  // Turno base (predeterminado) para técnicos
+  defaultShift        Shift?
 
-  records       AttendanceRecord[]
+  records             AttendanceRecord[]
+  technicianSchedules TechnicianSchedule[]
   
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
 }
 
 model Campus {
@@ -68,9 +79,10 @@ model Campus {
   longitude      Float?
   radiusMeters   Int       @default(300)
 
-  users          User[]
-  records        AttendanceRecord[]
-  rules          ToleranceRule[]
+  users               User[]
+  records             AttendanceRecord[]
+  rules               ToleranceRule[]
+  technicianSchedules TechnicianSchedule[]
 
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -131,4 +143,41 @@ model ToleranceRule {
   
   createdAt                  DateTime @default(now())
   updatedAt                  DateTime @updatedAt
+}
+
+// ------------------------------------------------------
+// CRONOGRAMA / ASIGNACIÓN DE TURNOS PARA TÉCNICOS
+// ------------------------------------------------------
+model TechnicianSchedule {
+  id                         String   @id @default(cuid())
+  
+  userId                     String
+  user                       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Fecha en formato "YYYY-MM-DD" para coincidencia rápida de calendario
+  date                       String
+  
+  // Sede asignada ese día
+  campusId                   String
+  campus                     Campus   @relation(fields: [campusId], references: [id], onDelete: Cascade)
+  
+  // Turno asignado
+  shift                      Shift    @default(MANANA)
+  
+  // Horario esperado de entrada para ese turno (ej: "07:00", "11:00", "14:00")
+  expectedEntryTime          String   @default("07:00")
+  
+  // Tolerancias específicas para este día/turno (o hereda predeterminado)
+  earlyEntryToleranceMinutes Int      @default(15)
+  gracePeriodMinutes         Int      @default(10)
+  lateToleranceMinutes       Int      @default(30)
+  
+  notes                      String?  // Ej: "Cubriendo a Pedro", "Rotación Villa"
+  
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@index([date])
+  @@index([campusId])
 }

@@ -25,7 +25,7 @@ function Modal({ isOpen, onClose, title, children }: { isOpen: boolean, onClose:
   )
 }
 
-export function DashboardUsers({ users }: { users: any[] }) {
+export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuses?: { id: string; name: string }[] }) {
   const [searchTerm, setSearchTerm] = useState("")
   
   const [editingUser, setEditingUser] = useState<any | null>(null)
@@ -64,7 +64,9 @@ export function DashboardUsers({ users }: { users: any[] }) {
     const res = await editUserAction(editingUser.oldDni, {
       name: editingUser.name,
       dni: editingUser.dni,
-      role: editingUser.role as Role
+      role: editingUser.role as Role,
+      campusId: editingUser.campusId || null,
+      defaultShift: editingUser.defaultShift || null,
     })
     
     if (res.success) {
@@ -83,7 +85,9 @@ export function DashboardUsers({ users }: { users: any[] }) {
     const res = await createUserAction({
       name: addingUser.name,
       dni: addingUser.dni,
-      role: addingUser.role as Role
+      role: addingUser.role as Role,
+      campusId: addingUser.campusId || null,
+      defaultShift: addingUser.defaultShift || null,
     })
     
     if (res.success) {
@@ -151,14 +155,16 @@ export function DashboardUsers({ users }: { users: any[] }) {
                 <TableRow className="border-slate-100">
                   <TableHead className="px-6 font-bold text-slate-500 py-4">Nombre Completo</TableHead>
                   <TableHead className="font-bold text-slate-500">DNI</TableHead>
-                  <TableHead className="font-bold text-slate-500">Rol Sistema</TableHead>
+                  <TableHead className="font-bold text-slate-500">Rol</TableHead>
+                  <TableHead className="font-bold text-slate-500">Sede Base</TableHead>
+                  <TableHead className="font-bold text-slate-500">Turno</TableHead>
                   <TableHead className="text-right px-8 font-bold text-slate-500">Acciones</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredUsers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="text-center py-16 text-slate-500 font-medium text-lg">
+                    <TableCell colSpan={6} className="text-center py-16 text-slate-500 font-medium text-lg">
                       No se encontraron usuarios que coincidan con la búsqueda.
                     </TableCell>
                   </TableRow>
@@ -172,8 +178,26 @@ export function DashboardUsers({ users }: { users: any[] }) {
                           {user.role}
                         </span>
                       </TableCell>
+                      <TableCell className="text-xs font-bold text-slate-600">
+                        {user.campus?.name ? (
+                          <span className="px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 border border-blue-100">
+                            📍 {user.campus.name}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 font-normal">Sin asignar</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-xs font-bold text-slate-600">
+                        {user.defaultShift ? (
+                          <span className="px-2.5 py-1 rounded-md bg-amber-50 text-amber-700 border border-amber-100 uppercase tracking-wider text-[10px]">
+                            ⏰ {user.defaultShift}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 font-normal">—</span>
+                        )}
+                      </TableCell>
                       <TableCell className="px-6 text-right space-x-3">
-                        <Button variant="outline" size="icon" onClick={() => setEditingUser({ ...user, oldDni: user.dni })} className="h-9 w-9 text-blue-600 border-blue-200 hover:bg-blue-100 hover:text-blue-800 rounded-xl transition-colors shadow-sm">
+                        <Button variant="outline" size="icon" onClick={() => setEditingUser({ ...user, oldDni: user.dni, campusId: user.campusId || "", defaultShift: user.defaultShift || "" })} className="h-9 w-9 text-blue-600 border-blue-200 hover:bg-blue-100 hover:text-blue-800 rounded-xl transition-colors shadow-sm">
                           <Edit size={16} />
                         </Button>
                         <Button variant="outline" size="icon" onClick={() => setDeletingUser(user)} className="h-9 w-9 text-rose-600 border-rose-200 hover:bg-rose-100 hover:text-rose-800 rounded-xl transition-colors shadow-sm">
@@ -263,6 +287,35 @@ export function DashboardUsers({ users }: { users: any[] }) {
                <option value="PACIENTE_SIMULADO">Paciente Simulado</option>
              </select>
            </div>
+
+           <div>
+             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Sede Base / Asignada</label>
+             <select 
+               value={addingUser?.campusId || ""} 
+               onChange={e => setAddingUser({...addingUser, campusId: e.target.value})}
+               className="w-full h-14 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-[#1967D2] transition-all"
+             >
+               <option value="">(Sin sede base)</option>
+               {campuses.map(c => (
+                 <option key={c.id} value={c.id}>{c.name}</option>
+               ))}
+             </select>
+           </div>
+
+           {addingUser?.role === "TECNICO" && (
+             <div>
+               <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Turno Predeterminado (Técnicos)</label>
+               <select 
+                 value={addingUser?.defaultShift || "MANANA"} 
+                 onChange={e => setAddingUser({...addingUser, defaultShift: e.target.value})}
+                 className="w-full h-14 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-[#1967D2] transition-all"
+               >
+                 <option value="MANANA">Mañana (07:00 / 08:00 AM)</option>
+                 <option value="INTERMEDIO">Intermedio (11:00 / 12:00 PM)</option>
+                 <option value="TARDE">Tarde (02:00 / 03:00 PM)</option>
+               </select>
+             </div>
+           )}
            
            <div className="flex gap-4 pt-6 border-t border-slate-100">
               <Button type="button" variant="outline" className="flex-1 h-14 rounded-xl font-bold border-slate-200 hover:bg-slate-50 text-slate-600" onClick={() => setAddingUser(null)} disabled={isProcessing}>Cancelar</Button>
@@ -325,6 +378,35 @@ export function DashboardUsers({ users }: { users: any[] }) {
                <option value="PACIENTE_SIMULADO">Paciente Simulado</option>
              </select>
            </div>
+
+           <div>
+             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Sede Base / Predeterminada</label>
+             <select 
+               value={editingUser?.campusId || ""} 
+               onChange={e => setEditingUser({...editingUser, campusId: e.target.value})}
+               className="w-full h-14 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-[#1967D2] transition-all"
+             >
+               <option value="">(Sin sede base)</option>
+               {campuses.map(c => (
+                 <option key={c.id} value={c.id}>{c.name}</option>
+               ))}
+             </select>
+           </div>
+
+           {editingUser?.role === "TECNICO" && (
+             <div>
+               <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Turno Predeterminado</label>
+               <select 
+                 value={editingUser?.defaultShift || "MANANA"} 
+                 onChange={e => setEditingUser({...editingUser, defaultShift: e.target.value})}
+                 className="w-full h-14 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-[#1967D2] transition-all"
+               >
+                 <option value="MANANA">Mañana (07:00 / 08:00 AM)</option>
+                 <option value="INTERMEDIO">Intermedio (11:00 / 12:00 PM)</option>
+                 <option value="TARDE">Tarde (02:00 / 03:00 PM)</option>
+               </select>
+             </div>
+           )}
            
            <div className="flex gap-4 pt-6 border-t border-slate-100">
               <Button type="button" variant="outline" className="flex-1 h-14 rounded-xl font-bold border-slate-200 hover:bg-slate-50 text-slate-600" onClick={() => setEditingUser(null)} disabled={isProcessing}>Cancelar</Button>

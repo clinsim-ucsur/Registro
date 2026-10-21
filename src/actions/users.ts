@@ -80,14 +80,25 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
 // ---------------------------------------------
 import { revalidatePath } from "next/cache"
 
-export async function editUserAction(oldDni: string, data: { name: string, dni: string, role: Role }) {
+export async function editUserAction(
+  oldDni: string,
+  data: {
+    name: string
+    dni: string
+    role: Role
+    campusId?: string | null
+    defaultShift?: "MANANA" | "INTERMEDIO" | "TARDE" | null
+  }
+) {
   try {
     await prisma.user.update({
       where: { dni: oldDni },
       data: {
         name: data.name,
         dni: data.dni,
-        role: data.role
+        role: data.role,
+        campusId: data.campusId !== undefined ? (data.campusId || null) : undefined,
+        defaultShift: data.defaultShift !== undefined ? (data.defaultShift || null) : undefined,
       }
     })
     revalidatePath("/dashboard")
@@ -101,7 +112,13 @@ export async function editUserAction(oldDni: string, data: { name: string, dni: 
 // ---------------------------------------------
 // CRUD: CREAR USUARIO INDIVIDUAL
 // ---------------------------------------------
-export async function createUserAction(data: { name: string, dni: string, role: Role }) {
+export async function createUserAction(data: {
+  name: string
+  dni: string
+  role: Role
+  campusId?: string | null
+  defaultShift?: "MANANA" | "INTERMEDIO" | "TARDE" | null
+}) {
   try {
     const existing = await prisma.user.findUnique({ where: { dni: data.dni } })
     if (existing) return { success: false, message: "El DNI ya se encuentra registrado." }
@@ -110,7 +127,9 @@ export async function createUserAction(data: { name: string, dni: string, role: 
       data: {
         name: data.name,
         dni: data.dni,
-        role: data.role
+        role: data.role,
+        campusId: data.campusId || null,
+        defaultShift: data.defaultShift || null,
       }
     })
 

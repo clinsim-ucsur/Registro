@@ -6,6 +6,7 @@ import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
 import { Role, RecordType } from "@prisma/client"
 import { validateUserAction, registerAttendanceAction, syncOfflineRecordsAction, getTodayAttendanceStateAction } from "@/actions/attendance"
+import { getTodayTechnicianAssignmentAction } from "@/actions/schedules"
 import { toast } from "sonner"
 import { Loader2, LogIn, LogOut, Search, UserCheck, CheckCircle2, WifiOff } from "lucide-react"
 
@@ -54,7 +55,19 @@ interface AttendanceFormProps {
 export default function AttendanceForm({ campuses: propCampuses, courses: propCourses }: AttendanceFormProps = {}) {
   const [isValidating, setIsValidating] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState<RecordType | null>(null)
-  const [validatedUser, setValidatedUser] = useState<{id: string, name: string} | null>(null)
+  const [validatedUser, setValidatedUser] = useState<{
+    id: string
+    name: string
+    campusId?: string | null
+    campusName?: string | null
+    defaultShift?: string | null
+  } | null>(null)
+  const [technicianAssignment, setTechnicianAssignment] = useState<{
+    campusName: string | null
+    shift: string
+    expectedEntryTime: string
+    source: "SCHEDULE" | "DEFAULT_PROFILE"
+  } | null>(null)
   const [isOffline, setIsOffline] = useState(false)
   const [todayLastRecord, setTodayLastRecord] = useState<RecordType | null | "loading">(null)
 
@@ -141,6 +154,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
     if (isOffline) {
       setValidatedUser({ id: 'offline_user', name: `Pendiente de validación` })
       setTodayLastRecord(null)
+      setTechnicianAssignment(null)
       return
     }
 
@@ -150,13 +164,39 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       if (res.success && res.user) {
         setValidatedUser(res.user)
         toast.success(`Usuario encontrado: ${res.user.name}`)
-        // Query today's attendance state to know which button to show
+
+        // Si es técnico, consultar su asignación de sede y turno para hoy
+        if (role === Role.TECNICO) {
+          try {
+            const assign = await getTodayTechnicianAssignmentAction(res.user.id)
+            if (assign?.campus?.name) {
+              setTechnicianAssignment({
+                campusName: assign.campus.name,
+                shift: assign.shift,
+                expectedEntryTime: assign.expectedEntryTime,
+                source: assign.source,
+              })
+              // Asignar la sede al formulario
+              form.setValue("campusId", assign.campus.name)
+            } else {
+              setTechnicianAssignment(null)
+            }
+          } catch (e) {
+            console.error("Error al obtener asignación de técnico:", e)
+            setTechnicianAssignment(null)
+          }
+        } else {
+          setTechnicianAssignment(null)
+        }
+
+        // Consultar estado de asistencia hoy (ENTRADA / SALIDA)
         setTodayLastRecord("loading")
         const stateRes = await getTodayAttendanceStateAction(res.user.id)
         setTodayLastRecord(stateRes.lastRecordType)
       } else {
         setValidatedUser(null)
         setTodayLastRecord(null)
+        setTechnicianAssignment(null)
         toast.error(res.message || "Usuario no encontrado")
       }
     } catch (error) {
@@ -205,8 +245,10 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       longitude: c.longitude ?? null,
       radiusMeters: c.radiusMeters ?? 300,
     }))
-    const needsGeo = data.campusId
-      ? geoCampuses.some((c) => c.name === data.campusId && isGeoActive(c))
+    const targetCampusName = data.campusId || technicianAssignment?.campusName || validatedUser.campusName || undefined
+
+    const needsGeo = targetCampusName
+      ? geoCampuses.some((c) => c.name.toLowerCase() === targetCampusName.toLowerCase() && isGeoActive(c))
       : geoCampuses.some(isGeoActive)
     if (needsGeo) {
       try {
@@ -216,7 +258,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         setIsSubmitting(null)
         return
       }
-      const geoError = checkGeofence(location, geoCampuses, data.campusId)
+      const geoError = checkGeofence(location, geoCampuses, targetCampusName)
       if (geoError) {
         toast.error(geoError, { duration: 7000 })
         setIsSubmitting(null)
@@ -250,7 +292,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         userId: validatedUser.id,
         role: data.role,
         type: type,
-        campusId: data.campusId, 
+        campusId: targetCampusName, 
         courseId: data.courseId,
         clientTimestamp: new Date(),
         location,
@@ -259,9 +301,10 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
 
       if (res.success) {
         toast.success(res.message, { duration: 5000 })
-        form.reset({ role: watchRole, dni: "", campusId: data.campusId, courseId: data.courseId })
+        form.reset({ role: watchRole, dni: "", campusId: undefined, courseId: undefined })
         setValidatedUser(null)
         setTodayLastRecord(null)
+        setTechnicianAssignment(null)
       } else {
         toast.error(res.message)
       }
@@ -403,10 +446,59 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                   </div>
                 </FormControl>
                 {validatedUser && (
-                  <p className="text-emerald-600 text-sm mt-2 flex items-center gap-1.5 font-bold bg-emerald-50 p-2.5 rounded-md border border-emerald-100">
-                    <CheckCircle2 size={18}/>
-                    Validado: {validatedUser.name}
-                  </p>
+                  <div className="space-y-2 mt-2">
+                    <p className="text-emerald-600 text-sm flex items-center gap-1.5 font-bold bg-emerald-50 p-2.5 rounded-md border border-emerald-100">
+                      <CheckCircle2 size={18}/>
+                      Validado: {validatedUser.name}
+                    </p>
+
+                    {watchRole === Role.TECNICO && (
+                      <div className="p-4 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200">
+                        <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+                          <span className="text-xs font-black uppercase tracking-wider text-[#1967D2] flex items-center gap-1">
+                            📍 Sede Asignada Hoy:
+                          </span>
+                          {technicianAssignment?.shift && (
+                            <span className="text-[11px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full bg-[#1967D2] text-white">
+                              Turno: {technicianAssignment.shift} ({technicianAssignment.expectedEntryTime})
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Selector de sede con valor por defecto la sede asignada */}
+                        <div className="mt-2">
+                          <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
+                            Sede de marcación (cámbiala si estás rotando):
+                          </label>
+                          <Select
+                            value={form.watch("campusId") || technicianAssignment?.campusName || ""}
+                            onValueChange={(val) => form.setValue("campusId", val || undefined)}
+                          >
+                            <SelectTrigger className="h-12 text-base font-bold bg-white border border-blue-200 text-slate-800 rounded-xl focus:ring-[#1967D2]">
+                              <SelectValue placeholder="Seleccione Sede para hoy" />
+                            </SelectTrigger>
+                            <SelectContent alignItemWithTrigger={false} side="bottom" sideOffset={4} className="bg-white text-slate-800 border-slate-200 rounded-xl max-h-[250px] overflow-y-auto">
+                              {availableCampuses.map((cName) => (
+                                <SelectItem key={cName} value={cName} className="py-2.5 font-semibold">
+                                  {cName}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {technicianAssignment?.source === "SCHEDULE" && (
+                            <p className="text-[10px] text-blue-700 mt-1 font-semibold">
+                              ✓ Asignado por cronograma mensual para hoy.
+                            </p>
+                          )}
+                          {technicianAssignment?.source === "DEFAULT_PROFILE" && (
+                            <p className="text-[10px] text-slate-500 mt-1">
+                              ℹ Sede predeterminada del perfil. Si rotas hoy, cámbiala arriba.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )}
                 <FormMessage className="text-sm font-medium" />
               </FormItem>

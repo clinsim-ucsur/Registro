@@ -49,7 +49,15 @@ export async function validateUserAction(dni: string, role: Role) {
         id: true,
         name: true,
         role: true,
-      }
+        campusId: true,
+        defaultShift: true,
+        campus: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
     })
 
     if (!user) {
@@ -60,8 +68,16 @@ export async function validateUserAction(dni: string, role: Role) {
       return { success: false, message: "⚠ El DNI existe, pero el rol seleccionado es incorrecto." }
     }
 
-    return { success: true, user: { id: user.id, name: user.name } }
-    
+    return {
+      success: true,
+      user: {
+        id: user.id,
+        name: user.name,
+        campusId: user.campusId,
+        campusName: user.campus?.name || null,
+        defaultShift: user.defaultShift,
+      },
+    }
   } catch (error) {
     console.error("[validateUserAction] Error:", error)
     return { success: false, message: "Error de conexión con la base de datos." }
@@ -84,34 +100,67 @@ type RegisterAttendanceData = {
 
 export async function registerAttendanceAction(data: RegisterAttendanceData) {
   try {
-    // Límite por geolocalización según la configuración de cada sede
-    // (el registro offline se valida en el dispositivo al guardarse)
-    if (!data.isOfflineSync) {
-      const allCampuses = await prisma.campus.findMany({
-        select: { name: true, geoEnforced: true, latitude: true, longitude: true, radiusMeters: true },
-      })
-      const geoError = checkGeofence(data.location, allCampuses, data.campusId)
-      if (geoError) return { success: false, message: geoError }
-    }
-
-    const recordTimestamp = data.isOfflineSync && data.clientTimestamp 
-      ? new Date(data.clientTimestamp) 
-      : new Date()
-
     const user = await prisma.user.findUnique({
-      where: { id: data.userId }
+      where: { id: data.userId },
+      include: { campus: true },
     })
 
     if (!user) {
       return { success: false, message: "El usuario ya no existe en el sistema." }
     }
 
-    // Resolver Campus por nombre (ya que el form envía nombres hardcodeados)
+    const recordTimestamp = data.isOfflineSync && data.clientTimestamp 
+      ? new Date(data.clientTimestamp) 
+      : new Date()
+
+    // Fecha en hora Lima "YYYY-MM-DD"
+    const limaDateStr = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Lima",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(recordTimestamp)
+
+    // Si es TÉCNICO, verificar si tiene turno programado para hoy en el cronograma
+    let scheduledShift: any = null
+    if (data.role === Role.TECNICO) {
+      scheduledShift = await prisma.technicianSchedule.findUnique({
+        where: {
+          userId_date: {
+            userId: data.userId,
+            date: limaDateStr,
+          },
+        },
+        include: { campus: true },
+      })
+    }
+
+    // Resolver Campus de marcación:
+    // 1. data.campusId si vino del formulario (seleccionado o auto-asignado)
+    // 2. Si no vino, pero hay cronograma hoy -> usar campus del cronograma
+    // 3. Si no hay cronograma, pero el usuario tiene campus base -> usar su campus
+    let resolvedCampusName = data.campusId && data.campusId.trim() !== '' ? data.campusId.trim() : null
+    if (!resolvedCampusName && scheduledShift?.campus?.name) {
+      resolvedCampusName = scheduledShift.campus.name
+    } else if (!resolvedCampusName && user.campus?.name) {
+      resolvedCampusName = user.campus.name
+    }
+
+    // Límite por geolocalización según la configuración de la sede
+    if (!data.isOfflineSync) {
+      const allCampuses = await prisma.campus.findMany({
+        select: { name: true, geoEnforced: true, latitude: true, longitude: true, radiusMeters: true },
+      })
+      const geoError = checkGeofence(data.location, allCampuses, resolvedCampusName || undefined)
+      if (geoError) return { success: false, message: geoError }
+    }
+
+    // Resolver Campus ID en BD
     let finalCampusId = null
-    if (data.campusId && data.campusId.trim() !== '') {
-      let campus = await prisma.campus.findUnique({ where: { name: data.campusId.trim() } })
+    if (resolvedCampusName) {
+      let campus = await prisma.campus.findUnique({ where: { name: resolvedCampusName } })
       if (!campus) {
-        campus = await prisma.campus.create({ data: { name: data.campusId.trim() } })
+        campus = await prisma.campus.create({ data: { name: resolvedCampusName } })
       }
       finalCampusId = campus.id
     }
@@ -129,18 +178,37 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
     let status: RecordStatus = RecordStatus.A_TIEMPO
     
     if (data.type === RecordType.ENTRADA) {
-      const allRules = await prisma.toleranceRule.findMany()
-      const matchedRule = findApplicableToleranceRule(allRules, finalCampusId || undefined, data.role)
-      if (matchedRule) {
-        const earlyCheck = validateEarlyEntry(recordTimestamp, matchedRule)
+      // Si el técnico tiene un horario/turno específico asignado hoy en su cronograma,
+      // usamos esas tolerancias prioritariamente sobre las reglas genéricas
+      if (scheduledShift) {
+        const scheduleRule = {
+          expectedEntryTime: scheduledShift.expectedEntryTime,
+          earlyEntryToleranceMinutes: scheduledShift.earlyEntryToleranceMinutes ?? 15,
+          gracePeriodMinutes: scheduledShift.gracePeriodMinutes ?? 10,
+          lateToleranceMinutes: scheduledShift.lateToleranceMinutes ?? 30,
+        }
+        const earlyCheck = validateEarlyEntry(recordTimestamp, scheduleRule)
         if (!earlyCheck.allowed) {
           return {
             success: false,
             message: earlyCheck.message || "No se permite marcar con tanta anticipación.",
           }
         }
+        status = calculateStatusFromRule(recordTimestamp, scheduleRule)
+      } else {
+        const allRules = await prisma.toleranceRule.findMany()
+        const matchedRule = findApplicableToleranceRule(allRules, finalCampusId || undefined, data.role)
+        if (matchedRule) {
+          const earlyCheck = validateEarlyEntry(recordTimestamp, matchedRule)
+          if (!earlyCheck.allowed) {
+            return {
+              success: false,
+              message: earlyCheck.message || "No se permite marcar con tanta anticipación.",
+            }
+          }
+        }
+        status = await calculateToleranceStatus(recordTimestamp, finalCampusId || undefined, data.role)
       }
-      status = await calculateToleranceStatus(recordTimestamp, finalCampusId || undefined, data.role)
     }
 
     await prisma.attendanceRecord.create({
@@ -216,6 +284,24 @@ function validateEarlyEntry(
   return { allowed: true }
 }
 
+function calculateStatusFromRule(
+  recordTime: Date,
+  rule: { expectedEntryTime: string; gracePeriodMinutes: number; lateToleranceMinutes: number }
+): RecordStatus {
+  const [expectedHour, expectedMinute] = rule.expectedEntryTime.split(':').map(Number)
+  const expectedMinutes = (isNaN(expectedHour) ? 8 : expectedHour) * 60 + (isNaN(expectedMinute) ? 0 : expectedMinute)
+  const recordMinutes = limaMinutesOfDay(recordTime)
+  const diffInMinutes = recordMinutes - expectedMinutes
+
+  if (diffInMinutes <= rule.gracePeriodMinutes) {
+    return RecordStatus.A_TIEMPO
+  } else if (diffInMinutes <= rule.lateToleranceMinutes) {
+    return RecordStatus.TARDANZA
+  } else {
+    return RecordStatus.FALTA
+  }
+}
+
 export async function calculateToleranceStatus(
   recordTime: Date, 
   campusId?: string, 
@@ -227,20 +313,7 @@ export async function calculateToleranceStatus(
   const rule = findApplicableToleranceRule(rules, campusId, role)
   if (!rule) return RecordStatus.A_TIEMPO
 
-  const [expectedHour, expectedMinute] = rule.expectedEntryTime.split(':').map(Number)
-  const expectedMinutes = (isNaN(expectedHour) ? 8 : expectedHour) * 60 + (isNaN(expectedMinute) ? 0 : expectedMinute)
-  const recordMinutes = limaMinutesOfDay(recordTime)
-
-  const diffInMinutes = recordMinutes - expectedMinutes
-
-  // Si marca antes de la hora esperada o dentro del periodo de gracia
-  if (diffInMinutes <= rule.gracePeriodMinutes) {
-    return RecordStatus.A_TIEMPO
-  } else if (diffInMinutes <= rule.lateToleranceMinutes) {
-    return RecordStatus.TARDANZA
-  } else {
-    return RecordStatus.FALTA
-  }
+  return calculateStatusFromRule(recordTime, rule)
 }
 
 // ------------------------------------------------------------------

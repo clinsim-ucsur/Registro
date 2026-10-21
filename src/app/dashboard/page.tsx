@@ -8,7 +8,8 @@ import {
   Shield, 
   BarChart3, 
   Clock,
-  Layers
+  Layers,
+  Calendar as CalendarIcon
 } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { redirect } from "next/navigation"
@@ -21,6 +22,7 @@ import { DashboardAdmins } from "@/components/dashboard/admins"
 import { DashboardAnalytics } from "@/components/dashboard/analytics"
 import { DashboardRules } from "@/components/dashboard/rules"
 import { DashboardCatalogs } from "@/components/dashboard/catalogs"
+import { DashboardSchedules } from "@/components/dashboard/schedules"
 import { getAdminSession } from "@/lib/session"
 import { computeAnalytics } from "@/lib/analytics"
 
@@ -37,7 +39,7 @@ export default async function DashboardPage() {
     return permissions.includes(moduleId)
   }
 
-  const [records, users, admins, weeklyAnalytics, initialAnalytics, rules, campuses, catalogCampuses, catalogCourses] = await Promise.all([
+  const [records, users, admins, weeklyAnalytics, initialAnalytics, rules, campuses, catalogCampuses, catalogCourses, technicianSchedules] = await Promise.all([
     prisma.attendanceRecord.findMany({
       orderBy: { timestamp: 'desc' },
       take: 200,
@@ -49,6 +51,7 @@ export default async function DashboardPage() {
     }),
     prisma.user.findMany({
       where: { role: { in: ['DOCENTE', 'TECNICO', 'PACIENTE_SIMULADO'] } },
+      include: { campus: { select: { id: true, name: true } } },
       orderBy: { name: 'asc' },
       take: 200 // MVP limit
     }),
@@ -82,7 +85,15 @@ export default async function DashboardPage() {
           select: { records: true }
         }
       }
-    })
+    }),
+    prisma.technicianSchedule.findMany({
+      orderBy: [{ date: 'desc' }, { expectedEntryTime: 'asc' }],
+      include: {
+        user: { select: { id: true, name: true, dni: true } },
+        campus: { select: { id: true, name: true } },
+      },
+      take: 300,
+    }),
   ])
 
   // Determinar default tab accesible
@@ -156,6 +167,15 @@ export default async function DashboardPage() {
                 className="w-full justify-start gap-4 px-5 py-3.5 text-sm md:text-base font-bold rounded-2xl text-slate-300 data-[state=active]:bg-[#1967D2] data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-blue-900/50 hover:bg-white/5 transition-all outline-none"
               >
                 <Clock size={20}/> Horarios y Tolerancias
+              </TabsTrigger>
+            )}
+
+            {(hasAccess("rules") || hasAccess("users")) && (
+              <TabsTrigger 
+                value="schedules" 
+                className="w-full justify-start gap-4 px-5 py-3.5 text-sm md:text-base font-bold rounded-2xl text-slate-300 data-[state=active]:bg-[#1967D2] data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-blue-900/50 hover:bg-white/5 transition-all outline-none"
+              >
+                <CalendarIcon size={20}/> Cronograma Técnicos
               </TabsTrigger>
             )}
 
@@ -259,9 +279,19 @@ export default async function DashboardPage() {
               </TabsContent>
             )}
 
+            {(hasAccess("rules") || hasAccess("users")) && (
+              <TabsContent value="schedules" className="m-0 p-0 outline-none">
+                <DashboardSchedules
+                  initialSchedules={technicianSchedules as any}
+                  technicians={users.filter((u) => u.role === "TECNICO") as any}
+                  campuses={campuses}
+                />
+              </TabsContent>
+            )}
+
             {hasAccess("users") && (
               <TabsContent value="users" className="m-0 p-0 outline-none">
-                <DashboardUsers users={users} />
+                <DashboardUsers users={users} campuses={campuses} />
               </TabsContent>
             )}
 
