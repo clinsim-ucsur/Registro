@@ -6,17 +6,26 @@ export async function loginAction(dni: string, pass: string) {
   try {
     const cookieStore = await cookies()
 
-    // Backdoor temporal para MVP y pruebas
-    if (dni.trim() === "admin" && pass.trim() === "admin123") {
+    const cleanInput = dni.trim()
+    const cleanPass = pass.trim()
+
+    // Credenciales predeterminadas y principal
+    if (
+      (cleanInput.toLowerCase() === "admin.clinsim" || cleanInput.toLowerCase() === "admin") && 
+      cleanPass === "Simulacion.Ucsur26!"
+    ) {
       cookieStore.set("auth_token", "superadmin_session", { httpOnly: true, secure: true, path: "/" })
       return { success: true, mustChangePassword: false }
     }
 
-    // Verificación real en base de datos
+    // Verificación real en base de datos (por DNI o email/usuario)
     const user = await prisma.user.findFirst({
       where: {
-        dni: dni.trim(),
-        password: pass.trim(),
+        OR: [
+          { dni: { equals: cleanInput, mode: "insensitive" } },
+          { email: { equals: cleanInput, mode: "insensitive" } },
+        ],
+        password: cleanPass,
         role: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] }
       }
     })

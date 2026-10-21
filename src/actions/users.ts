@@ -215,12 +215,14 @@ export async function createAdminAction(data: {
       // Si el usuario ya existe (por ejemplo docente, paciente o técnico),
       // se promueve a administrador asignándole contraseña, rol administrativo y permisos
       // preservando su historial de marcaciones.
+      const newPass = data.password && data.password.trim() !== "" ? data.password.trim() : existing.password
       await prisma.user.update({
         where: { id: existing.id },
         data: {
           name: data.name || existing.name,
           role: data.role,
-          password: data.password && data.password.trim() !== "" ? data.password.trim() : existing.password,
+          password: newPass,
+          mustChangePassword: true,
           campusId: data.campusId !== undefined ? (data.campusId || null) : existing.campusId,
           permissions: finalPermissions,
         }
@@ -233,12 +235,15 @@ export async function createAdminAction(data: {
       }
     }
 
+    const cleanPass = data.password && data.password.trim() !== "" ? data.password.trim() : null
+
     await prisma.user.create({
       data: {
-        name: data.name,
-        dni: data.dni,
+        name: data.name.trim(),
+        dni: data.dni.trim(),
         role: data.role,
-        password: data.password || null,
+        password: cleanPass,
+        mustChangePassword: true,
         campusId: data.campusId || null,
         permissions: finalPermissions,
       }
