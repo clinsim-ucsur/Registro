@@ -212,15 +212,40 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         reject(new Error("Su dispositivo no soporta geolocalización."))
         return
       }
+
+      let finished = false
+      const timer = setTimeout(() => {
+        if (!finished) {
+          finished = true
+          // Reintentar sin highAccuracy (usando red/antenas) si el satélite GPS tarda mucho
+          navigator.geolocation.getCurrentPosition(
+            (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }),
+            (err) => reject(new Error("Tiempo de espera agotado al obtener el GPS. Asegúrese de tener el GPS activado.")),
+            { enableHighAccuracy: false, timeout: 6000, maximumAge: 10000 }
+          )
+        }
+      }, 7000)
+
       navigator.geolocation.getCurrentPosition(
-        (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }),
-        (err) =>
-          reject(new Error(
-            err.code === err.PERMISSION_DENIED
-              ? "Debe permitir el acceso a su ubicación para marcar asistencia."
-              : "No se pudo obtener su ubicación. Active el GPS e inténtelo de nuevo."
-          )),
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        (p) => {
+          if (!finished) {
+            finished = true
+            clearTimeout(timer)
+            resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy })
+          }
+        },
+        (err) => {
+          if (!finished) {
+            finished = true
+            clearTimeout(timer)
+            reject(new Error(
+              err.code === err.PERMISSION_DENIED
+                ? "Debe permitir el acceso a su ubicación para marcar asistencia."
+                : "No se pudo obtener su ubicación GPS. Active el GPS o acérquese a una ventana."
+            ))
+          }
+        },
+        { enableHighAccuracy: true, timeout: 7000, maximumAge: 0 }
       )
     })
 

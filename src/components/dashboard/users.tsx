@@ -61,21 +61,27 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
     e.preventDefault()
     if (!editingUser) return
     setIsProcessing(true)
-    const res = await editUserAction(editingUser.oldDni, {
-      name: editingUser.name,
-      dni: editingUser.dni,
-      role: editingUser.role as Role,
-      campusId: editingUser.campusId || null,
-      defaultShift: editingUser.defaultShift || null,
-    })
-    
-    if (res.success) {
-      toast.success(res.message)
-      setEditingUser(null)
-    } else {
-      toast.error(res.message)
+    try {
+      const res = await editUserAction(editingUser.oldDni, {
+        name: editingUser.name,
+        dni: editingUser.dni,
+        role: editingUser.role as Role,
+        campusId: editingUser.campusId || null,
+        defaultShift: editingUser.defaultShift || null,
+      })
+      
+      if (res.success) {
+        toast.success(res.message)
+        setEditingUser(null)
+      } else {
+        toast.error(res.message)
+      }
+    } catch (err: any) {
+      console.error("Error al editar usuario:", err)
+      toast.error(err?.message || "Ocurrió un error inesperado al guardar los cambios.")
+    } finally {
+      setIsProcessing(false)
     }
-    setIsProcessing(false)
   }
 
   const handleCreate = async (e: React.FormEvent) => {

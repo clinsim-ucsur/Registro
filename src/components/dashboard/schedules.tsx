@@ -28,9 +28,8 @@ import {
   upsertTechnicianScheduleAction, 
   deleteTechnicianScheduleAction, 
   bulkUpsertTechnicianSchedulesAction,
-  DEFAULT_SHIFT_TIMES,
-  type ScheduleItemInput 
 } from "@/actions/schedules"
+import { DEFAULT_SHIFT_TIMES, type ScheduleItemInput } from "@/lib/schedule-constants"
 import { Shift } from "@prisma/client"
 
 type Technician = {
@@ -86,8 +85,8 @@ function ScheduleModal({ isOpen, onClose, title, children }: { isOpen: boolean; 
   )
 }
 
-export function DashboardSchedules({ initialSchedules, technicians, campuses }: SchedulesProps) {
-  const [schedules, setSchedules] = useState<ScheduleRecord[]>(initialSchedules)
+export function DashboardSchedules({ initialSchedules = [], technicians = [], campuses = [] }: SchedulesProps) {
+  const [schedules, setSchedules] = useState<ScheduleRecord[]>(initialSchedules || [])
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date()
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
@@ -146,13 +145,16 @@ export function DashboardSchedules({ initialSchedules, technicians, campuses }: 
 
   // Filtrado de cronograma en pantalla
   const filteredSchedules = useMemo(() => {
+    if (!Array.isArray(schedules)) return []
+    const term = searchTerm.toLowerCase().trim()
     return schedules.filter((s) => {
-      const matchMonth = s.date.startsWith(selectedMonth)
+      if (!s) return false
+      const matchMonth = (s.date || "").startsWith(selectedMonth)
       const matchCampus = filterCampus === "ALL" || s.campusId === filterCampus
-      const matchSearch =
-        s.user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        s.user.dni.includes(searchTerm) ||
-        s.campus.name.toLowerCase().includes(searchTerm.toLowerCase())
+      const userName = s.user?.name?.toLowerCase() || ""
+      const userDni = s.user?.dni || ""
+      const campusName = s.campus?.name?.toLowerCase() || ""
+      const matchSearch = !term || userName.includes(term) || userDni.includes(term) || campusName.includes(term)
       return matchMonth && matchCampus && matchSearch
     })
   }, [schedules, selectedMonth, filterCampus, searchTerm])
@@ -554,11 +556,11 @@ export function DashboardSchedules({ initialSchedules, technicians, campuses }: 
                       <TableCell className="px-6 font-black text-slate-800 text-sm">
                         📅 {s.date}
                       </TableCell>
-                      <TableCell className="font-bold text-slate-800">{s.user.name}</TableCell>
-                      <TableCell className="font-semibold text-slate-500 font-mono text-xs">{s.user.dni}</TableCell>
+                      <TableCell className="font-bold text-slate-800">{s.user?.name || "Técnico sin nombre"}</TableCell>
+                      <TableCell className="font-semibold text-slate-500 font-mono text-xs">{s.user?.dni || "—"}</TableCell>
                       <TableCell>
                         <span className="px-3 py-1 rounded-lg bg-blue-50 text-[#1967D2] border border-blue-100 font-black text-xs inline-flex items-center gap-1">
-                          <MapPin size={12} /> {s.campus.name}
+                          <MapPin size={12} /> {s.campus?.name || "Sin sede"}
                         </span>
                       </TableCell>
                       <TableCell>
