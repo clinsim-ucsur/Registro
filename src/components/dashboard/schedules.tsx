@@ -128,6 +128,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
   const [isOcrOpen, setIsOcrOpen] = useState(false)
   const [isSundayModalOpen, setIsSundayModalOpen] = useState(false)
   const [sundayDate, setSundayDate] = useState<string>("")
+  const [selectedMorningTechId, setSelectedMorningTechId] = useState<string>("")
+  const [selectedIntermediateTechId, setSelectedIntermediateTechId] = useState<string>("")
   const [sundayAssignments, setSundayAssignments] = useState<
     Record<
       string,
@@ -140,6 +142,21 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     >
   >({})
   const [isSavingSunday, startSundayTransition] = useTransition()
+
+  // Conteo en tiempo real de técnicos trabajando vs en descanso en el domingo
+  const { workingCount, restingCount } = useMemo(() => {
+    let working = 0
+    let resting = 0
+    technicians.forEach((t) => {
+      const item = sundayAssignments[t.id]
+      if (!item || item.shift === Shift.DESCANSO) {
+        resting++
+      } else {
+        working++
+      }
+    })
+    return { workingCount: working, restingCount: resting }
+  }, [sundayAssignments, technicians])
 
   // Lista de domingos disponibles en el mes seleccionado o próximos
   const sundaysList = useMemo(() => {
@@ -202,6 +219,36 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     const existingForDate = schedules.filter((s) => s.date === dateToUse)
     const existingMap = new Map(existingForDate.map((s) => [s.userId, s]))
 
+    // Identificar si ya existen técnicos asignados a la guardia de ese domingo
+    let detectedMorningId = ""
+    let detectedInterId = ""
+
+    technicians.forEach((t) => {
+      const existing = existingMap.get(t.id)
+      if (existing) {
+        if (existing.shift === Shift.MANANA && !detectedMorningId) {
+          detectedMorningId = t.id
+        } else if ((existing.shift === Shift.INTERMEDIO || existing.shift === Shift.TARDE) && !detectedInterId) {
+          detectedInterId = t.id
+        }
+      }
+    })
+
+    // Si aún no están definidos, sugerir según el perfil habitual
+    if (!detectedMorningId) {
+      const candM = technicians.find((t) => (t.defaultShift as Shift) === Shift.MANANA) || technicians[0]
+      detectedMorningId = candM?.id || ""
+    }
+    if (!detectedInterId) {
+      const candI = technicians.find((t) => t.id !== detectedMorningId && ((t.defaultShift as Shift) === Shift.TARDE || (t.defaultShift as Shift) === Shift.INTERMEDIO)) || technicians.find((t) => t.id !== detectedMorningId)
+      detectedInterId = candI?.id || ""
+    }
+
+    setSelectedMorningTechId(detectedMorningId)
+    setSelectedIntermediateTechId(detectedInterId)
+
+    const hasAnyExistingRecords = existingForDate.length > 0
+
     technicians.forEach((t) => {
       const existing = existingMap.get(t.id)
       if (existing) {
@@ -209,43 +256,107 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
           shift: existing.shift,
           campusId: existing.campusId,
           expectedEntryTime: existing.expectedEntryTime,
-          notes: existing.notes || "",
+          notes: existing.notes || (existing.shift === Shift.DESCANSO ? "Descanso dominical" : "Guardia Dominical"),
+        }
+      } else if (hasAnyExistingRecords) {
+        // Si ya hay registros para ese domingo y este técnico no tiene, está en descanso
+        initialMap[t.id] = {
+          shift: Shift.DESCANSO,
+          campusId: t.campus?.id || campuses[0]?.id || "",
+          expectedEntryTime: "00:00",
+          notes: "Descanso dominical",
         }
       } else {
-        // Regla habitual dominical:
-        // - Personal habitual TARDE -> pasa a INTERMEDIO (09:00 AM)
-        // - Personal habitual MAÑANA -> se mantiene en MAÑANA (06:00 AM)
-        // - Personal habitual INTERMEDIO -> INTERMEDIO (09:00 AM)
-        // - Personal habitual NOCHE -> NOCHE (21:00)
-        const baseShift = (t.defaultShift as Shift) || Shift.MANANA
-        let sunShift: Shift = baseShift
-        let entry = "06:00"
-
-        if (baseShift === Shift.TARDE) {
-          sunShift = Shift.INTERMEDIO
-          entry = "09:00"
-        } else if (baseShift === Shift.MANANA) {
-          sunShift = Shift.MANANA
-          entry = "06:00"
-        } else if (baseShift === Shift.INTERMEDIO) {
-          sunShift = Shift.INTERMEDIO
-          entry = "09:00"
-        } else if (baseShift === Shift.NOCHE) {
-          sunShift = Shift.NOCHE
-          entry = "21:00"
-        }
-
-        initialMap[t.id] = {
-          shift: sunShift,
-          campusId: t.campus?.id || campuses[0]?.id || "",
-          expectedEntryTime: entry,
-          notes: "Turno de Domingo",
+        // Si el domingo es nuevo y sin programar: Asignar guardia estándar de 2 técnicos y resto a Descanso
+        if (t.id === detectedMorningId) {
+          initialMap[t.id] = {
+            shift: Shift.MANANA,
+            campusId: t.campus?.id || campuses[0]?.id || "",
+            expectedEntryTime: "06:00",
+            notes: "Guardia Dominical (Mañana)",
+          }
+        } else if (t.id === detectedInterId) {
+          initialMap[t.id] = {
+            shift: Shift.INTERMEDIO,
+            campusId: t.campus?.id || campuses[0]?.id || "",
+            expectedEntryTime: "09:00",
+            notes: "Guardia Dominical (Intermedio)",
+          }
+        } else {
+          initialMap[t.id] = {
+            shift: Shift.DESCANSO,
+            campusId: t.campus?.id || campuses[0]?.id || "",
+            expectedEntryTime: "00:00",
+            notes: "Descanso dominical",
+          }
         }
       }
     })
 
     setSundayAssignments(initialMap)
     setIsSundayModalOpen(true)
+  }
+
+  // Aplicar guardia dominical: 1 técnico en Mañana, 1 en Intermedio, y el resto en Descanso
+  const applyGuardiaDominical = () => {
+    if (!selectedMorningTechId && !selectedIntermediateTechId) {
+      toast.warning("Selecciona al menos un técnico para la guardia de domingo.")
+      return
+    }
+    if (selectedMorningTechId && selectedIntermediateTechId && selectedMorningTechId === selectedIntermediateTechId) {
+      toast.error("Debes seleccionar dos técnicos diferentes para la Mañana y el Intermedio.")
+      return
+    }
+
+    setSundayAssignments((prev) => {
+      const next = { ...prev }
+      technicians.forEach((t) => {
+        if (t.id === selectedMorningTechId) {
+          next[t.id] = {
+            shift: Shift.MANANA,
+            campusId: t.campus?.id || campuses[0]?.id || "",
+            expectedEntryTime: "06:00",
+            notes: "Guardia Dominical (Mañana)",
+          }
+        } else if (t.id === selectedIntermediateTechId) {
+          next[t.id] = {
+            shift: Shift.INTERMEDIO,
+            campusId: t.campus?.id || campuses[0]?.id || "",
+            expectedEntryTime: "09:00",
+            notes: "Guardia Dominical (Intermedio)",
+          }
+        } else {
+          next[t.id] = {
+            shift: Shift.DESCANSO,
+            campusId: t.campus?.id || campuses[0]?.id || "",
+            expectedEntryTime: "00:00",
+            notes: "Descanso dominical",
+          }
+        }
+      })
+      return next
+    })
+
+    const morningTech = technicians.find((t) => t.id === selectedMorningTechId)
+    const interTech = technicians.find((t) => t.id === selectedIntermediateTechId)
+    toast.success(`✓ Guardia aplicada: ${morningTech?.name || "1"} en Mañana (06:00) y ${interTech?.name || "1"} en Intermedio (09:00). Resto de técnicos en descanso.`)
+  }
+
+  // Poner a todos en descanso
+  const applyAllDescanso = () => {
+    setSundayAssignments((prev) => {
+      const next = { ...prev }
+      technicians.forEach((t) => {
+        next[t.id] = {
+          shift: Shift.DESCANSO,
+          campusId: t.campus?.id || campuses[0]?.id || "",
+          expectedEntryTime: "00:00",
+          notes: "Descanso dominical",
+        }
+      })
+      return next
+    })
+    toast.info("Todos los técnicos configurados en Descanso Dominical.")
   }
 
   // Regla habitual: Tarde a Intermedio
@@ -270,7 +381,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       })
       return next
     })
-    toast.info("Regla habitual aplicada: Personal de la tarde pasa a Intermedio (9:00 AM).")
+    toast.info("Regla aplicada: Personal de la tarde pasa a Intermedio (9:00 AM).")
   }
 
   // Todos a Intermedio (Mañana y Tarde)
@@ -503,15 +614,15 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     return bestTech
   }
 
-  // Parsear contenido de celda de turno y rotación (ej: M, T, I, M(N), T(N), M(V), M(A))
-  const parseShiftCell = (cellVal: any, defaultCampusName: string) => {
+  // Parsear contenido de celda de turno y rotación (ej: M, T, I, N, M(N), T(N), M(V), M(A), D, DESC)
+  const parseShiftCell = (cellVal: any, defaultCampusName: string, isSunday = false) => {
     if (!cellVal) return null
     const str = String(cellVal).trim()
     if (!str) return null
 
     // Ignorar feriados o textos descriptivos
     const upper = str.toUpperCase()
-    if (upper === "F" || upper.startsWith("FERIAD") || upper.startsWith("VAC") || upper === "V" && !str.includes("(")) {
+    if (upper === "F" || upper.startsWith("FERIAD") || upper.startsWith("VAC") || (upper === "V" && !str.includes("("))) {
       return null
     }
 
@@ -523,8 +634,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       }
     }
 
-    // Formato de rotación: LETRA(SEDE), ej: M(N), T(N), M(V), T(V), M(A)
-    const rotMatch = str.match(/^([MTI])\s*\(([NVA])\)$/i)
+    // Formato de rotación: LETRA(SEDE), ej: M(N), T(N), I(N), N(N), M(V), T(V), M(A)
+    const rotMatch = str.match(/^([MTIN])\s*\(([NVA])\)$/i)
     let shiftLetter = ""
     let targetCampus = defaultCampusName
 
@@ -535,14 +646,22 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       else if (campusCode === "A") targetCampus = "Campus Ate"
       else if (campusCode === "V") targetCampus = "Campus Villa"
     } else {
-      const singleMatch = str.match(/^([MTI])/i)
+      const singleMatch = str.match(/^([MTIN])/i)
       if (!singleMatch) return null
       shiftLetter = singleMatch[1].toUpperCase()
     }
 
     let shift: Shift = Shift.MANANA
-    if (shiftLetter === "T") shift = Shift.TARDE
-    else if (shiftLetter === "I") shift = Shift.INTERMEDIO
+    if (shiftLetter === "T") {
+      // Regla dominical: El domingo la tarde rota habitualmente a Turno Intermedio (09:00 AM)
+      shift = isSunday ? Shift.INTERMEDIO : Shift.TARDE
+    } else if (shiftLetter === "I") {
+      shift = Shift.INTERMEDIO
+    } else if (shiftLetter === "N") {
+      shift = Shift.NOCHE
+    } else {
+      shift = Shift.MANANA
+    }
 
     return {
       shift,
@@ -645,23 +764,42 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             // Recorrer las columnas de los días
             for (const { col, day } of dayColMap) {
               const cellVal = row[col]
-              const parsed = parseShiftCell(cellVal, currentCampus)
               const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+              const dObj = new Date(`${dateStr}T12:00:00Z`)
+              const isSunday = dObj.getUTCDay() === 0
+
+              const parsed = parseShiftCell(cellVal, currentCampus, isSunday)
               
               if (parsed) {
+                let entryTime = DEFAULT_SHIFT_TIMES[parsed.shift]?.entry || "06:00"
+                if (parsed.shift === Shift.DESCANSO) {
+                  entryTime = "00:00"
+                } else if (isSunday && parsed.shift === Shift.INTERMEDIO) {
+                  entryTime = "09:00"
+                }
+
+                let notes = "Rol mensual"
+                if (parsed.shift === Shift.DESCANSO) {
+                  notes = isSunday ? "Descanso dominical" : "Descanso compensatorio semanal"
+                } else if (isSunday) {
+                  notes = `Guardia dominical (${parsed.shift})`
+                } else if (parsed.campusName !== currentCampus) {
+                  notes = `Rotación a ${parsed.campusName}`
+                }
+
                 matrixMapped.push({
                   dni: tech.dni,
                   name: tech.name,
                   date: dateStr,
                   campusName: parsed.campusName,
                   shift: parsed.shift,
-                  expectedEntryTime: DEFAULT_SHIFT_TIMES[parsed.shift].entry,
-                  notes: parsed.shift === Shift.DESCANSO 
-                    ? "Descanso programado" 
-                    : (parsed.campusName !== currentCampus ? `Rotación a ${parsed.campusName}` : "Rol mensual"),
+                  expectedEntryTime: entryTime,
+                  notes,
                 })
               } else if (!cellVal || String(cellVal).trim() === "") {
-                // Espacio vacío en la programación = Descanso programado
+                // Espacio vacío en la programación:
+                // Si es domingo: Descanso dominical (por regla general solo 2 hacen guardia y resto descansa)
+                // Si es día de semana: Descanso compensatorio semanal (los que trabajaron domingo)
                 matrixMapped.push({
                   dni: tech.dni,
                   name: tech.name,
@@ -669,7 +807,9 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                   campusName: currentCampus,
                   shift: Shift.DESCANSO,
                   expectedEntryTime: "00:00",
-                  notes: "Descanso programado (espacio libre en rol)",
+                  notes: isSunday 
+                    ? "Descanso dominical (sin guardia asignada)" 
+                    : "Descanso compensatorio semanal",
                 })
               }
             }
@@ -695,11 +835,36 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             rawDate = parsed.toISOString().slice(0, 10)
           }
 
+          const dObj = rawDate ? new Date(`${rawDate}T12:00:00Z`) : null
+          const isSunday = dObj ? dObj.getUTCDay() === 0 : false
+
           let shiftVal: Shift = Shift.MANANA
           const sText = getVal(["turno", "shift", "horario"]).toUpperCase()
-          if (sText.includes("DESC") || sText.includes("LIBRE") || sText === "D" || sText === "L") shiftVal = Shift.DESCANSO
-          else if (sText.includes("TARDE") || sText === "T") shiftVal = Shift.TARDE
-          else if (sText.includes("INTER") || sText.includes("MED") || sText === "I") shiftVal = Shift.INTERMEDIO
+          if (sText.includes("DESC") || sText.includes("LIBRE") || sText === "D" || sText === "L") {
+            shiftVal = Shift.DESCANSO
+          } else if (sText.includes("TARDE") || sText === "T") {
+            shiftVal = isSunday ? Shift.INTERMEDIO : Shift.TARDE
+          } else if (sText.includes("INTER") || sText.includes("MED") || sText === "I") {
+            shiftVal = Shift.INTERMEDIO
+          } else if (sText.includes("NOCHE") || sText === "N") {
+            shiftVal = Shift.NOCHE
+          }
+
+          let entryTime = getVal(["entrada", "hora", "ingreso", "hora_entrada"])
+          if (!entryTime) {
+            if (shiftVal === Shift.DESCANSO) entryTime = "00:00"
+            else if (isSunday && shiftVal === Shift.INTERMEDIO) entryTime = "09:00"
+            else entryTime = DEFAULT_SHIFT_TIMES[shiftVal]?.entry || "06:00"
+          }
+
+          let notes = getVal(["notas", "observacion", "observaciones", "notes"])
+          if (!notes) {
+            if (shiftVal === Shift.DESCANSO) {
+              notes = isSunday ? "Descanso dominical" : "Descanso compensatorio semanal"
+            } else if (isSunday) {
+              notes = `Guardia dominical (${shiftVal})`
+            }
+          }
 
           return {
             dni: getVal(["dni", "documento", "id"]),
@@ -707,8 +872,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             date: rawDate,
             campusName: getVal(["sede", "campus", "local"]),
             shift: shiftVal,
-            expectedEntryTime: getVal(["entrada", "hora", "ingreso", "hora_entrada"]),
-            notes: getVal(["notas", "observacion", "observaciones", "notes"]),
+            expectedEntryTime: entryTime,
+            notes,
           } as any
         }).filter((x) => x.date && (x.dni || (x as any).name))
 
@@ -778,7 +943,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     }
   }
 
-    // Parsear texto de la imagen del rol mensual con lectura de secciones de sedes y rotaciones
+  // Parsear texto de la imagen del rol mensual con lectura de secciones de sedes y rotaciones
   const parseOcrTextToRows = (text: string) => {
     const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 1)
     const detectedRows: any[] = []
@@ -817,21 +982,27 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       // Buscar si la línea corresponde a un técnico
       const matchedTech = matchTechFromText(line)
       if (matchedTech) {
-        // Extraer los turnos y rotaciones en la línea (ej: M, T, I, M(N), T(N), M(V), D)
-        const tokens = line.match(/([MTI]\s*\([NVA]\)|[MTID])/gi)
+        // Extraer los turnos y rotaciones en la línea (ej: M, T, I, N, M(N), T(N), M(V), D, L)
+        const tokens = line.match(/([MTIN]\s*\([NVA]\)|[MTINDL])/gi)
         if (tokens && tokens.length > 0) {
           tokens.forEach((token, idx) => {
-            const parsed = parseShiftCell(token, currentCampus)
+            const day = Math.min(idx + 1, 31)
+            const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+            const dObj = new Date(`${dateStr}T12:00:00Z`)
+            const isSunday = dObj.getUTCDay() === 0
+            const parsed = parseShiftCell(token, currentCampus, isSunday)
             if (parsed) {
-              const day = Math.min(idx + 1, 31)
-              const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+              let entryTime = DEFAULT_SHIFT_TIMES[parsed.shift]?.entry || "06:00"
+              if (parsed.shift === Shift.DESCANSO) entryTime = "00:00"
+              else if (isSunday && parsed.shift === Shift.INTERMEDIO) entryTime = "09:00"
+
               detectedRows.push({
                 name: matchedTech.name,
                 dni: matchedTech.dni || "",
                 date: dateStr,
                 campusName: parsed.campusName,
                 shift: parsed.shift,
-                entryTime: DEFAULT_SHIFT_TIMES[parsed.shift].entry,
+                entryTime,
               })
             }
           })
@@ -1515,28 +1686,28 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       <ScheduleModal
         isOpen={isSundayModalOpen}
         onClose={() => setIsSundayModalOpen(false)}
-        title="Asignación Rápida de Turnos para Domingo"
+        title="Asignación de Turnos de Domingo (Guardia Dominical)"
         maxWidth="max-w-5xl"
       >
         <div className="space-y-6">
-          {/* Banner explicativo */}
+          {/* Banner explicativo de la regla dominical */}
           <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-50 via-orange-50 to-amber-50 border border-amber-200/80 flex items-start gap-3">
             <div className="p-2.5 rounded-xl bg-amber-500 text-white shrink-0 mt-0.5">
               <Sun size={20} />
             </div>
             <div className="space-y-1">
-              <h4 className="text-sm font-black text-amber-950">
-                Rotación de Turnos Especiales de Domingo
+              <h4 className="text-sm font-black text-amber-950 flex items-center gap-2">
+                <span>Regla de Guardia Dominical: 2 Técnicos (Mañana e Intermedio)</span>
               </h4>
               <p className="text-xs font-medium text-amber-800 leading-relaxed">
-                En domingos, el personal con turno habitual de la <strong>Tarde</strong> cambia comúnmente a <strong>Intermedio (09:00 AM)</strong>, mientras que los de la <strong>Mañana</strong> pueden continuar en Mañana (06:00 AM) o pasar a Intermedio. Selecciona la fecha y usa los botones de 1 clic para configurar a todos los técnicos al instante.
+                Por regla general, <strong>los domingos sólo se asignan 2 técnicos</strong>: uno en <strong>Mañana (06:00 AM)</strong> y uno en <strong>Intermedio (09:00 AM)</strong>. Todos los demás quedan en <strong>Descanso</strong> (salvo días excepcionales). Quienes trabajan este domingo descansarán en otro día programado en la semana.
               </p>
             </div>
           </div>
 
-          {/* Selector de Fecha del Domingo y Atajos */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center bg-slate-50 p-4 rounded-2xl border border-slate-200/80">
-            <div>
+          {/* Selector de Fecha del Domingo */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-200/80">
+            <div className="flex-1">
               <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1.5 flex items-center gap-1.5">
                 <CalendarDays size={16} className="text-[#1967D2]" /> Fecha del Domingo a Programar
               </label>
@@ -1553,166 +1724,286 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
               </select>
             </div>
 
-            <div>
-              <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1.5 flex items-center gap-1.5">
-                <Zap size={16} className="text-amber-500" /> Atajos de Configuración
-              </label>
-              <div className="flex flex-wrap gap-2">
+            <div className="flex items-center gap-2 pt-2 sm:pt-4">
+              <div className="px-3.5 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-black text-xs flex items-center gap-1.5 shadow-xs">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span>{workingCount} Trabajando</span>
+              </div>
+              <div className="px-3.5 py-2 rounded-xl bg-slate-100 border border-slate-200 text-slate-700 font-bold text-xs flex items-center gap-1.5">
+                <span>🏖️</span>
+                <span>{restingCount} en Descanso</span>
+              </div>
+            </div>
+          </div>
+
+          {/* PANEL DE GUARDIA DOMINICAL ESTÁNDAR (1 Mañana + 1 Intermedio, Resto Descanso) */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-blue-50 via-indigo-50/60 to-sky-50 border-2 border-blue-200 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-blue-200/60">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 rounded-lg bg-[#1967D2] text-white font-black text-xs shadow-xs">
+                  🛡️ Guardia Estándar
+                </span>
+                <h4 className="font-black text-sm text-[#0B1B3D]">
+                  Selección Rápida de Guardia (Resto a Descanso)
+                </h4>
+              </div>
+              <span className="text-[11px] font-extrabold text-blue-700 bg-white/90 px-2.5 py-1 rounded-full border border-blue-200">
+                1 Mañana (6 AM) + 1 Intermedio (9 AM)
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Selector Técnico Mañana */}
+              <div className="bg-white p-3.5 rounded-xl border border-blue-100 shadow-xs space-y-1.5">
+                <label className="text-xs font-black uppercase text-amber-800 flex items-center gap-1.5">
+                  <span>🌅</span> Técnico Turno Mañana (06:00 AM — 3:00 PM)
+                </label>
+                <select
+                  value={selectedMorningTechId}
+                  onChange={(e) => setSelectedMorningTechId(e.target.value)}
+                  className="w-full h-10 bg-slate-50 border border-slate-200 rounded-lg px-2.5 text-xs font-extrabold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
+                >
+                  <option value="">-- Seleccionar Técnico Mañana --</option>
+                  {technicians.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} (Habitual: {t.defaultShift || "Sin turno"}) {t.campus ? `- ${t.campus.name}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Selector Técnico Intermedio */}
+              <div className="bg-white p-3.5 rounded-xl border border-blue-100 shadow-xs space-y-1.5">
+                <label className="text-xs font-black uppercase text-cyan-800 flex items-center gap-1.5">
+                  <span>⛅</span> Técnico Turno Intermedio (09:00 AM — 6:00 PM)
+                </label>
+                <select
+                  value={selectedIntermediateTechId}
+                  onChange={(e) => setSelectedIntermediateTechId(e.target.value)}
+                  className="w-full h-10 bg-slate-50 border border-slate-200 rounded-lg px-2.5 text-xs font-extrabold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
+                >
+                  <option value="">-- Seleccionar Técnico Intermedio --</option>
+                  {technicians.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} (Habitual: {t.defaultShift || "Sin turno"}) {t.campus ? `- ${t.campus.name}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+              <div className="flex flex-wrap gap-2.5">
+                <Button
+                  type="button"
+                  onClick={applyGuardiaDominical}
+                  className="bg-[#1967D2] hover:bg-blue-800 text-white font-black text-xs h-10 px-4 rounded-xl shadow-md shadow-blue-500/20 flex items-center gap-2"
+                >
+                  <Zap size={15} />
+                  ⚡ Aplicar Guardia (Resto a Descanso)
+                </Button>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={applyAllDescanso}
+                  className="bg-white border-slate-200 hover:bg-slate-100 text-slate-700 font-bold text-xs h-10 px-3.5 rounded-xl flex items-center gap-1.5"
+                >
+                  <span>🏖️</span>
+                  Poner a Todos en Descanso
+                </Button>
+              </div>
+
+              <div className="flex flex-wrap gap-1.5">
                 <Button
                   type="button"
                   size="sm"
-                  variant="outline"
+                  variant="ghost"
                   onClick={applyStandardSundayRule}
-                  className="text-xs font-bold text-amber-800 bg-amber-50 border-amber-200 hover:bg-amber-100 h-9 rounded-xl"
+                  className="text-[11px] font-bold text-amber-800 hover:bg-amber-100/60 h-8 rounded-lg"
                   title="Pasa los técnicos de la tarde a Intermedio (9 AM), mantiene Mañana en Mañana (6 AM)"
                 >
-                  ⚡ Tarde ➔ Intermedio
+                  Tarde ➔ Intermedio
                 </Button>
                 <Button
                   type="button"
                   size="sm"
-                  variant="outline"
+                  variant="ghost"
                   onClick={applyAllToIntermediate}
-                  className="text-xs font-bold text-blue-800 bg-blue-50 border-blue-200 hover:bg-blue-100 h-9 rounded-xl"
-                  title="Pasa todos los técnicos (Mañana y Tarde) a Turno Intermedio"
+                  className="text-[11px] font-bold text-blue-800 hover:bg-blue-100/60 h-8 rounded-lg"
+                  title="Pasa todos los técnicos diurnos a Intermedio"
                 >
-                  ⚡ Todos a Intermedio
+                  Todos a Intermedio
                 </Button>
                 <Button
                   type="button"
                   size="sm"
                   variant="ghost"
                   onClick={resetToDefaultProfileShifts}
-                  className="text-xs font-bold text-slate-600 hover:bg-slate-200 h-9 rounded-xl"
+                  className="text-[11px] font-bold text-slate-600 hover:bg-slate-200 h-8 rounded-lg"
+                  title="Restablece turnos según el perfil habitual"
                 >
-                  <RefreshCw size={13} className="mr-1" /> Base
+                  <RefreshCw size={12} className="mr-1" /> Base
                 </Button>
               </div>
             </div>
           </div>
 
-          {/* Tabla de Técnicos */}
-          <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-xs">
-            <div className="max-h-[380px] overflow-y-auto">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-50 sticky top-0 z-10 border-b border-slate-200 text-[11px] font-black uppercase tracking-wider text-slate-500">
-                  <tr>
-                    <th className="py-3 px-3">Técnico</th>
-                    <th className="py-3 px-3">Turno Habitual</th>
-                    <th className="py-3 px-3">Turno para este Domingo</th>
-                    <th className="py-3 px-3">Sede</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs">
-                  {technicians.map((t) => {
-                    const current = sundayAssignments[t.id] || {
-                      shift: Shift.INTERMEDIO,
-                      campusId: t.campus?.id || campuses[0]?.id || "",
-                      expectedEntryTime: "09:00",
-                      notes: "Turno de Domingo",
-                    }
-                    const baseShift = (t.defaultShift as Shift) || Shift.MANANA
-                    const isShiftChanged = current.shift !== baseShift
+          {/* Tabla de Técnicos (Permite ajustes individuales para casos excepcionales) */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between px-1">
+              <span className="text-xs font-black uppercase tracking-wider text-slate-600">
+                Detalle Técnico por Técnico (Edición Individual para Casos Excepcionales)
+              </span>
+              <span className="text-[11px] text-slate-400 font-medium">
+                Haz clic en cualquier turno para modificarlo individualmente
+              </span>
+            </div>
 
-                    return (
-                      <tr key={t.id} className="hover:bg-slate-50/80 transition-colors">
-                        <td className="py-3 px-3">
-                          <div className="flex items-center gap-2.5">
-                            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-white font-black text-xs flex items-center justify-center shrink-0">
-                              {t.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}
+            <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-xs">
+              <div className="max-h-[380px] overflow-y-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead className="bg-slate-50 sticky top-0 z-10 border-b border-slate-200 text-[11px] font-black uppercase tracking-wider text-slate-500">
+                    <tr>
+                      <th className="py-3 px-3">Técnico</th>
+                      <th className="py-3 px-3">Turno Habitual</th>
+                      <th className="py-3 px-3">Asignación para este Domingo</th>
+                      <th className="py-3 px-3">Sede</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs">
+                    {technicians.map((t) => {
+                      const current = sundayAssignments[t.id] || {
+                        shift: Shift.DESCANSO,
+                        campusId: t.campus?.id || campuses[0]?.id || "",
+                        expectedEntryTime: "00:00",
+                        notes: "Descanso dominical",
+                      }
+                      const baseShift = (t.defaultShift as Shift) || Shift.MANANA
+                      const isResting = current.shift === Shift.DESCANSO
+
+                      return (
+                        <tr 
+                          key={t.id} 
+                          className={`transition-colors ${
+                            !isResting ? "bg-blue-50/30 hover:bg-blue-50/50" : "hover:bg-slate-50/80"
+                          }`}
+                        >
+                          <td className="py-3 px-3">
+                            <div className="flex items-center gap-2.5">
+                              <div className={`w-8 h-8 rounded-full font-black text-xs flex items-center justify-center shrink-0 ${
+                                !isResting
+                                  ? "bg-gradient-to-tr from-[#1967D2] to-indigo-600 text-white shadow-xs"
+                                  : "bg-slate-200 text-slate-600"
+                              }`}>
+                                {t.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}
+                              </div>
+                              <div>
+                                <p className="font-extrabold text-xs text-slate-800 leading-snug">{t.name}</p>
+                                <p className="text-[10px] text-slate-400 font-mono">DNI: {t.dni}</p>
+                              </div>
                             </div>
-                            <div>
-                              <p className="font-extrabold text-xs text-slate-800 leading-snug">{t.name}</p>
-                              <p className="text-[10px] text-slate-400 font-mono">DNI: {t.dni}</p>
-                            </div>
-                          </div>
-                        </td>
+                          </td>
 
-                        <td className="py-3 px-3">
-                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                            baseShift === Shift.MANANA
-                              ? "bg-amber-50 text-amber-700 border border-amber-200"
-                              : baseShift === Shift.INTERMEDIO
-                              ? "bg-cyan-50 text-cyan-700 border border-cyan-200"
-                              : baseShift === Shift.TARDE
-                              ? "bg-purple-50 text-purple-700 border border-purple-200"
-                              : "bg-indigo-50 text-indigo-700 border border-indigo-200"
-                          }`}>
-                            {baseShift === Shift.MANANA ? "🌅 Mañana" : baseShift === Shift.TARDE ? "🌆 Tarde" : baseShift === Shift.INTERMEDIO ? "⛅ Interm." : "🌙 Noche"}
-                          </span>
-                        </td>
-
-                        <td className="py-3 px-3">
-                          <div className="flex items-center gap-1 flex-wrap">
-                            {[
-                              { shift: Shift.MANANA, label: "Mañana", entry: "06:00", icon: "🌅" },
-                              { shift: Shift.INTERMEDIO, label: "Interm. 9 AM", entry: "09:00", icon: "⛅" },
-                              { shift: Shift.INTERMEDIO, label: "Interm. 10 AM", entry: "10:00", icon: "⛅" },
-                              { shift: Shift.TARDE, label: "Tarde", entry: "13:00", icon: "🌆" },
-                              { shift: Shift.NOCHE, label: "Noche", entry: "21:00", icon: "🌙" },
-                              { shift: Shift.DESCANSO, label: "Descanso", entry: "00:00", icon: "🏖️" },
-                            ].map((opt, idx) => {
-                              const isSelected = current.shift === opt.shift && current.expectedEntryTime === opt.entry
-                              return (
-                                <button
-                                  key={`${opt.shift}-${opt.entry}-${idx}`}
-                                  type="button"
-                                  onClick={() => {
-                                    setSundayAssignments((prev) => ({
-                                      ...prev,
-                                      [t.id]: {
-                                        ...current,
-                                        shift: opt.shift,
-                                        expectedEntryTime: opt.entry,
-                                        notes: "Asignación especial de Domingo",
-                                      },
-                                    }))
-                                  }}
-                                  className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 ${
-                                    isSelected
-                                      ? "bg-[#1967D2] text-white border-[#1967D2] shadow-xs ring-1 ring-blue-300 font-black scale-105"
-                                      : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                                  }`}
-                                >
-                                  <span>{opt.icon}</span>
-                                  <span>{opt.label}</span>
-                                </button>
-                              )
-                            })}
-                          </div>
-                          {isShiftChanged && (
-                            <span className="text-[9px] font-extrabold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full inline-block mt-1 border border-blue-200">
-                              ✓ Asignado: {current.shift} ({current.expectedEntryTime})
+                          <td className="py-3 px-3">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                              baseShift === Shift.MANANA
+                                ? "bg-amber-50 text-amber-700 border border-amber-200"
+                                : baseShift === Shift.INTERMEDIO
+                                ? "bg-cyan-50 text-cyan-700 border border-cyan-200"
+                                : baseShift === Shift.TARDE
+                                ? "bg-purple-50 text-purple-700 border border-purple-200"
+                                : "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                            }`}>
+                              {baseShift === Shift.MANANA ? "🌅 Mañana" : baseShift === Shift.TARDE ? "🌆 Tarde" : baseShift === Shift.INTERMEDIO ? "⛅ Interm." : "🌙 Noche"}
                             </span>
-                          )}
-                        </td>
+                          </td>
 
-                        <td className="py-3 px-3">
-                          <select
-                            value={current.campusId}
-                            onChange={(e) => {
-                              setSundayAssignments((prev) => ({
-                                ...prev,
-                                [t.id]: {
-                                  ...current,
-                                  campusId: e.target.value,
-                                },
-                              }))
-                            }}
-                            className="h-8 text-xs font-bold bg-white border border-slate-200 rounded-lg px-2 text-slate-700 outline-none focus:ring-1 focus:ring-blue-500"
-                          >
-                            {campuses.map((c) => (
-                              <option key={c.id} value={c.id}>
-                                {c.name}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+                          <td className="py-3 px-3">
+                            <div className="flex items-center gap-1 flex-wrap">
+                              {[
+                                { shift: Shift.MANANA, label: "Mañana", entry: "06:00", icon: "🌅" },
+                                { shift: Shift.INTERMEDIO, label: "Interm. 9 AM", entry: "09:00", icon: "⛅" },
+                                { shift: Shift.INTERMEDIO, label: "Interm. 10 AM", entry: "10:00", icon: "⛅" },
+                                { shift: Shift.TARDE, label: "Tarde", entry: "13:00", icon: "🌆" },
+                                { shift: Shift.NOCHE, label: "Noche", entry: "21:00", icon: "🌙" },
+                                { shift: Shift.DESCANSO, label: "Descanso", entry: "00:00", icon: "🏖️" },
+                              ].map((opt, idx) => {
+                                const isSelected = current.shift === opt.shift && current.expectedEntryTime === opt.entry
+                                return (
+                                  <button
+                                    key={`${opt.shift}-${opt.entry}-${idx}`}
+                                    type="button"
+                                    onClick={() => {
+                                      setSundayAssignments((prev) => ({
+                                        ...prev,
+                                        [t.id]: {
+                                          ...current,
+                                          shift: opt.shift,
+                                          expectedEntryTime: opt.entry,
+                                          notes: opt.shift === Shift.DESCANSO 
+                                            ? "Descanso dominical" 
+                                            : `Guardia especial de Domingo (${opt.label})`,
+                                        },
+                                      }))
+                                    }}
+                                    className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 ${
+                                      isSelected
+                                        ? opt.shift === Shift.DESCANSO
+                                          ? "bg-slate-700 text-white border-slate-700 shadow-xs font-black scale-105"
+                                          : "bg-[#1967D2] text-white border-[#1967D2] shadow-xs ring-1 ring-blue-300 font-black scale-105"
+                                        : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                                    }`}
+                                  >
+                                    <span>{opt.icon}</span>
+                                    <span>{opt.label}</span>
+                                  </button>
+                                )
+                              })}
+                            </div>
+                            <div className="mt-1">
+                              {isResting ? (
+                                <span className="text-[9px] font-extrabold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full inline-flex items-center gap-1 border border-slate-200">
+                                  <span>🏖️</span> En Descanso Dominical
+                                </span>
+                              ) : (
+                                <span className="text-[9px] font-black text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full inline-flex items-center gap-1 border border-emerald-200">
+                                  <span>🟢</span> Asignado a Guardia: {current.shift} ({current.expectedEntryTime})
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          <td className="py-3 px-3">
+                            <select
+                              value={current.campusId}
+                              disabled={isResting}
+                              onChange={(e) => {
+                                setSundayAssignments((prev) => ({
+                                  ...prev,
+                                  [t.id]: {
+                                    ...current,
+                                    campusId: e.target.value,
+                                  },
+                                }))
+                              }}
+                              className={`h-8 text-xs font-bold bg-white border border-slate-200 rounded-lg px-2 text-slate-700 outline-none focus:ring-1 focus:ring-blue-500 ${
+                                isResting ? "opacity-50 cursor-not-allowed" : ""
+                              }`}
+                            >
+                              {campuses.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  {c.name}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
 
@@ -1737,7 +2028,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                   <Loader2 className="animate-spin mr-2" size={18} /> Guardando Turnos...
                 </>
               ) : (
-                `Guardar Turnos para el Domingo (${technicians.length} técnicos)`
+                `Guardar Programación Dominical (${workingCount} trabajando, ${restingCount} en descanso)`
               )}
             </Button>
           </div>

@@ -230,10 +230,19 @@ export async function bulkUpsertTechnicianSchedulesAction(items: ScheduleItemInp
       // Normalizar turno
       let shiftKey: Shift = Shift.MANANA
       const rawShift = String(item.shift || "").toUpperCase().trim()
-      if (rawShift.includes("TARDE") || rawShift === "T") shiftKey = Shift.TARDE
-      else if (rawShift.includes("INTER") || rawShift.includes("MED") || rawShift === "I") shiftKey = Shift.INTERMEDIO
+      if (rawShift.includes("DESC") || rawShift.includes("LIBRE") || rawShift === "D" || rawShift === "L") {
+        shiftKey = Shift.DESCANSO
+      } else if (rawShift.includes("TARDE") || rawShift === "T") {
+        shiftKey = Shift.TARDE
+      } else if (rawShift.includes("INTER") || rawShift.includes("MED") || rawShift === "I") {
+        shiftKey = Shift.INTERMEDIO
+      } else if (rawShift.includes("NOCHE") || rawShift === "N") {
+        shiftKey = Shift.NOCHE
+      } else if (rawShift.includes("MANANA") || rawShift.includes("MAÑANA") || rawShift === "M") {
+        shiftKey = Shift.MANANA
+      }
 
-      const def = DEFAULT_SHIFT_TIMES[shiftKey]
+      const def = DEFAULT_SHIFT_TIMES[shiftKey] || DEFAULT_SHIFT_TIMES.MANANA
       const entryTime = item.expectedEntryTime && item.expectedEntryTime.trim() !== ""
         ? item.expectedEntryTime.trim()
         : def.entry
