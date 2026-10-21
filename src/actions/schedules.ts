@@ -355,11 +355,16 @@ export async function getTodayTechnicianAssignmentAction(userId: string) {
       },
     })
 
-    const userShift = user?.defaultShift || Shift.MANANA
-    const def = DEFAULT_SHIFT_TIMES[userShift] || DEFAULT_SHIFT_TIMES.MANANA
-
     // Día de la semana en Lima (0=Dom, 1=Lun, ..., 6=Sáb)
     const currentDayOfWeek = new Date(`${limaDateStr}T12:00:00Z`).getUTCDay()
+
+    let userShift = user?.defaultShift || Shift.MANANA
+    // En domingos, el personal de la tarde comúnmente rota a Turno Intermedio (09:00 AM) si no tiene cronograma explícito
+    if (currentDayOfWeek === 0 && userShift === Shift.TARDE) {
+      userShift = Shift.INTERMEDIO
+    }
+
+    const def = DEFAULT_SHIFT_TIMES[userShift] || DEFAULT_SHIFT_TIMES.MANANA
 
     // Consultar si existe una regla personalizada para este turno, sede y día de la semana
     let expectedEntry = def.entry

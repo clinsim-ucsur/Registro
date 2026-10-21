@@ -125,6 +125,7 @@ type RegisterAttendanceData = {
   userId: string
   role: Role
   type: RecordType
+  shift?: Shift
   campusId?: string
   courseId?: string
   isOfflineSync?: boolean
@@ -234,9 +235,16 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           }
         } else {
           // Si no tiene cronograma hoy, buscar regla específica para su turno base en su sede y día de la semana
-          const userShift = (user.defaultShift || Shift.MANANA) as Shift
-          const defShift = DEFAULT_SHIFT_TIMES[userShift] || DEFAULT_SHIFT_TIMES.MANANA
           const currentDayOfWeek = limaDayOfWeek(recordTimestamp)
+          let userShift = (data.shift || user.defaultShift || Shift.MANANA) as Shift
+
+          // En domingos (currentDayOfWeek === 0):
+          // Los técnicos de la tarde rotan comúnmente a turno Intermedio si no tienen programación específica
+          if (!data.shift && currentDayOfWeek === 0 && userShift === Shift.TARDE) {
+            userShift = Shift.INTERMEDIO
+          }
+
+          const defShift = DEFAULT_SHIFT_TIMES[userShift] || DEFAULT_SHIFT_TIMES.MANANA
           
           const shiftRules = await prisma.toleranceRule.findMany({
             where: {
@@ -250,10 +258,15 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           })
 
           // Filtrar reglas que correspondan a su turno
+          // Si es domingo y el técnico es de Mañana, permitir también evaluar reglas de Intermedio si llega cerca de las 9/10 AM
           const matchingShiftRules = shiftRules.filter(r => {
-            if (r.shift) return r.shift === userShift
+            if (r.shift) {
+              if (r.shift === userShift) return true
+              if (currentDayOfWeek === 0 && userShift === Shift.MANANA && r.shift === Shift.INTERMEDIO) return true
+              return false
+            }
             if (userShift === Shift.INTERMEDIO) return ["08:00", "09:00", "10:00"].includes(r.expectedEntryTime)
-            if (userShift === Shift.MANANA) return r.expectedEntryTime === "06:00"
+            if (userShift === Shift.MANANA) return ["06:00", ...(currentDayOfWeek === 0 ? ["09:00", "10:00"] : [])].includes(r.expectedEntryTime)
             if (userShift === Shift.TARDE) return r.expectedEntryTime === "13:00"
             if (userShift === Shift.NOCHE) return r.expectedEntryTime === "21:00"
             return r.expectedEntryTime === defShift.entry

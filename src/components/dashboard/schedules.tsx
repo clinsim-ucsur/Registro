@@ -21,7 +21,12 @@ import {
   Sparkles, 
   AlertCircle,
   Filter,
-  Users
+  Users,
+  Sun,
+  CalendarDays,
+  RefreshCw,
+  Zap,
+  ArrowRightLeft
 } from "lucide-react"
 import { toast } from "sonner"
 import * as XLSX from "xlsx"
@@ -29,6 +34,7 @@ import {
   upsertTechnicianScheduleAction, 
   deleteTechnicianScheduleAction, 
   bulkUpsertTechnicianSchedulesAction,
+  getTechnicianSchedulesAction,
 } from "@/actions/schedules"
 import { DEFAULT_SHIFT_TIMES, type ScheduleItemInput } from "@/lib/schedule-constants"
 import { Shift } from "@prisma/client"
@@ -68,7 +74,19 @@ interface SchedulesProps {
 }
 
 // Modal básico estilizado renderizado mediante Portal en document.body para cubrir toda la pantalla y difuminar la barra lateral
-function ScheduleModal({ isOpen, onClose, title, children }: { isOpen: boolean; onClose: () => void; title: string; children: React.ReactNode }) {
+function ScheduleModal({ 
+  isOpen, 
+  onClose, 
+  title, 
+  maxWidth = "max-w-2xl",
+  children 
+}: { 
+  isOpen: boolean 
+  onClose: () => void 
+  title: string 
+  maxWidth?: string
+  children: React.ReactNode 
+}) {
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
@@ -79,7 +97,7 @@ function ScheduleModal({ isOpen, onClose, title, children }: { isOpen: boolean; 
 
   return createPortal(
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-fade-in-up p-4">
-      <div className="bg-white w-full max-w-2xl max-h-[90vh] overflow-y-auto no-scrollbar rounded-[2rem] shadow-2xl p-6 md:p-8 relative">
+      <div className={`bg-white w-full ${maxWidth} max-h-[92vh] overflow-y-auto no-scrollbar rounded-[2rem] shadow-2xl p-6 md:p-8 relative`}>
         <button 
           type="button"
           onClick={onClose} 
@@ -108,6 +126,228 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
   const [isIndividualOpen, setIsIndividualOpen] = useState(false)
   const [isBulkOpen, setIsBulkOpen] = useState(false)
   const [isOcrOpen, setIsOcrOpen] = useState(false)
+  const [isSundayModalOpen, setIsSundayModalOpen] = useState(false)
+  const [sundayDate, setSundayDate] = useState<string>("")
+  const [sundayAssignments, setSundayAssignments] = useState<
+    Record<
+      string,
+      {
+        shift: Shift
+        campusId: string
+        expectedEntryTime: string
+        notes: string
+      }
+    >
+  >({})
+  const [isSavingSunday, startSundayTransition] = useTransition()
+
+  // Lista de domingos disponibles en el mes seleccionado o próximos
+  const sundaysList = useMemo(() => {
+    const list: { date: string; label: string; isNext: boolean }[] = []
+    if (!selectedMonth) return list
+    const [yearStr, monthStr] = selectedMonth.split("-")
+    const year = Number(yearStr)
+    const month = Number(monthStr) - 1
+
+    const d = new Date(Date.UTC(year, month, 1, 12, 0, 0))
+    while (d.getUTCMonth() === month) {
+      if (d.getUTCDay() === 0) {
+        const dStr = d.toISOString().slice(0, 10)
+        const dayNum = d.getUTCDate()
+        const monthName = d.toLocaleDateString("es-PE", { month: "short", timeZone: "UTC" })
+        list.push({
+          date: dStr,
+          label: `Domingo ${dayNum} de ${monthName}`,
+          isNext: false,
+        })
+      }
+      d.setUTCDate(d.getUTCDate() + 1)
+    }
+
+    // Calcular el próximo domingo absoluto
+    const now = new Date()
+    const cur = new Date(now)
+    const currentDay = cur.getDay() // 0 = Sunday
+    const daysUntilSunday = (7 - currentDay) % 7
+    cur.setDate(cur.getDate() + (daysUntilSunday === 0 ? 0 : daysUntilSunday))
+    const nextSundayStr = cur.toISOString().slice(0, 10)
+
+    const found = list.find((item) => item.date === nextSundayStr)
+    if (found) {
+      found.isNext = true
+      found.label += " (Próximo)"
+    } else {
+      const dayNum = cur.getDate()
+      const monthName = cur.toLocaleDateString("es-PE", { month: "short" })
+      list.unshift({
+        date: nextSundayStr,
+        label: `Domingo ${dayNum} de ${monthName} (Próximo Domingo)`,
+        isNext: true,
+      })
+    }
+
+    return list
+  }, [selectedMonth])
+
+  const openSundayManager = (targetDate?: string) => {
+    const dateToUse = targetDate || sundaysList[0]?.date || new Date().toISOString().slice(0, 10)
+    setSundayDate(dateToUse)
+
+    const initialMap: Record<
+      string,
+      { shift: Shift; campusId: string; expectedEntryTime: string; notes: string }
+    > = {}
+
+    // Buscar si ya existen turnos registrados en este domingo en schedules
+    const existingForDate = schedules.filter((s) => s.date === dateToUse)
+    const existingMap = new Map(existingForDate.map((s) => [s.userId, s]))
+
+    technicians.forEach((t) => {
+      const existing = existingMap.get(t.id)
+      if (existing) {
+        initialMap[t.id] = {
+          shift: existing.shift,
+          campusId: existing.campusId,
+          expectedEntryTime: existing.expectedEntryTime,
+          notes: existing.notes || "",
+        }
+      } else {
+        // Regla habitual dominical:
+        // - Personal habitual TARDE -> pasa a INTERMEDIO (09:00 AM)
+        // - Personal habitual MAÑANA -> se mantiene en MAÑANA (06:00 AM)
+        // - Personal habitual INTERMEDIO -> INTERMEDIO (09:00 AM)
+        // - Personal habitual NOCHE -> NOCHE (21:00)
+        const baseShift = (t.defaultShift as Shift) || Shift.MANANA
+        let sunShift: Shift = baseShift
+        let entry = "06:00"
+
+        if (baseShift === Shift.TARDE) {
+          sunShift = Shift.INTERMEDIO
+          entry = "09:00"
+        } else if (baseShift === Shift.MANANA) {
+          sunShift = Shift.MANANA
+          entry = "06:00"
+        } else if (baseShift === Shift.INTERMEDIO) {
+          sunShift = Shift.INTERMEDIO
+          entry = "09:00"
+        } else if (baseShift === Shift.NOCHE) {
+          sunShift = Shift.NOCHE
+          entry = "21:00"
+        }
+
+        initialMap[t.id] = {
+          shift: sunShift,
+          campusId: t.campus?.id || campuses[0]?.id || "",
+          expectedEntryTime: entry,
+          notes: "Turno de Domingo",
+        }
+      }
+    })
+
+    setSundayAssignments(initialMap)
+    setIsSundayModalOpen(true)
+  }
+
+  // Regla habitual: Tarde a Intermedio
+  const applyStandardSundayRule = () => {
+    setSundayAssignments((prev) => {
+      const next = { ...prev }
+      technicians.forEach((t) => {
+        const baseShift = (t.defaultShift as Shift) || Shift.MANANA
+        if (baseShift === Shift.TARDE) {
+          next[t.id] = {
+            ...next[t.id],
+            shift: Shift.INTERMEDIO,
+            expectedEntryTime: "09:00",
+          }
+        } else if (baseShift === Shift.MANANA) {
+          next[t.id] = {
+            ...next[t.id],
+            shift: Shift.MANANA,
+            expectedEntryTime: "06:00",
+          }
+        }
+      })
+      return next
+    })
+    toast.info("Regla habitual aplicada: Personal de la tarde pasa a Intermedio (9:00 AM).")
+  }
+
+  // Todos a Intermedio (Mañana y Tarde)
+  const applyAllToIntermediate = () => {
+    setSundayAssignments((prev) => {
+      const next = { ...prev }
+      technicians.forEach((t) => {
+        const baseShift = (t.defaultShift as Shift) || Shift.MANANA
+        if (baseShift !== Shift.NOCHE) {
+          next[t.id] = {
+            ...next[t.id],
+            shift: Shift.INTERMEDIO,
+            expectedEntryTime: "09:00",
+          }
+        }
+      })
+      return next
+    })
+    toast.info("Todos los técnicos diurnos configurados en Turno Intermedio (9:00 AM).")
+  }
+
+  // Restablecer a perfiles base
+  const resetToDefaultProfileShifts = () => {
+    setSundayAssignments((prev) => {
+      const next = { ...prev }
+      technicians.forEach((t) => {
+        const baseShift = (t.defaultShift as Shift) || Shift.MANANA
+        const def = DEFAULT_SHIFT_TIMES[baseShift] || DEFAULT_SHIFT_TIMES.MANANA
+        next[t.id] = {
+          ...next[t.id],
+          shift: baseShift,
+          expectedEntryTime: def.entry,
+        }
+      })
+      return next
+    })
+    toast.info("Turnos restablecidos a los perfiles habituales de cada técnico.")
+  }
+
+  const handleSaveSunday = () => {
+    if (!sundayDate) {
+      toast.error("Seleccione la fecha del domingo.")
+      return
+    }
+
+    startSundayTransition(async () => {
+      const items: ScheduleItemInput[] = technicians.map((t) => {
+        const current = sundayAssignments[t.id]
+        const shift = current?.shift || Shift.INTERMEDIO
+        const def = DEFAULT_SHIFT_TIMES[shift] || DEFAULT_SHIFT_TIMES.INTERMEDIO
+        return {
+          userId: t.id,
+          date: sundayDate,
+          campusId: current?.campusId || t.campus?.id || campuses[0]?.id || "",
+          shift,
+          expectedEntryTime: current?.expectedEntryTime || def.entry,
+          earlyEntryToleranceMinutes: def.early,
+          gracePeriodMinutes: def.grace,
+          lateToleranceMinutes: def.late,
+          notes: current?.notes || "Turno asignado para este domingo",
+        }
+      })
+
+      const res = await bulkUpsertTechnicianSchedulesAction(items)
+      if (res.success) {
+        toast.success(`✓ Turnos guardados exitosamente para el domingo ${sundayDate}`)
+        // Actualizar tabla en tiempo real
+        const refresh = await getTechnicianSchedulesAction({ month: selectedMonth })
+        if (refresh.success && refresh.schedules) {
+          setSchedules(refresh.schedules as any)
+        }
+        setIsSundayModalOpen(false)
+      } else {
+        toast.error(res.message || "Error al guardar turnos de domingo.")
+      }
+    })
+  }
 
   // Estado formulario individual
   const [formSchedule, setFormSchedule] = useState<{
@@ -664,6 +904,14 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
           >
             <FileSpreadsheet size={18} />
             Importar Excel
+          </Button>
+
+          <Button
+            onClick={() => openSundayManager()}
+            className="h-12 px-5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold rounded-xl shadow-md shadow-orange-500/20 flex items-center gap-2 transition-transform hover:scale-105"
+          >
+            <Sun size={20} className="text-yellow-100" />
+            Turnos de Domingo
           </Button>
 
           <Button
@@ -1258,6 +1506,239 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
               className="flex-1 h-12 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md"
             >
               {isPending ? <Loader2 className="animate-spin" /> : `Guardar ${ocrParsedRows.length} Turnos`}
+            </Button>
+          </div>
+        </div>
+      </ScheduleModal>
+
+      {/* MODAL GESTOR RÁPIDO DE DOMINGOS */}
+      <ScheduleModal
+        isOpen={isSundayModalOpen}
+        onClose={() => setIsSundayModalOpen(false)}
+        title="Asignación Rápida de Turnos para Domingo"
+        maxWidth="max-w-5xl"
+      >
+        <div className="space-y-6">
+          {/* Banner explicativo */}
+          <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-50 via-orange-50 to-amber-50 border border-amber-200/80 flex items-start gap-3">
+            <div className="p-2.5 rounded-xl bg-amber-500 text-white shrink-0 mt-0.5">
+              <Sun size={20} />
+            </div>
+            <div className="space-y-1">
+              <h4 className="text-sm font-black text-amber-950">
+                Rotación de Turnos Especiales de Domingo
+              </h4>
+              <p className="text-xs font-medium text-amber-800 leading-relaxed">
+                En domingos, el personal con turno habitual de la <strong>Tarde</strong> cambia comúnmente a <strong>Intermedio (09:00 AM)</strong>, mientras que los de la <strong>Mañana</strong> pueden continuar en Mañana (06:00 AM) o pasar a Intermedio. Selecciona la fecha y usa los botones de 1 clic para configurar a todos los técnicos al instante.
+              </p>
+            </div>
+          </div>
+
+          {/* Selector de Fecha del Domingo y Atajos */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-center bg-slate-50 p-4 rounded-2xl border border-slate-200/80">
+            <div>
+              <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1.5 flex items-center gap-1.5">
+                <CalendarDays size={16} className="text-[#1967D2]" /> Fecha del Domingo a Programar
+              </label>
+              <select
+                value={sundayDate}
+                onChange={(e) => openSundayManager(e.target.value)}
+                className="w-full h-11 bg-white border border-slate-200 font-extrabold text-slate-800 rounded-xl px-3 outline-none focus:ring-2 focus:ring-[#1967D2] text-sm"
+              >
+                {sundaysList.map((sun) => (
+                  <option key={sun.date} value={sun.date}>
+                    {sun.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1.5 flex items-center gap-1.5">
+                <Zap size={16} className="text-amber-500" /> Atajos de Configuración
+              </label>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={applyStandardSundayRule}
+                  className="text-xs font-bold text-amber-800 bg-amber-50 border-amber-200 hover:bg-amber-100 h-9 rounded-xl"
+                  title="Pasa los técnicos de la tarde a Intermedio (9 AM), mantiene Mañana en Mañana (6 AM)"
+                >
+                  ⚡ Tarde ➔ Intermedio
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={applyAllToIntermediate}
+                  className="text-xs font-bold text-blue-800 bg-blue-50 border-blue-200 hover:bg-blue-100 h-9 rounded-xl"
+                  title="Pasa todos los técnicos (Mañana y Tarde) a Turno Intermedio"
+                >
+                  ⚡ Todos a Intermedio
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={resetToDefaultProfileShifts}
+                  className="text-xs font-bold text-slate-600 hover:bg-slate-200 h-9 rounded-xl"
+                >
+                  <RefreshCw size={13} className="mr-1" /> Base
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Tabla de Técnicos */}
+          <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-xs">
+            <div className="max-h-[380px] overflow-y-auto">
+              <table className="w-full text-left border-collapse">
+                <thead className="bg-slate-50 sticky top-0 z-10 border-b border-slate-200 text-[11px] font-black uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="py-3 px-3">Técnico</th>
+                    <th className="py-3 px-3">Turno Habitual</th>
+                    <th className="py-3 px-3">Turno para este Domingo</th>
+                    <th className="py-3 px-3">Sede</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs">
+                  {technicians.map((t) => {
+                    const current = sundayAssignments[t.id] || {
+                      shift: Shift.INTERMEDIO,
+                      campusId: t.campus?.id || campuses[0]?.id || "",
+                      expectedEntryTime: "09:00",
+                      notes: "Turno de Domingo",
+                    }
+                    const baseShift = (t.defaultShift as Shift) || Shift.MANANA
+                    const isShiftChanged = current.shift !== baseShift
+
+                    return (
+                      <tr key={t.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-3 px-3">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 text-white font-black text-xs flex items-center justify-center shrink-0">
+                              {t.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}
+                            </div>
+                            <div>
+                              <p className="font-extrabold text-xs text-slate-800 leading-snug">{t.name}</p>
+                              <p className="text-[10px] text-slate-400 font-mono">DNI: {t.dni}</p>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="py-3 px-3">
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                            baseShift === Shift.MANANA
+                              ? "bg-amber-50 text-amber-700 border border-amber-200"
+                              : baseShift === Shift.INTERMEDIO
+                              ? "bg-cyan-50 text-cyan-700 border border-cyan-200"
+                              : baseShift === Shift.TARDE
+                              ? "bg-purple-50 text-purple-700 border border-purple-200"
+                              : "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                          }`}>
+                            {baseShift === Shift.MANANA ? "🌅 Mañana" : baseShift === Shift.TARDE ? "🌆 Tarde" : baseShift === Shift.INTERMEDIO ? "⛅ Interm." : "🌙 Noche"}
+                          </span>
+                        </td>
+
+                        <td className="py-3 px-3">
+                          <div className="flex items-center gap-1 flex-wrap">
+                            {[
+                              { shift: Shift.MANANA, label: "Mañana", entry: "06:00", icon: "🌅" },
+                              { shift: Shift.INTERMEDIO, label: "Interm. 9 AM", entry: "09:00", icon: "⛅" },
+                              { shift: Shift.INTERMEDIO, label: "Interm. 10 AM", entry: "10:00", icon: "⛅" },
+                              { shift: Shift.TARDE, label: "Tarde", entry: "13:00", icon: "🌆" },
+                              { shift: Shift.NOCHE, label: "Noche", entry: "21:00", icon: "🌙" },
+                              { shift: Shift.DESCANSO, label: "Descanso", entry: "00:00", icon: "🏖️" },
+                            ].map((opt, idx) => {
+                              const isSelected = current.shift === opt.shift && current.expectedEntryTime === opt.entry
+                              return (
+                                <button
+                                  key={`${opt.shift}-${opt.entry}-${idx}`}
+                                  type="button"
+                                  onClick={() => {
+                                    setSundayAssignments((prev) => ({
+                                      ...prev,
+                                      [t.id]: {
+                                        ...current,
+                                        shift: opt.shift,
+                                        expectedEntryTime: opt.entry,
+                                        notes: "Asignación especial de Domingo",
+                                      },
+                                    }))
+                                  }}
+                                  className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 ${
+                                    isSelected
+                                      ? "bg-[#1967D2] text-white border-[#1967D2] shadow-xs ring-1 ring-blue-300 font-black scale-105"
+                                      : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                                  }`}
+                                >
+                                  <span>{opt.icon}</span>
+                                  <span>{opt.label}</span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                          {isShiftChanged && (
+                            <span className="text-[9px] font-extrabold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full inline-block mt-1 border border-blue-200">
+                              ✓ Asignado: {current.shift} ({current.expectedEntryTime})
+                            </span>
+                          )}
+                        </td>
+
+                        <td className="py-3 px-3">
+                          <select
+                            value={current.campusId}
+                            onChange={(e) => {
+                              setSundayAssignments((prev) => ({
+                                ...prev,
+                                [t.id]: {
+                                  ...current,
+                                  campusId: e.target.value,
+                                },
+                              }))
+                            }}
+                            className="h-8 text-xs font-bold bg-white border border-slate-200 rounded-lg px-2 text-slate-700 outline-none focus:ring-1 focus:ring-blue-500"
+                          >
+                            {campuses.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Botones Guardar y Cancelar */}
+          <div className="flex gap-4 pt-4 border-t border-slate-100">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsSundayModalOpen(false)}
+              className="flex-1 h-12 rounded-xl font-bold"
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              disabled={isSavingSunday}
+              onClick={handleSaveSunday}
+              className="flex-1 h-12 bg-[#1967D2] hover:bg-blue-800 text-white font-extrabold rounded-xl shadow-lg shadow-blue-500/20"
+            >
+              {isSavingSunday ? (
+                <>
+                  <Loader2 className="animate-spin mr-2" size={18} /> Guardando Turnos...
+                </>
+              ) : (
+                `Guardar Turnos para el Domingo (${technicians.length} técnicos)`
+              )}
             </Button>
           </div>
         </div>

@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
-import { Role, RecordType } from "@prisma/client"
+import { Role, RecordType, Shift } from "@prisma/client"
 import { validateUserAction, registerAttendanceAction, syncOfflineRecordsAction, getTodayAttendanceStateAction } from "@/actions/attendance"
 import { getTodayTechnicianAssignmentAction } from "@/actions/schedules"
 import { toast } from "sonner"
@@ -68,6 +68,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
     expectedEntryTime: string
     source: "SCHEDULE" | "DEFAULT_PROFILE"
   } | null>(null)
+  const [selectedShift, setSelectedShift] = useState<Shift | null>(null)
   const [isOffline, setIsOffline] = useState(false)
   const [todayLastRecord, setTodayLastRecord] = useState<RecordType | null | "loading">(null)
 
@@ -176,17 +177,21 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                 expectedEntryTime: assign.expectedEntryTime,
                 source: assign.source,
               })
+              setSelectedShift((assign.shift as Shift) || null)
               // Asignar la sede al formulario
               form.setValue("campusId", assign.campus.name)
             } else {
               setTechnicianAssignment(null)
+              setSelectedShift(null)
             }
           } catch (e) {
             console.error("Error al obtener asignación de técnico:", e)
             setTechnicianAssignment(null)
+            setSelectedShift(null)
           }
         } else {
           setTechnicianAssignment(null)
+          setSelectedShift(null)
         }
 
         // Consultar estado de asistencia hoy (ENTRADA / SALIDA)
@@ -197,6 +202,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         setValidatedUser(null)
         setTodayLastRecord(null)
         setTechnicianAssignment(null)
+        setSelectedShift(null)
         toast.error(res.message || "Usuario no encontrado")
       }
     } catch (error) {
@@ -317,6 +323,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         userId: validatedUser.id,
         role: data.role,
         type: type,
+        shift: selectedShift || undefined,
         campusId: targetCampusName, 
         courseId: data.courseId,
         clientTimestamp: new Date(),
@@ -330,6 +337,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         setValidatedUser(null)
         setTodayLastRecord(null)
         setTechnicianAssignment(null)
+        setSelectedShift(null)
       } else {
         toast.error(res.message)
       }
@@ -520,6 +528,48 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                               ℹ Sede predeterminada del perfil. Si rotas hoy, cámbiala arriba.
                             </p>
                           )}
+                        </div>
+
+                        {/* Selector de turno de marcación (por si rota hoy o es domingo) */}
+                        <div className="mt-3.5 pt-3 border-t border-blue-200/60">
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block">
+                              Turno a marcar hoy:
+                            </label>
+                            <span className="text-[10px] text-blue-700 font-bold bg-white/80 px-2 py-0.5 rounded-md border border-blue-100">
+                              {selectedShift ? `Seleccionado: ${selectedShift}` : "Según horario"}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                            {[
+                              { shift: Shift.MANANA, label: "Mañana", time: "6:00 AM", icon: "🌅" },
+                              { shift: Shift.INTERMEDIO, label: "Intermedio", time: "9:00 AM", icon: "⛅" },
+                              { shift: Shift.TARDE, label: "Tarde", time: "1:00 PM", icon: "🌆" },
+                              { shift: Shift.NOCHE, label: "Noche", time: "9:00 PM", icon: "🌙" },
+                            ].map((s) => {
+                              const isCurrent = (selectedShift || technicianAssignment?.shift) === s.shift
+                              return (
+                                <button
+                                  key={s.shift}
+                                  type="button"
+                                  onClick={() => setSelectedShift(s.shift)}
+                                  className={`p-2 rounded-xl text-left border transition-all flex flex-col justify-between ${
+                                    isCurrent
+                                      ? "bg-[#1967D2] text-white border-[#1967D2] shadow-xs ring-2 ring-blue-300"
+                                      : "bg-white text-slate-700 border-slate-200 hover:bg-blue-50/60"
+                                  }`}
+                                >
+                                  <span className="text-xs font-black flex items-center gap-1">
+                                    {s.icon} {s.label}
+                                  </span>
+                                  <span className={`text-[10px] mt-0.5 ${isCurrent ? "text-blue-100" : "text-slate-400 font-semibold"}`}>
+                                    {s.time}
+                                  </span>
+                                </button>
+                              )
+                            })}
+                          </div>
                         </div>
                       </div>
                     )}
