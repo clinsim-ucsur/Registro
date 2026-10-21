@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "npx tsx scripts/test-all-features.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
