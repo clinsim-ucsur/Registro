@@ -13,6 +13,8 @@ export type ScheduleItemInput = {
   earlyEntryToleranceMinutes?: number
   gracePeriodMinutes?: number
   lateToleranceMinutes?: number
+  enableEarlyTolerance?: boolean
+  enableLateTolerance?: boolean
   notes?: string
 }
 

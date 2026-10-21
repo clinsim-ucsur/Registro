@@ -105,6 +105,8 @@ export async function upsertTechnicianScheduleAction(item: ScheduleItemInput) {
         earlyEntryToleranceMinutes: early,
         gracePeriodMinutes: grace,
         lateToleranceMinutes: late,
+        enableEarlyTolerance: item.enableEarlyTolerance ?? true,
+        enableLateTolerance: item.enableLateTolerance ?? true,
         notes: item.notes || null,
       },
       update: {
@@ -114,6 +116,8 @@ export async function upsertTechnicianScheduleAction(item: ScheduleItemInput) {
         earlyEntryToleranceMinutes: early,
         gracePeriodMinutes: grace,
         lateToleranceMinutes: late,
+        enableEarlyTolerance: item.enableEarlyTolerance ?? true,
+        enableLateTolerance: item.enableLateTolerance ?? true,
         notes: item.notes || null,
       },
       include: {
@@ -266,6 +270,8 @@ export async function bulkUpsertTechnicianSchedulesAction(items: ScheduleItemInp
           earlyEntryToleranceMinutes: early,
           gracePeriodMinutes: grace,
           lateToleranceMinutes: late,
+          enableEarlyTolerance: item.enableEarlyTolerance ?? true,
+          enableLateTolerance: item.enableLateTolerance ?? true,
           notes: item.notes || "Carga Masiva",
         },
         update: {
@@ -275,6 +281,8 @@ export async function bulkUpsertTechnicianSchedulesAction(items: ScheduleItemInp
           earlyEntryToleranceMinutes: early,
           gracePeriodMinutes: grace,
           lateToleranceMinutes: late,
+          enableEarlyTolerance: item.enableEarlyTolerance ?? true,
+          enableLateTolerance: item.enableLateTolerance ?? true,
           notes: item.notes || "Carga Masiva",
         },
       })

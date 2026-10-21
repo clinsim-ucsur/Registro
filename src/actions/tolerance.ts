@@ -16,6 +16,8 @@ export type ToleranceRuleInput = {
   earlyEntryToleranceMinutes?: number
   gracePeriodMinutes: number
   lateToleranceMinutes: number
+  enableEarlyTolerance?: boolean
+  enableLateTolerance?: boolean
 }
 
 /**
@@ -50,6 +52,8 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
     const cleanName = data.name && data.name.trim() !== "" ? data.name.trim() : null
     const cleanShift = data.shift ? data.shift : null
     const cleanDays = data.daysOfWeek && data.daysOfWeek.trim() !== "" ? data.daysOfWeek.trim() : null
+    const enableEarly = data.enableEarlyTolerance !== undefined ? Boolean(data.enableEarlyTolerance) : true
+    const enableLate = data.enableLateTolerance !== undefined ? Boolean(data.enableLateTolerance) : true
 
     // Si tiene ID, actualizamos directamente
     if (data.id) {
@@ -65,6 +69,8 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
           earlyEntryToleranceMinutes: early,
           gracePeriodMinutes: grace,
           lateToleranceMinutes: late,
+          enableEarlyTolerance: enableEarly,
+          enableLateTolerance: enableLate,
         },
       })
       revalidatePath("/dashboard")
@@ -91,6 +97,8 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
           earlyEntryToleranceMinutes: early,
           gracePeriodMinutes: grace,
           lateToleranceMinutes: late,
+          enableEarlyTolerance: enableEarly,
+          enableLateTolerance: enableLate,
         },
       })
       revalidatePath("/dashboard")
@@ -108,6 +116,8 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
         earlyEntryToleranceMinutes: early,
         gracePeriodMinutes: grace,
         lateToleranceMinutes: late,
+        enableEarlyTolerance: enableEarly,
+        enableLateTolerance: enableLate,
       },
     })
 
@@ -116,6 +126,96 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
   } catch (error: any) {
     console.error("[upsertToleranceRuleAction]", error)
     return { success: false, message: error.message || "Error al guardar la regla de tolerancia." }
+  }
+}
+
+/**
+ * Activa o desactiva la restricción de hora anticipada de ingreso para una regla específica.
+ */
+export async function toggleRuleEarlyToleranceAction(id: string, enable: boolean) {
+  try {
+    await requireAdmin()
+    await prisma.toleranceRule.update({
+      where: { id },
+      data: { enableEarlyTolerance: enable },
+    })
+    revalidatePath("/dashboard")
+    return {
+      success: true,
+      message: enable
+        ? "Restricción de hora anticipada activada para esta regla."
+        : "Restricción de hora anticipada desactivada (se permite marcar libremente antes del horario).",
+    }
+  } catch (error: any) {
+    console.error("[toggleRuleEarlyToleranceAction]", error)
+    return { success: false, message: error.message || "Error al cambiar estado de hora anticipada." }
+  }
+}
+
+/**
+ * Activa o desactiva el control de tardanzas para una regla específica.
+ */
+export async function toggleRuleLateToleranceAction(id: string, enable: boolean) {
+  try {
+    await requireAdmin()
+    await prisma.toleranceRule.update({
+      where: { id },
+      data: { enableLateTolerance: enable },
+    })
+    revalidatePath("/dashboard")
+    return {
+      success: true,
+      message: enable
+        ? "Control de tardanzas activado para esta regla."
+        : "Control de tardanzas desactivado (las marcaciones tardías no serán penalizadas).",
+    }
+  } catch (error: any) {
+    console.error("[toggleRuleLateToleranceAction]", error)
+    return { success: false, message: error.message || "Error al cambiar estado de tardanzas." }
+  }
+}
+
+/**
+ * Activa o desactiva la restricción de hora anticipada en TODAS las reglas.
+ */
+export async function toggleAllToleranceRulesEarlyAction(enable: boolean) {
+  try {
+    await requireAdmin()
+    await prisma.toleranceRule.updateMany({
+      data: { enableEarlyTolerance: enable },
+    })
+    revalidatePath("/dashboard")
+    return {
+      success: true,
+      message: enable
+        ? "Restricción de hora anticipada activada en todas las reglas."
+        : "Restricción de hora anticipada desactivada en todas las reglas (marcado libre previo).",
+    }
+  } catch (error: any) {
+    console.error("[toggleAllToleranceRulesEarlyAction]", error)
+    return { success: false, message: error.message || "Error al cambiar estado general de hora anticipada." }
+  }
+}
+
+/**
+ * Activa o desactiva el control de tardanzas en TODAS las reglas.
+ */
+export async function toggleAllToleranceRulesLateAction(enable: boolean) {
+  try {
+    await requireAdmin()
+    await prisma.toleranceRule.updateMany({
+      data: { enableLateTolerance: enable },
+    })
+    revalidatePath("/dashboard")
+    return {
+      success: true,
+      message: enable
+        ? "Control de tardanzas activado en todas las reglas."
+        : "Control de tardanzas desactivado en todas las reglas (todas las entradas marcan A Tiempo).",
+    }
+  } catch (error: any) {
+    console.error("[toggleAllToleranceRulesLateAction]", error)
+    return { success: false, message: error.message || "Error al cambiar estado general de tardanzas." }
   }
 }
 

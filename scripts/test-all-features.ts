@@ -95,13 +95,38 @@ function applyGuardiaDominicalLogic(
   return { assignments, workingCount, restingCount }
 }
 
-// 3. Simulación de evaluación de marcación según horario programado y tolerancias
+// 3. Simulación de validación de hora anticipada
+function validateEarlyEntrySim(
+  entryTimeStr: string,
+  expectedEntryStr: string,
+  earlyToleranceMin: number,
+  enableEarlyTolerance: boolean = true
+): { allowed: boolean; message?: string } {
+  if (!enableEarlyTolerance) {
+    return { allowed: true }
+  }
+  const [eH, eM] = entryTimeStr.split(":").map(Number)
+  const [xH, xM] = expectedEntryStr.split(":").map(Number)
+  const actualMinutes = eH * 60 + eM
+  const expectedMinutes = xH * 60 + xM
+  const diffMinutes = actualMinutes - expectedMinutes
+  if (diffMinutes < -earlyToleranceMin) {
+    return {
+      allowed: false,
+      message: `Aún no puede registrar su ingreso. El horario oficial es ${expectedEntryStr}.`,
+    }
+  }
+  return { allowed: true }
+}
+
+// 4. Simulación de evaluación de marcación según horario programado y tolerancias
 function evaluateMarkingStatus(
   entryTimeStr: string,
   expectedEntryStr: string,
   earlyToleranceMin: number,
   gracePeriodMin: number,
-  lateToleranceMin: number
+  lateToleranceMin: number,
+  enableLateTolerance: boolean = true
 ): { status: RecordStatus; minutesLate: number } {
   const [eH, eM] = entryTimeStr.split(":").map(Number)
   const [xH, xM] = expectedEntryStr.split(":").map(Number)
@@ -111,15 +136,17 @@ function evaluateMarkingStatus(
 
   const diffMinutes = actualMinutes - expectedMinutes
 
-  if (diffMinutes < -earlyToleranceMin) {
-    // Llegó antes de la tolerancia temprana permitida
+  // Si el control de tardanzas está desactivado, siempre es A_TIEMPO
+  if (!enableLateTolerance) {
     return { status: RecordStatus.A_TIEMPO, minutesLate: 0 }
-  } else if (diffMinutes <= gracePeriodMin) {
+  }
+
+  if (diffMinutes <= gracePeriodMin) {
     // A tiempo dentro del periodo de gracia
     return { status: RecordStatus.A_TIEMPO, minutesLate: 0 }
   } else if (diffMinutes <= lateToleranceMin) {
     // Tarde dentro del límite de tardanza
-    return { status: RecordStatus.TARDE, minutesLate: diffMinutes }
+    return { status: RecordStatus.TARDANZA, minutesLate: diffMinutes }
   } else {
     // Falta injustificada por exceso de tardanza
     return { status: RecordStatus.FALTA, minutesLate: diffMinutes }
@@ -235,7 +262,7 @@ async function main() {
   assert(markGraceManana.status === RecordStatus.A_TIEMPO, "Mañana: Marcación 06:08 (dentro de 10m de gracia) es A_TIEMPO")
 
   const markLateManana = evaluateMarkingStatus("06:20", "06:00", 15, 10, 30)
-  assert(markLateManana.status === RecordStatus.TARDE && markLateManana.minutesLate === 20, "Mañana: Marcación 06:20 (20m tarde) es TARDE")
+  assert(markLateManana.status === RecordStatus.TARDANZA && markLateManana.minutesLate === 20, "Mañana: Marcación 06:20 (20m tarde) es TARDANZA")
 
   const markFaltaManana = evaluateMarkingStatus("06:40", "06:00", 15, 10, 30)
   assert(markFaltaManana.status === RecordStatus.FALTA, "Mañana: Marcación 06:40 (excede 30m de tolerancia) es FALTA")
@@ -268,7 +295,7 @@ async function main() {
     assert(!!tardeRule, "Existe regla configurada para Turno TARDE en BD")
 
     if (interRule) {
-      console.log(`    ℹ Info Regla Intermedio en BD: Entrada ${interRule.entryTime}, Días: ${interRule.daysOfWeek || "Todos"}, Tolerancia: ${interRule.lateToleranceMinutes}m`)
+      console.log(`    ℹ Info Regla Intermedio en BD: Entrada ${interRule.expectedEntryTime}, Días: ${interRule.daysOfWeek || "Todos"}, Tolerancia: ${interRule.lateToleranceMinutes}m`)
     }
 
     // Comprobar que ningún técnico tenga un turno inválido
@@ -277,9 +304,54 @@ async function main() {
     )
     assert(invalidTechShifts.length === 0, "Todos los técnicos tienen turnos válidos según el enum Shift de Prisma")
 
+    // Verificar que los nuevos campos existen en la base de datos
+    const firstRule = toleranceRules[0]
+    if (firstRule) {
+      assert(
+        "enableEarlyTolerance" in firstRule && "enableLateTolerance" in firstRule,
+        "Los campos enableEarlyTolerance y enableLateTolerance están presentes y tipados en Prisma DB"
+      )
+    }
+
   } catch (err: any) {
     assert(false, "Conexión a la base de datos de Prisma", err.message)
   }
+
+  // ----------------------------------------------------
+  // TEST GRUPO 5: ACTIVACIÓN Y DESACTIVACIÓN DE HORA ANTICIPADA Y TARDANZAS
+  // ----------------------------------------------------
+  console.log("\n--- GRUPO 5: Activación y Desactivación de Hora Anticipada y Tardanzas ---")
+
+  // 5.1 Restricción de hora anticipada ACTIVADA (valor por defecto)
+  const earlyCheckActiveBlocked = validateEarlyEntrySim("05:30", "06:00", 15, true)
+  assert(!earlyCheckActiveBlocked.allowed, "Hora anticipada ACTIVADA: Marcación 30 min antes es BLOQUEADA (tolerancia 15 min)")
+
+  const earlyCheckActiveAllowed = validateEarlyEntrySim("05:50", "06:00", 15, true)
+  assert(earlyCheckActiveAllowed.allowed, "Hora anticipada ACTIVADA: Marcación 10 min antes es PERMITIDA (dentro de tolerancia 15 min)")
+
+  // 5.2 Restricción de hora anticipada DESACTIVADA
+  const earlyCheckInactive30m = validateEarlyEntrySim("05:30", "06:00", 15, false)
+  assert(earlyCheckInactive30m.allowed, "Hora anticipada DESACTIVADA: Marcación 30 min antes es PERMITIDA (sin restricción previa)")
+
+  const earlyCheckInactive2h = validateEarlyEntrySim("04:00", "06:00", 15, false)
+  assert(earlyCheckInactive2h.allowed, "Hora anticipada DESACTIVADA: Marcación 2 horas antes es PERMITIDA")
+
+  // 5.3 Control de tardanzas ACTIVADO (evaluación normal)
+  const lateCheckActiveLate = evaluateMarkingStatus("06:10", "06:00", 15, 5, 15, true)
+  assert(lateCheckActiveLate.status === RecordStatus.TARDANZA && lateCheckActiveLate.minutesLate === 10, "Control tardanzas ACTIVADO: Marcación a las 06:10 (gracia 5) registra TARDANZA (10 min)")
+
+  const lateCheckActiveFalta = evaluateMarkingStatus("06:30", "06:00", 15, 5, 15, true)
+  assert(lateCheckActiveFalta.status === RecordStatus.FALTA, "Control tardanzas ACTIVADO: Marcación a las 06:30 (límite 15) registra FALTA")
+
+  // 5.4 Control de tardanzas DESACTIVADO (libre de penalización, siempre A_TIEMPO)
+  const lateCheckInactiveLate = evaluateMarkingStatus("06:10", "06:00", 15, 5, 15, false)
+  assert(lateCheckInactiveLate.status === RecordStatus.A_TIEMPO && lateCheckInactiveLate.minutesLate === 0, "Control tardanzas DESACTIVADO: Marcación a las 06:10 registra A_TIEMPO (0 min tardanza)")
+
+  const lateCheckInactiveFalta = evaluateMarkingStatus("06:45", "06:00", 15, 5, 15, false)
+  assert(lateCheckInactiveFalta.status === RecordStatus.A_TIEMPO && lateCheckInactiveFalta.minutesLate === 0, "Control tardanzas DESACTIVADO: Marcación a las 06:45 registra A_TIEMPO")
+
+  const lateCheckInactiveHours = evaluateMarkingStatus("09:00", "06:00", 15, 5, 15, false)
+  assert(lateCheckInactiveHours.status === RecordStatus.A_TIEMPO, "Control tardanzas DESACTIVADO: Marcación 3 horas después registra A_TIEMPO sin penalizar")
 
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)

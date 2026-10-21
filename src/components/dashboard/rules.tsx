@@ -18,6 +18,10 @@ import {
   upsertToleranceRuleAction,
   deleteToleranceRuleAction,
   seedDefaultToleranceRuleAction,
+  toggleRuleEarlyToleranceAction,
+  toggleRuleLateToleranceAction,
+  toggleAllToleranceRulesEarlyAction,
+  toggleAllToleranceRulesLateAction,
   type ToleranceRuleInput
 } from "@/actions/tolerance"
 
@@ -33,6 +37,8 @@ export type ToleranceRuleItem = {
   earlyEntryToleranceMinutes?: number
   gracePeriodMinutes: number
   lateToleranceMinutes: number
+  enableEarlyTolerance?: boolean
+  enableLateTolerance?: boolean
 }
 
 export const DAYS_OF_WEEK = [
@@ -255,12 +261,66 @@ export function DashboardRules({
     earlyEntryToleranceMinutes: 15,
     gracePeriodMinutes: 10,
     lateToleranceMinutes: 30,
+    enableEarlyTolerance: true,
+    enableLateTolerance: true,
   })
 
   // Quick Simulator state
   const [testTime, setTestTime] = useState("08:12")
   const [testCampusId, setTestCampusId] = useState("")
   const [testRole, setTestRole] = useState<Role | "">("")
+
+  // Contadores y estado de activación general
+  const earlyActiveCount = rules.filter((r) => r.enableEarlyTolerance !== false).length
+  const lateActiveCount = rules.filter((r) => r.enableLateTolerance !== false).length
+  const allEarlyEnabled = rules.length > 0 && earlyActiveCount === rules.length
+  const anyEarlyEnabled = earlyActiveCount > 0
+  const allLateEnabled = rules.length > 0 && lateActiveCount === rules.length
+  const anyLateEnabled = lateActiveCount > 0
+
+  const handleToggleSingleEarly = (id: string, enable: boolean) => {
+    startTransition(async () => {
+      const res = await toggleRuleEarlyToleranceAction(id, enable)
+      if (res.success) {
+        toast.success(res.message)
+      } else {
+        toast.error(res.message)
+      }
+    })
+  }
+
+  const handleToggleSingleLate = (id: string, enable: boolean) => {
+    startTransition(async () => {
+      const res = await toggleRuleLateToleranceAction(id, enable)
+      if (res.success) {
+        toast.success(res.message)
+      } else {
+        toast.error(res.message)
+      }
+    })
+  }
+
+  const handleToggleAllEarly = (enable: boolean) => {
+    startTransition(async () => {
+      const res = await toggleAllToleranceRulesEarlyAction(enable)
+      if (res.success) {
+        toast.success(res.message)
+      } else {
+        toast.error(res.message)
+      }
+    })
+  }
+
+  const handleToggleAllLate = (enable: boolean) => {
+    startTransition(async () => {
+      const res = await toggleAllToleranceRulesLateAction(enable)
+      if (res.success) {
+        toast.success(res.message)
+      } else {
+        toast.error(res.message)
+      }
+    })
+  }
 
   // Determinar a qué técnicos afecta una regla dada
   const getAffectedTechnicians = (rule: ToleranceRuleItem): TechnicianUser[] => {
@@ -319,6 +379,8 @@ export function DashboardRules({
       earlyEntryToleranceMinutes: 15,
       gracePeriodMinutes: 10,
       lateToleranceMinutes: 30,
+      enableEarlyTolerance: true,
+      enableLateTolerance: true,
     })
     setIsModalOpen(true)
   }
@@ -336,6 +398,8 @@ export function DashboardRules({
       earlyEntryToleranceMinutes: rule.earlyEntryToleranceMinutes ?? 15,
       gracePeriodMinutes: rule.gracePeriodMinutes,
       lateToleranceMinutes: rule.lateToleranceMinutes,
+      enableEarlyTolerance: rule.enableEarlyTolerance !== false,
+      enableLateTolerance: rule.enableLateTolerance !== false,
     })
     setIsModalOpen(true)
   }
@@ -399,9 +463,14 @@ export function DashboardRules({
     let status = "A_TIEMPO"
     let message: string | null = null
 
-    if (diff < -earlyLimit) {
+    // Si la restricción de hora anticipada está activa y llega antes del límite:
+    if (matchedRule.enableEarlyTolerance !== false && diff < -earlyLimit) {
       status = "BLOQUEADO"
       message = `Bloqueado por anticipación excesiva (${Math.abs(diff)} min antes, máx ${earlyLimit} min).`
+    } else if (matchedRule.enableLateTolerance === false) {
+      // Si el control de tardanzas está desactivado: siempre marca A_TIEMPO
+      status = "A_TIEMPO"
+      message = "Control de tardanzas desactivado en esta regla: Marcación registrada A Tiempo sin penalización."
     } else if (diff <= matchedRule.gracePeriodMinutes) {
       status = "A_TIEMPO"
     } else if (diff <= matchedRule.lateToleranceMinutes) {
@@ -817,6 +886,63 @@ export function DashboardRules({
             </div>
           </div>
 
+          {/* Opciones de Activación / Desactivación de Hora Anticipada y Tardanzas */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80">
+            {/* Switch Hora Anticipada */}
+            <div className="flex items-center justify-between gap-2 p-2.5 bg-white rounded-xl border border-slate-200/60 shadow-xs">
+              <div className="space-y-0.5 pr-2">
+                <label className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                  <Clock size={14} className="text-sky-600" />
+                  Restricción Hora Anticipada
+                </label>
+                <p className="text-[10px] text-slate-500 leading-tight">
+                  {formData.enableEarlyTolerance !== false
+                    ? "Control ACTIVO: Bloquea marcaciones previas al horario."
+                    : "DESACTIVADO: Permite marcar libremente antes del horario."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFormData({ ...formData, enableEarlyTolerance: !(formData.enableEarlyTolerance !== false) })}
+                className={`w-12 h-6 rounded-full transition-colors relative shrink-0 focus:outline-none ${
+                  formData.enableEarlyTolerance !== false ? "bg-sky-600" : "bg-slate-300"
+                }`}
+                title="Activar/Desactivar restricción de hora anticipada"
+              >
+                <span className={`block w-5 h-5 rounded-full bg-white shadow-md transform transition-transform ${
+                  formData.enableEarlyTolerance !== false ? "translate-x-6" : "translate-x-1"
+                }`} />
+              </button>
+            </div>
+
+            {/* Switch Control de Tardanzas */}
+            <div className="flex items-center justify-between gap-2 p-2.5 bg-white rounded-xl border border-slate-200/60 shadow-xs">
+              <div className="space-y-0.5 pr-2">
+                <label className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                  <AlertTriangle size={14} className="text-amber-600" />
+                  Control de Tardanzas
+                </label>
+                <p className="text-[10px] text-slate-500 leading-tight">
+                  {formData.enableLateTolerance !== false
+                    ? "Control ACTIVO: Penaliza como Tardanza / Falta."
+                    : "DESACTIVADO: Las llegadas tardías marcan A Tiempo."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFormData({ ...formData, enableLateTolerance: !(formData.enableLateTolerance !== false) })}
+                className={`w-12 h-6 rounded-full transition-colors relative shrink-0 focus:outline-none ${
+                  formData.enableLateTolerance !== false ? "bg-amber-500" : "bg-slate-300"
+                }`}
+                title="Activar/Desactivar control de tardanzas"
+              >
+                <span className={`block w-5 h-5 rounded-full bg-white shadow-md transform transition-transform ${
+                  formData.enableLateTolerance !== false ? "translate-x-6" : "translate-x-1"
+                }`} />
+              </button>
+            </div>
+          </div>
+
           {/* Vista Previa Dinámica de la Regla */}
           <div className="rounded-2xl bg-slate-50/90 p-4 border border-slate-200/70 space-y-2">
             <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-slate-400">
@@ -829,29 +955,41 @@ export function DashboardRules({
                   <span className="h-2 w-2 rounded-full bg-sky-500" />
                   <strong>Permitido marcar desde:</strong>
                 </span>
-                <span>{minutesToTimeString(formEarlyLimitMins)} (-{formData.earlyEntryToleranceMinutes ?? 15} min)</span>
+                <span>
+                  {formData.enableEarlyTolerance !== false
+                    ? `${minutesToTimeString(formEarlyLimitMins)} (-${formData.earlyEntryToleranceMinutes ?? 15} min)`
+                    : "En cualquier momento (Sin restricción previa)"}
+                </span>
               </div>
               <div className="flex items-center justify-between text-emerald-700 bg-emerald-50/70 px-3 py-1.5 rounded-xl border border-emerald-100">
                 <span className="flex items-center gap-2">
                   <span className="h-2 w-2 rounded-full bg-emerald-500" />
                   <strong>A Tiempo (Puntual):</strong>
                 </span>
-                <span>Hasta las {minutesToTimeString(formGraceLimitMins)}</span>
-              </div>
-              <div className="flex items-center justify-between text-amber-700 bg-amber-50/70 px-3 py-1.5 rounded-xl border border-amber-100">
-                <span className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-amber-500" />
-                  <strong>Tardanza:</strong>
+                <span>
+                  {formData.enableLateTolerance !== false
+                    ? `Hasta las ${minutesToTimeString(formGraceLimitMins)}`
+                    : "Siempre A Tiempo (Control de tardanzas desactivado)"}
                 </span>
-                <span>{minutesToTimeString(formGraceLimitMins + 1)} — {minutesToTimeString(formLateLimitMins)}</span>
               </div>
-              <div className="flex items-center justify-between text-rose-700 bg-rose-50/70 px-3 py-1.5 rounded-xl border border-rose-100">
-                <span className="flex items-center gap-2">
-                  <span className="h-2 w-2 rounded-full bg-rose-500" />
-                  <strong>Falta:</strong>
-                </span>
-                <span>A partir de las {minutesToTimeString(formLateLimitMins + 1)}</span>
-              </div>
+              {formData.enableLateTolerance !== false ? (
+                <>
+                  <div className="flex items-center justify-between text-amber-700 bg-amber-50/70 px-3 py-1.5 rounded-xl border border-amber-100">
+                    <span className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full bg-amber-500" />
+                      <strong>Tardanza:</strong>
+                    </span>
+                    <span>{minutesToTimeString(formGraceLimitMins + 1)} — {minutesToTimeString(formLateLimitMins)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-rose-700 bg-rose-50/70 px-3 py-1.5 rounded-xl border border-rose-100">
+                    <span className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full bg-rose-500" />
+                      <strong>Falta:</strong>
+                    </span>
+                    <span>A partir de las {minutesToTimeString(formLateLimitMins + 1)}</span>
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
 
@@ -912,6 +1050,119 @@ export function DashboardRules({
               >
                 <Plus className="mr-2" size={20} /> Nueva Regla
               </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* PANEL DE CONTROL GENERAL DE HORA ANTICIPADA Y TARDANZAS */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Card 1: Control de Hora Anticipada */}
+          <div className="p-5 rounded-3xl bg-white border-2 border-slate-200/90 shadow-sm flex flex-col justify-between space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className={`p-2.5 rounded-2xl ${allEarlyEnabled ? "bg-sky-500 text-white" : anyEarlyEnabled ? "bg-amber-500 text-white" : "bg-slate-300 text-slate-700"}`}>
+                  <Clock size={22} />
+                </div>
+                <div>
+                  <h4 className="text-sm font-black text-slate-800">
+                    Control de Hora Anticipada de Ingreso
+                  </h4>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {allEarlyEnabled
+                      ? "Restricción activa: El personal solo puede marcar dentro del tiempo de anticipación configurado."
+                      : !anyEarlyEnabled
+                      ? "Restricción desactivada: El personal puede marcar en cualquier momento previo sin restricción."
+                      : `Parcialmente activa: Activa en ${earlyActiveCount} de ${rules.length} reglas.`}
+                  </p>
+                </div>
+              </div>
+              <span className={`px-2.5 py-1 rounded-full text-[11px] font-black uppercase tracking-wider shrink-0 ${
+                allEarlyEnabled ? "bg-sky-100 text-sky-800 border border-sky-200" : !anyEarlyEnabled ? "bg-slate-100 text-slate-600 border border-slate-200" : "bg-amber-100 text-amber-800 border border-amber-200"
+              }`}>
+                {allEarlyEnabled ? "✓ Activado" : !anyEarlyEnabled ? "✕ Desactivado" : "Mixto"}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+              <span className="text-[11px] font-bold text-slate-400">
+                Activo en {earlyActiveCount} de {rules.length} reglas
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={isPending || !anyEarlyEnabled}
+                  onClick={() => handleToggleAllEarly(false)}
+                  className="text-xs font-bold text-slate-600 hover:bg-slate-100 h-8 rounded-xl"
+                >
+                  Desactivar en todas
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={isPending || allEarlyEnabled}
+                  onClick={() => handleToggleAllEarly(true)}
+                  className="text-xs font-bold bg-sky-600 hover:bg-sky-700 text-white h-8 rounded-xl"
+                >
+                  Activar en todas
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 2: Control de Tardanzas */}
+          <div className="p-5 rounded-3xl bg-white border-2 border-slate-200/90 shadow-sm flex flex-col justify-between space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className={`p-2.5 rounded-2xl ${allLateEnabled ? "bg-amber-500 text-white" : anyLateEnabled ? "bg-orange-500 text-white" : "bg-slate-300 text-slate-700"}`}>
+                  <AlertTriangle size={22} />
+                </div>
+                <div>
+                  <h4 className="text-sm font-black text-slate-800">
+                    Control de Tardanzas y Tolerancias
+                  </h4>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {allLateEnabled
+                      ? "Control activo: Las entradas fuera de gracia se computan como Tardanza o Falta."
+                      : !anyLateEnabled
+                      ? "Control desactivado: Las llegadas tardías marcan A Tiempo (sin penalización)."
+                      : `Parcialmente activo: Activo en ${lateActiveCount} de ${rules.length} reglas.`}
+                  </p>
+                </div>
+              </div>
+              <span className={`px-2.5 py-1 rounded-full text-[11px] font-black uppercase tracking-wider shrink-0 ${
+                allLateEnabled ? "bg-amber-100 text-amber-800 border border-amber-200" : !anyLateEnabled ? "bg-slate-100 text-slate-600 border border-slate-200" : "bg-orange-100 text-orange-800 border border-orange-200"
+              }`}>
+                {allLateEnabled ? "✓ Activado" : !anyLateEnabled ? "✕ Desactivado" : "Mixto"}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+              <span className="text-[11px] font-bold text-slate-400">
+                Activo en {lateActiveCount} de {rules.length} reglas
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={isPending || !anyLateEnabled}
+                  onClick={() => handleToggleAllLate(false)}
+                  className="text-xs font-bold text-slate-600 hover:bg-slate-100 h-8 rounded-xl"
+                >
+                  Desactivar en todas
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={isPending || allLateEnabled}
+                  onClick={() => handleToggleAllLate(true)}
+                  className="text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white h-8 rounded-xl"
+                >
+                  Activar en todas
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -1110,6 +1361,47 @@ export function DashboardRules({
                             )
                           })}
                         </div>
+                      </div>
+
+                      {/* Control de Activación Rápida: Hora Anticipada y Tardanzas */}
+                      <div className="flex flex-wrap items-center gap-2 mb-3">
+                        {/* Toggle Hora Anticipada */}
+                        <button
+                          type="button"
+                          disabled={isPending}
+                          onClick={() => handleToggleSingleEarly(rule.id, !(rule.enableEarlyTolerance ?? true))}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border shadow-xs cursor-pointer ${
+                            (rule.enableEarlyTolerance ?? true)
+                              ? "bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100"
+                              : "bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200"
+                          }`}
+                          title="Clic para alternar activación de restricción de hora anticipada"
+                        >
+                          <span className={`w-2 h-2 rounded-full ${(rule.enableEarlyTolerance ?? true) ? "bg-sky-500 animate-pulse" : "bg-slate-400"}`} />
+                          <span className="text-slate-600">Hora Anticipada:</span>
+                          <span className="font-black">
+                            {(rule.enableEarlyTolerance ?? true) ? "ACTIVADA (Bloquea previo)" : "DESACTIVADA (Libre)"}
+                          </span>
+                        </button>
+
+                        {/* Toggle Tardanzas */}
+                        <button
+                          type="button"
+                          disabled={isPending}
+                          onClick={() => handleToggleSingleLate(rule.id, !(rule.enableLateTolerance ?? true))}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border shadow-xs cursor-pointer ${
+                            (rule.enableLateTolerance ?? true)
+                              ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                              : "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100"
+                          }`}
+                          title="Clic para alternar activación de control de tardanzas"
+                        >
+                          <span className={`w-2 h-2 rounded-full ${(rule.enableLateTolerance ?? true) ? "bg-emerald-500 animate-pulse" : "bg-amber-400"}`} />
+                          <span className="text-slate-600">Tardanzas:</span>
+                          <span className="font-black">
+                            {(rule.enableLateTolerance ?? true) ? "ACTIVADAS (Evalúa falta/tardanza)" : "DESACTIVADAS (Puntual siempre)"}
+                          </span>
+                        </button>
                       </div>
 
                       {/* Resumen numérico en 4 columnas */}

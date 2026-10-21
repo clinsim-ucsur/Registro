@@ -154,6 +154,10 @@ model ToleranceRule {
   earlyEntryToleranceMinutes Int      @default(15) // Minutos máximos antes de la hora oficial en que se permite marcar entrada
   gracePeriodMinutes         Int      @default(0)  
   lateToleranceMinutes       Int      @default(15) 
+
+  // Opciones de activación/desactivación
+  enableEarlyTolerance       Boolean  @default(true) // Activar/desactivar restricción de hora anticipada de ingreso
+  enableLateTolerance        Boolean  @default(true) // Activar/desactivar cálculo y control de tardanzas
   
   createdAt                  DateTime @default(now())
   updatedAt                  DateTime @updatedAt
@@ -185,6 +189,10 @@ model TechnicianSchedule {
   earlyEntryToleranceMinutes Int      @default(15)
   gracePeriodMinutes         Int      @default(10)
   lateToleranceMinutes       Int      @default(30)
+
+  // Opciones de activación/desactivación
+  enableEarlyTolerance       Boolean  @default(true) // Activar/desactivar restricción de hora anticipada de ingreso
+  enableLateTolerance        Boolean  @default(true) // Activar/desactivar cálculo y control de tardanzas
   
   notes                      String?  // Ej: "Cubriendo a Pedro", "Rotación Villa"
   

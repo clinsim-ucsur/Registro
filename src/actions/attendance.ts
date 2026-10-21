@@ -223,7 +223,15 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         if (data.type === RecordType.ENTRADA) {
       // Para TÉCNICOS: resolver turno de hoy por cronograma o por turno predeterminado del perfil
       if (data.role === Role.TECNICO) {
-        let techRule: { expectedEntryTime: string; earlyEntryToleranceMinutes: number; gracePeriodMinutes: number; lateToleranceMinutes: number; shiftName?: string } | null = null
+        let techRule: {
+          expectedEntryTime: string
+          earlyEntryToleranceMinutes: number
+          gracePeriodMinutes: number
+          lateToleranceMinutes: number
+          shiftName?: string
+          enableEarlyTolerance?: boolean
+          enableLateTolerance?: boolean
+        } | null = null
 
         if (scheduledShift) {
           techRule = {
@@ -232,6 +240,8 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
             gracePeriodMinutes: scheduledShift.gracePeriodMinutes ?? 10,
             lateToleranceMinutes: scheduledShift.lateToleranceMinutes ?? 30,
             shiftName: scheduledShift.shift,
+            enableEarlyTolerance: scheduledShift.enableEarlyTolerance ?? true,
+            enableLateTolerance: scheduledShift.enableLateTolerance ?? true,
           }
         } else {
           // Si no tiene cronograma hoy, buscar regla específica para su turno base en su sede y día de la semana
@@ -301,6 +311,8 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
             gracePeriodMinutes: matchedShiftRule?.gracePeriodMinutes ?? defShift.grace,
             lateToleranceMinutes: matchedShiftRule?.lateToleranceMinutes ?? defShift.late,
             shiftName: userShift,
+            enableEarlyTolerance: matchedShiftRule?.enableEarlyTolerance ?? true,
+            enableLateTolerance: matchedShiftRule?.enableLateTolerance ?? true,
           }
         }
 
@@ -396,8 +408,18 @@ function getShiftDiffInMinutes(recordTime: Date, expectedEntryTime: string): { d
 
 function validateEarlyEntry(
   recordTime: Date,
-  rule: { expectedEntryTime: string; earlyEntryToleranceMinutes: number; lateToleranceMinutes?: number }
+  rule: {
+    expectedEntryTime: string
+    earlyEntryToleranceMinutes: number
+    lateToleranceMinutes?: number
+    enableEarlyTolerance?: boolean
+  }
 ): { allowed: boolean; message?: string } {
+  // Si la restricción de hora anticipada de ingreso está desactivada: permitir el ingreso libremente
+  if (rule.enableEarlyTolerance === false) {
+    return { allowed: true }
+  }
+
   const { diffInMinutes, expectedMinutes } = getShiftDiffInMinutes(recordTime, rule.expectedEntryTime)
   const earlyAllowed = rule.earlyEntryToleranceMinutes ?? 15
   // Ventana máxima permitida para registrar entrada: 240 minutos (4 horas) después de la hora oficial
@@ -431,8 +453,18 @@ function validateEarlyEntry(
 
 function calculateStatusFromRule(
   recordTime: Date,
-  rule: { expectedEntryTime: string; gracePeriodMinutes: number; lateToleranceMinutes: number }
+  rule: {
+    expectedEntryTime: string
+    gracePeriodMinutes: number
+    lateToleranceMinutes: number
+    enableLateTolerance?: boolean
+  }
 ): RecordStatus {
+  // Si el control de tardanzas está desactivado: todas las entradas marcan A_TIEMPO sin penalización
+  if (rule.enableLateTolerance === false) {
+    return RecordStatus.A_TIEMPO
+  }
+
   const { diffInMinutes } = getShiftDiffInMinutes(recordTime, rule.expectedEntryTime)
 
   if (diffInMinutes <= rule.gracePeriodMinutes) {
