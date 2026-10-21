@@ -32,18 +32,27 @@ export function DashboardUpload() {
         // Convertimos a JSON. Se espera que las cabeceras sean exactamente DNI, Nombre, Rol, Campus
         const rawData = XLSX.utils.sheet_to_json(ws, { defval: "" })
         
-        // Mapeamos a nuestras keys internas de forma segura ignorando mayúsculas/minúsculas
+        // Mapeamos a nuestras keys internas de forma segura ignorando mayúsculas/minúsculas, tildes y paréntesis
+        const cleanKey = (k: string) =>
+          k
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/\(.*?\)/g, "")
+            .trim()
+
         const mappedData = rawData.map((row: any) => {
           const keys = Object.keys(row)
-          const getVal = (possibleKeys: string[]) => {
-            const key = keys.find(k => possibleKeys.includes(k.toLowerCase().trim()))
-            return key ? row[key] : ""
+          const getVal = (matchFn: (cleaned: string) => boolean) => {
+            const key = keys.find(k => matchFn(cleanKey(k)))
+            return key !== undefined && row[key] !== undefined && row[key] !== null ? String(row[key]).trim() : ""
           }
+
           return {
-            dni: getVal(['dni', 'documento', 'id']),
-            name: getVal(['nombre', 'nombres', 'name', 'nombre completo']),
-            role: getVal(['rol', 'cargo', 'role']),
-            campus: getVal(['campus', 'sede', 'local'])
+            dni: getVal(k => k === "dni" || k === "documento" || k === "id" || k.includes("dni")),
+            name: getVal(k => k === "nombre" || k === "nombres" || k === "name" || k.includes("nombre")),
+            role: getVal(k => k === "rol" || k === "cargo" || k === "role" || k.includes("rol")),
+            campus: getVal(k => k === "sede" || k === "campus" || k === "local" || k.includes("sede") || k.includes("campus") || k.includes("local"))
           }
         }).filter(item => item.dni || item.name)
 

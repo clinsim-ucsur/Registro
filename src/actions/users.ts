@@ -34,17 +34,41 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
       else if (roleRaw === 'COORDINADOR' || roleRaw === 'ADMIN_SECUNDARIO') userRole = Role.ADMIN_SECUNDARIO
       else if (roleRaw === 'SUPER_ADMIN') userRole = Role.SUPER_ADMIN
 
-      // Mapeo y creación de Sede si no existe
+      // Mapeo inteligente y creación de Sede si no existe
       let finalCampusId = null
-      if (item.campus) {
+      if (item.campus && item.campus.toString().trim() !== "") {
         const campusName = item.campus.toString().trim()
-        const lookup = campusName.toLowerCase()
-        if (campusMap.has(lookup)) {
-          finalCampusId = campusMap.get(lookup)
-        } else {
-           const newCampus = await prisma.campus.create({ data: { name: campusName }})
-           campusMap.set(lookup, newCampus.id)
-           finalCampusId = newCampus.id
+        const cleanLookup = campusName
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/campus\s+/i, "")
+          .replace(/sede\s+/i, "")
+          .trim()
+
+        // 1. Coincidencia exacta o normalizada
+        for (const [cName, cId] of campusMap.entries()) {
+          const cleanExisting = cName
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "")
+            .replace(/campus\s+/i, "")
+            .replace(/sede\s+/i, "")
+            .trim()
+
+          if (cName === campusName.toLowerCase() || cleanExisting === cleanLookup || cleanExisting.includes(cleanLookup) || cleanLookup.includes(cleanExisting)) {
+            finalCampusId = cId
+            break
+          }
+        }
+
+        // 2. Si no existió coincidencia previa, crear con nombre adecuado
+        if (!finalCampusId) {
+          const formattedName = campusName.toLowerCase().startsWith("campus ") 
+            ? campusName 
+            : `Campus ${campusName.charAt(0).toUpperCase() + campusName.slice(1)}`
+          const newCampus = await prisma.campus.create({ data: { name: formattedName } })
+          campusMap.set(formattedName.toLowerCase(), newCampus.id)
+          finalCampusId = newCampus.id
         }
       }
 
