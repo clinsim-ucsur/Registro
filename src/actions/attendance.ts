@@ -72,6 +72,36 @@ export async function validateUserAction(dni: string, role: Role) {
       return { success: false, message: "⚠ El DNI existe, pero el rol seleccionado es incorrecto." }
     }
 
+    // Si es técnico, consultar si hoy tiene descanso programado o turno específico
+    let todayScheduleNote: string | null = null
+    let isRestDay = false
+    if (role === Role.TECNICO) {
+      const now = new Date()
+      const limaDateStr = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Lima",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(now)
+
+      const sched = await prisma.technicianSchedule.findUnique({
+        where: {
+          userId_date: {
+            userId: user.id,
+            date: limaDateStr,
+          },
+        },
+        include: { campus: true }
+      })
+
+      if (sched?.shift === Shift.DESCANSO) {
+        return {
+          success: false,
+          message: `🏖️ Hola ${user.name}, hoy tienes asignado tu DÍA DE DESCANSO según el cronograma oficial. No requieres registrar asistencia.`,
+        }
+      }
+    }
+
     return {
       success: true,
       user: {
@@ -137,6 +167,14 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         },
         include: { campus: true },
       })
+
+      // Si el técnico está programado en DESCANSO para hoy
+      if (scheduledShift && scheduledShift.shift === Shift.DESCANSO) {
+        return {
+          success: false,
+          message: `Hoy tienes asignado tu DÍA DE DESCANSO programado. ¡Que tengas un buen descanso!`,
+        }
+      }
     }
 
     // Resolver Campus de marcación:

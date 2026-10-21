@@ -26,6 +26,7 @@ export const DEFAULT_SHIFT_TIMES: Record<Shift, { entry: string; early: number; 
   MANANA: { entry: "06:00", early: 15, grace: 10, late: 30, label: "Mañana", timeRange: "6:00 AM — 3:00 PM" },
   INTERMEDIO: { entry: "09:00", early: 15, grace: 10, late: 30, label: "Intermedio (L-V)", timeRange: "9:00 AM — 6:00 PM" },
   TARDE: { entry: "13:00", early: 15, grace: 10, late: 30, label: "Tarde", timeRange: "1:00 PM — 10:00 PM" },
+  DESCANSO: { entry: "00:00", early: 0, grace: 0, late: 0, label: "Descanso / Libre", timeRange: "Día libre programado" },
 }
 
 export type ShiftPreset = {

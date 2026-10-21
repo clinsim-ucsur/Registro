@@ -275,6 +275,14 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       return null
     }
 
+    // Detección explícita de DESCANSO / LIBRE (D, DESC, DESCANSO, L, LIBRE)
+    if (/^(D|DESC|DESCANSO|L|LIBRE)$/i.test(str)) {
+      return {
+        shift: Shift.DESCANSO,
+        campusName: defaultCampusName,
+      }
+    }
+
     // Formato de rotación: LETRA(SEDE), ej: M(N), T(N), M(V), T(V), M(A)
     const rotMatch = str.match(/^([MTI])\s*\(([NVA])\)$/i)
     let shiftLetter = ""
@@ -398,8 +406,9 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             for (const { col, day } of dayColMap) {
               const cellVal = row[col]
               const parsed = parseShiftCell(cellVal, currentCampus)
+              const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+              
               if (parsed) {
-                const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`
                 matrixMapped.push({
                   dni: tech.dni,
                   name: tech.name,
@@ -407,7 +416,20 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                   campusName: parsed.campusName,
                   shift: parsed.shift,
                   expectedEntryTime: DEFAULT_SHIFT_TIMES[parsed.shift].entry,
-                  notes: parsed.campusName !== currentCampus ? `Rotación a ${parsed.campusName}` : "Rol mensual",
+                  notes: parsed.shift === Shift.DESCANSO 
+                    ? "Descanso programado" 
+                    : (parsed.campusName !== currentCampus ? `Rotación a ${parsed.campusName}` : "Rol mensual"),
+                })
+              } else if (!cellVal || String(cellVal).trim() === "") {
+                // Espacio vacío en la programación = Descanso programado
+                matrixMapped.push({
+                  dni: tech.dni,
+                  name: tech.name,
+                  date: dateStr,
+                  campusName: currentCampus,
+                  shift: Shift.DESCANSO,
+                  expectedEntryTime: "00:00",
+                  notes: "Descanso programado (espacio libre en rol)",
                 })
               }
             }
@@ -435,7 +457,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
 
           let shiftVal: Shift = Shift.MANANA
           const sText = getVal(["turno", "shift", "horario"]).toUpperCase()
-          if (sText.includes("TARDE") || sText === "T") shiftVal = Shift.TARDE
+          if (sText.includes("DESC") || sText.includes("LIBRE") || sText === "D" || sText === "L") shiftVal = Shift.DESCANSO
+          else if (sText.includes("TARDE") || sText === "T") shiftVal = Shift.TARDE
           else if (sText.includes("INTER") || sText.includes("MED") || sText === "I") shiftVal = Shift.INTERMEDIO
 
           return {
@@ -554,8 +577,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       // Buscar si la línea corresponde a un técnico
       const matchedTech = matchTechFromText(line)
       if (matchedTech) {
-        // Extraer los turnos y rotaciones en la línea (ej: M, T, I, M(N), T(N), M(V))
-        const tokens = line.match(/([MTI]\s*\([NVA]\)|[MTI])/gi)
+        // Extraer los turnos y rotaciones en la línea (ej: M, T, I, M(N), T(N), M(V), D)
+        const tokens = line.match(/([MTI]\s*\([NVA]\)|[MTID])/gi)
         if (tokens && tokens.length > 0) {
           tokens.forEach((token, idx) => {
             const parsed = parseShiftCell(token, currentCampus)
@@ -762,20 +785,30 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                       </TableCell>
                       <TableCell>
                         <span className={`px-2.5 py-1 rounded-md text-[11px] font-black uppercase tracking-wider ${
-                          s.shift === Shift.MANANA 
+                          s.shift === Shift.DESCANSO
+                            ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                            : s.shift === Shift.MANANA 
                             ? "bg-amber-50 text-amber-700 border border-amber-200"
                             : s.shift === Shift.INTERMEDIO
                             ? "bg-cyan-50 text-cyan-700 border border-cyan-200"
                             : "bg-purple-50 text-purple-700 border border-purple-200"
                         }`}>
-                          {s.shift}
+                          {s.shift === Shift.DESCANSO ? "🏖️ DESCANSO" : s.shift}
                         </span>
                       </TableCell>
                       <TableCell className="font-black text-slate-800 text-sm">
-                        ⏰ {s.expectedEntryTime}
+                        {s.shift === Shift.DESCANSO ? (
+                          <span className="text-emerald-600 text-xs font-bold">Día Libre</span>
+                        ) : (
+                          `⏰ ${s.expectedEntryTime}`
+                        )}
                       </TableCell>
                       <TableCell className="text-xs text-slate-500 font-medium">
-                        Anticipo: {s.earlyEntryToleranceMinutes}m | Gracia: {s.gracePeriodMinutes}m | Tard: {s.lateToleranceMinutes}m
+                        {s.shift === Shift.DESCANSO ? (
+                          <span className="text-slate-400 italic">No requiere asistencia</span>
+                        ) : (
+                          `Anticipo: ${s.earlyEntryToleranceMinutes}m | Gracia: ${s.gracePeriodMinutes}m | Tard: ${s.lateToleranceMinutes}m`
+                        )}
                       </TableCell>
                       <TableCell className="px-6 text-right space-x-2">
                         <Button
@@ -880,11 +913,12 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider block mb-1.5">
               Turno
             </label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               {[
                 { key: Shift.MANANA, label: "Mañana (06:00)", color: "border-amber-400 bg-amber-50" },
                 { key: Shift.INTERMEDIO, label: "Intermedio (09:00)", color: "border-cyan-400 bg-cyan-50" },
                 { key: Shift.TARDE, label: "Tarde (13:00)", color: "border-purple-400 bg-purple-50" },
+                { key: Shift.DESCANSO, label: "🏖️ Descanso (Libre)", color: "border-emerald-400 bg-emerald-50 text-emerald-800" },
               ].map((s) => (
                 <button
                   type="button"
@@ -1184,6 +1218,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                             <option value={Shift.MANANA}>MANANA</option>
                             <option value={Shift.INTERMEDIO}>INTERMEDIO</option>
                             <option value={Shift.TARDE}>TARDE</option>
+                            <option value={Shift.DESCANSO}>DESCANSO</option>
                           </select>
                         </td>
                         <td className="p-2 text-center">

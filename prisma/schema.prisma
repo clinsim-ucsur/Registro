@@ -40,6 +40,7 @@ enum Shift {
   MANANA      // ~07:00 / 08:00
   INTERMEDIO  // ~11:00 / 12:00
   TARDE       // ~14:00 / 15:00
+  DESCANSO    // Día libre programado / descanso semanal
 }
 
 // ------------------------------------------------------
