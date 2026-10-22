@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition, useMemo, useEffect } from "react"
+import React, { useState, useTransition, useMemo, useEffect, Fragment } from "react"
 import { createPortal } from "react-dom"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -29,7 +29,8 @@ import {
   ArrowRightLeft,
   Building2,
   Check,
-  X
+  X,
+  Save
 } from "lucide-react"
 import { toast } from "sonner"
 import * as XLSX from "xlsx"
@@ -41,6 +42,38 @@ import {
 } from "@/actions/schedules"
 import { DEFAULT_SHIFT_TIMES, type ScheduleItemInput } from "@/lib/schedule-constants"
 import { Shift } from "@prisma/client"
+
+export interface MatrixCell {
+  token: string // "M", "T", "I", "M(N)", "T(N)", "M(V)", "M(A)", "D", "F", "VAC"
+  shift: Shift
+  campusName: string
+  entryTime: string
+  notes?: string
+}
+
+export interface MatrixRow {
+  rowId: string
+  techId?: string
+  name: string
+  dni?: string
+  campusName: string
+  days: Record<number, MatrixCell>
+}
+
+export interface MatrixSchedulePreview {
+  year: number
+  month: number
+  monthLabel: string
+  daysInMonth: number
+  daysMeta: {
+    dayNumber: number
+    dayLetter: string
+    isSunday: boolean
+    dateStr: string
+  }[]
+  sedes: string[]
+  rows: MatrixRow[]
+}
 
 type Technician = {
   id: string
@@ -599,6 +632,11 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     notes: "",
   })
 
+  // Vista Previa tipo Rol Mensual / Calendario (dividido por sedes y editable)
+  const [isMatrixPreviewOpen, setIsMatrixPreviewOpen] = useState(false)
+  const [matrixPreview, setMatrixPreview] = useState<MatrixSchedulePreview | null>(null)
+  const [activeCellPopup, setActiveCellPopup] = useState<{ rowId: string; day: number } | null>(null)
+
   // Carga masiva Excel
   const [excelPreview, setExcelPreview] = useState<ScheduleItemInput[]>([])
 
@@ -729,59 +767,385 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     return bestTech
   }
 
+  // Nombres de sede canónicos
+  const canonicalCampusName = (raw: string) => {
+    const u = (raw || "").toUpperCase()
+    if (u.includes("NORTE")) return "Campus Norte"
+    if (u.includes("ATE")) return "Campus Ate"
+    if (u.includes("ARAMBUR") || u.includes("MIRAFLORES")) return "Campus Aramburú"
+    return "Campus Villa"
+  }
+
   // Parsear contenido de celda de turno y rotación (ej: M, T, I, N, M(N), T(N), M(V), M(A), D, DESC)
-  const parseShiftCell = (cellVal: any, defaultCampusName: string, isSunday = false) => {
-    if (!cellVal) return null
-    const str = String(cellVal).trim()
-    if (!str) return null
-
-    // Ignorar feriados o textos descriptivos
+  const resolveTokenToCell = (rawToken: any, defaultCampusName: string, isSunday = false): MatrixCell => {
+    const str = String(rawToken || "").trim()
     const upper = str.toUpperCase()
-    if (upper === "F" || upper.startsWith("FERIAD") || upper.startsWith("VAC") || (upper === "V" && !str.includes("("))) {
-      return null
-    }
 
-    // Detección explícita de DESCANSO / LIBRE (D, DESC, DESCANSO, L, LIBRE)
-    if (/^(D|DESC|DESCANSO|L|LIBRE)$/i.test(str)) {
+    // Feriado o Descanso por Feriado
+    if (upper === "F" || upper.startsWith("FERIAD")) {
       return {
+        token: "F",
         shift: Shift.DESCANSO,
-        campusName: defaultCampusName,
+        campusName: canonicalCampusName(defaultCampusName),
+        entryTime: "00:00",
+        notes: "Feriado",
       }
     }
 
-    // Formato de rotación: LETRA(SEDE), ej: M(N), T(N), I(N), N(N), M(V), T(V), M(A)
-    const rotMatch = str.match(/^([MTIN])\s*\(([NVA])\)$/i)
-    let shiftLetter = ""
-    let targetCampus = defaultCampusName
+    // Vacaciones
+    if (upper.startsWith("VAC")) {
+      return {
+        token: "VAC",
+        shift: Shift.DESCANSO,
+        campusName: canonicalCampusName(defaultCampusName),
+        entryTime: "00:00",
+        notes: "Vacaciones",
+      }
+    }
 
+    // Descanso explícito o celda vacía
+    if (!str || /^(D|DESC|DESCANSO|L|LIBRE)$/i.test(upper)) {
+      return {
+        token: "D",
+        shift: Shift.DESCANSO,
+        campusName: canonicalCampusName(defaultCampusName),
+        entryTime: "00:00",
+        notes: isSunday ? "Descanso dominical" : "Descanso compensatorio semanal",
+      }
+    }
+
+    // Formato de rotación: LETRA(SEDE), ej: M(N), T(N), I(N), M(V), T(V), M(A)
+    const rotMatch = upper.match(/^([MTIN])\s*\(([NVA])\)$/i)
     if (rotMatch) {
-      shiftLetter = rotMatch[1].toUpperCase()
+      const shiftLetter = rotMatch[1].toUpperCase()
       const campusCode = rotMatch[2].toUpperCase()
+      let targetCampus = defaultCampusName
       if (campusCode === "N") targetCampus = "Campus Norte"
       else if (campusCode === "A") targetCampus = "Campus Ate"
       else if (campusCode === "V") targetCampus = "Campus Villa"
-    } else {
-      const singleMatch = str.match(/^([MTIN])/i)
-      if (!singleMatch) return null
-      shiftLetter = singleMatch[1].toUpperCase()
+
+      let shift: Shift = Shift.MANANA
+      let entryTime = "06:00"
+      if (shiftLetter === "T") {
+        shift = isSunday ? Shift.INTERMEDIO : Shift.TARDE
+        entryTime = isSunday ? "09:00" : "13:00"
+      } else if (shiftLetter === "I") {
+        shift = Shift.INTERMEDIO
+        entryTime = "08:00"
+      } else if (shiftLetter === "N") {
+        shift = Shift.NOCHE
+        entryTime = "19:00"
+      }
+
+      return {
+        token: `${shiftLetter}(${campusCode})`,
+        shift,
+        campusName: canonicalCampusName(targetCampus),
+        entryTime,
+        notes: `Rotación a ${canonicalCampusName(targetCampus)}`,
+      }
     }
 
-    let shift: Shift = Shift.MANANA
-    if (shiftLetter === "T") {
-      // Regla dominical: El domingo la tarde rota habitualmente a Turno Intermedio (09:00 AM)
-      shift = isSunday ? Shift.INTERMEDIO : Shift.TARDE
-    } else if (shiftLetter === "I") {
-      shift = Shift.INTERMEDIO
-    } else if (shiftLetter === "N") {
-      shift = Shift.NOCHE
-    } else {
-      shift = Shift.MANANA
+    // Turno simple sin rotación: M, T, I, N
+    const singleMatch = upper.match(/^([MTIN])/i)
+    if (singleMatch) {
+      const shiftLetter = singleMatch[1].toUpperCase()
+      let shift: Shift = Shift.MANANA
+      let entryTime = "06:00"
+
+      if (shiftLetter === "T") {
+        shift = isSunday ? Shift.INTERMEDIO : Shift.TARDE
+        entryTime = isSunday ? "09:00" : "13:00"
+      } else if (shiftLetter === "I") {
+        shift = Shift.INTERMEDIO
+        entryTime = "08:00"
+      } else if (shiftLetter === "N") {
+        shift = Shift.NOCHE
+        entryTime = "19:00"
+      }
+
+      return {
+        token: shiftLetter,
+        shift,
+        campusName: canonicalCampusName(defaultCampusName),
+        entryTime,
+        notes: isSunday ? `Guardia dominical (${shift})` : `Turno ${shift}`,
+      }
     }
+
+    // Fallback estándar
+    return {
+      token: upper,
+      shift: Shift.MANANA,
+      campusName: canonicalCampusName(defaultCampusName),
+      entryTime: "06:00",
+      notes: "Turno regular",
+    }
+  }
+
+  // Compatibilidad con funciones previas
+  const parseShiftCell = (cellVal: any, defaultCampusName: string, isSunday = false) => {
+    if (!cellVal) return null
+    const cell = resolveTokenToCell(cellVal, defaultCampusName, isSunday)
+    return {
+      shift: cell.shift,
+      campusName: cell.campusName,
+    }
+  }
+
+  // Construir objeto MatrixSchedulePreview
+  const buildMatrixPreviewStructure = (year: number, month: number, rows: MatrixRow[]): MatrixSchedulePreview => {
+    const daysInMonth = new Date(year, month, 0).getDate()
+    const monthNames = [
+      "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+      "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+    ]
+    const dayLetters = ["D", "L", "Ma", "Mi", "J", "V", "S"]
+
+    const daysMeta = []
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateObj = new Date(year, month - 1, d)
+      const dayOfWeek = dateObj.getDay()
+      const isSunday = dayOfWeek === 0
+      const dateStr = `${year}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`
+      daysMeta.push({
+        dayNumber: d,
+        dayLetter: dayLetters[dayOfWeek],
+        isSunday,
+        dateStr,
+      })
+    }
+
+    const sedes = ["Campus Villa", "Campus Norte", "Campus Ate", "Campus Aramburú"]
 
     return {
-      shift,
-      campusName: targetCampus,
+      year,
+      month,
+      monthLabel: `${monthNames[month - 1].toUpperCase()} ${year}`,
+      daysInMonth,
+      daysMeta,
+      sedes,
+      rows,
     }
+  }
+
+  // Mutaciones de celda y filas en la matriz interactiva
+  const updateMatrixCell = (rowId: string, day: number, newToken: string) => {
+    if (!matrixPreview) return
+    const meta = matrixPreview.daysMeta.find((m) => m.dayNumber === day)
+    const isSunday = meta?.isSunday || false
+
+    setMatrixPreview((prev) => {
+      if (!prev) return null
+      const updatedRows = prev.rows.map((r) => {
+        if (r.rowId !== rowId) return r
+        const updatedDays = { ...r.days }
+        updatedDays[day] = resolveTokenToCell(newToken, r.campusName, isSunday)
+        return {
+          ...r,
+          days: updatedDays,
+        }
+      })
+      return {
+        ...prev,
+        rows: updatedRows,
+      }
+    })
+  }
+
+  const updateRowCampus = (rowId: string, newCampusName: string) => {
+    if (!matrixPreview) return
+    setMatrixPreview((prev) => {
+      if (!prev) return null
+      const updatedRows = prev.rows.map((r) => {
+        if (r.rowId !== rowId) return r
+        return {
+          ...r,
+          campusName: canonicalCampusName(newCampusName),
+        }
+      })
+      return {
+        ...prev,
+        rows: updatedRows,
+      }
+    })
+  }
+
+  const updateRowTech = (rowId: string, newTechId: string) => {
+    if (!matrixPreview) return
+    const techObj = technicians.find((t) => t.id === newTechId)
+    if (!techObj) return
+
+    setMatrixPreview((prev) => {
+      if (!prev) return null
+      const updatedRows = prev.rows.map((r) => {
+        if (r.rowId !== rowId) return r
+        return {
+          ...r,
+          techId: techObj.id,
+          name: techObj.name,
+          dni: techObj.dni,
+        }
+      })
+      return {
+        ...prev,
+        rows: updatedRows,
+      }
+    })
+  }
+
+  const deleteMatrixRow = (rowId: string) => {
+    if (!matrixPreview) return
+    setMatrixPreview((prev) => {
+      if (!prev) return null
+      return {
+        ...prev,
+        rows: prev.rows.filter((r) => r.rowId !== rowId),
+      }
+    })
+    toast.success("Fila eliminada de la vista previa.")
+  }
+
+  const addMatrixRowToCampus = (campusName: string) => {
+    if (!matrixPreview) return
+    // Escoger un técnico no asignado aún o el primero
+    const usedTechIds = new Set(matrixPreview.rows.map((r) => r.techId).filter(Boolean))
+    const availableTech = technicians.find((t) => !usedTechIds.has(t.id)) || technicians[0]
+
+    const newRowId = `row-added-${Date.now()}`
+    const defaultDays: Record<number, MatrixCell> = {}
+    for (let d = 1; d <= matrixPreview.daysInMonth; d++) {
+      const meta = matrixPreview.daysMeta.find((m) => m.dayNumber === d)
+      const isSunday = meta?.isSunday || false
+      defaultDays[d] = resolveTokenToCell(isSunday ? "D" : "M", campusName, isSunday)
+    }
+
+    const newRow: MatrixRow = {
+      rowId: newRowId,
+      techId: availableTech?.id,
+      name: availableTech?.name || "Nuevo Técnico",
+      dni: availableTech?.dni || "",
+      campusName: canonicalCampusName(campusName),
+      days: defaultDays,
+    }
+
+    setMatrixPreview((prev) => {
+      if (!prev) return null
+      return {
+        ...prev,
+        rows: [...prev.rows, newRow],
+      }
+    })
+    toast.success(`Técnico añadido a ${campusName}.`)
+  }
+
+  // Abrir vista previa del mes actual consultado en base de datos
+  const openCurrentMonthMatrix = () => {
+    let y = new Date().getFullYear()
+    let m = new Date().getMonth() + 1
+    if (selectedMonth) {
+      const parts = selectedMonth.split("-")
+      if (parts.length === 2) {
+        y = parseInt(parts[0], 10)
+        m = parseInt(parts[1], 10)
+      }
+    }
+
+    const daysInMonth = new Date(y, m, 0).getDate()
+    const rows: MatrixRow[] = []
+
+    technicians.forEach((t) => {
+      const techCampus = t.campus?.name ? canonicalCampusName(t.campus.name) : "Campus Villa"
+      const rowObj: MatrixRow = {
+        rowId: `live-${t.id}`,
+        techId: t.id,
+        name: t.name,
+        dni: t.dni,
+        campusName: techCampus,
+        days: {},
+      }
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const dateStr = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`
+        const dateObj = new Date(y, m - 1, d)
+        const isSunday = dateObj.getDay() === 0
+
+        const existing = schedules.find((s) => s.userId === t.id && s.date === dateStr)
+        if (existing) {
+          let token = "M"
+          if (existing.shift === Shift.MANANA) token = "M"
+          else if (existing.shift === Shift.TARDE) token = "T"
+          else if (existing.shift === Shift.INTERMEDIO) token = "I"
+          else if (existing.shift === Shift.NOCHE) token = "N"
+          else if (existing.shift === Shift.DESCANSO) token = "D"
+
+          const schedCampus = existing.campus?.name ? canonicalCampusName(existing.campus.name) : techCampus
+          if (schedCampus !== techCampus) {
+            let code = "V"
+            if (schedCampus.includes("Norte")) code = "N"
+            else if (schedCampus.includes("Ate")) code = "A"
+            else if (schedCampus.includes("Villa")) code = "V"
+            token = `${token}(${code})`
+          }
+
+          rowObj.days[d] = {
+            token,
+            shift: existing.shift,
+            campusName: schedCampus,
+            entryTime: existing.expectedEntryTime || (DEFAULT_SHIFT_TIMES[existing.shift]?.entry || "06:00"),
+            notes: existing.notes || "",
+          }
+        } else {
+          rowObj.days[d] = resolveTokenToCell(isSunday ? "D" : (t.defaultShift || "M"), techCampus, isSunday)
+        }
+      }
+
+      rows.push(rowObj)
+    })
+
+    const preview = buildMatrixPreviewStructure(y, m, rows)
+    setMatrixPreview(preview)
+    setIsMatrixPreviewOpen(true)
+  }
+
+  // Guardar definitivamente la Matriz de Cronograma Mensual
+  const handleSaveMatrixPreview = async () => {
+    if (!matrixPreview || matrixPreview.rows.length === 0) {
+      toast.warning("No hay turnos para guardar.")
+      return
+    }
+
+    startTransition(async () => {
+      const itemsToSave: ScheduleItemInput[] = []
+
+      matrixPreview.rows.forEach((row) => {
+        for (let d = 1; d <= matrixPreview.daysInMonth; d++) {
+          const cell = row.days[d]
+          if (!cell) continue
+
+          const dateStr = `${matrixPreview.year}-${String(matrixPreview.month).padStart(2, "0")}-${String(d).padStart(2, "0")}`
+          itemsToSave.push({
+            dni: row.dni,
+            name: row.name,
+            date: dateStr,
+            campusName: cell.campusName,
+            shift: cell.shift,
+            expectedEntryTime: cell.entryTime,
+            notes: cell.notes || (cell.shift === Shift.DESCANSO ? "Descanso" : "Rol mensual programado"),
+          })
+        }
+      })
+
+      const res = await bulkUpsertTechnicianSchedulesAction(itemsToSave)
+      if (res.success) {
+        toast.success(`¡Rol oficial de ${matrixPreview.monthLabel} guardado con éxito! (${itemsToSave.length} turnos registrados).`)
+        setIsMatrixPreviewOpen(false)
+        setMatrixPreview(null)
+        window.location.reload()
+      } else {
+        toast.error(res.message)
+      }
+    })
   }
 
   // Leer Excel (soporta tanto formato tabular como matriz de rol mensual)
@@ -846,7 +1210,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
           if (ym) refYear = Number(ym[0])
 
           let currentCampus = "Campus Villa"
-          const matrixMapped: ScheduleItemInput[] = []
+          const matrixRows: MatrixRow[] = []
+          const daysInMonth = new Date(refYear, refMonth, 0).getDate()
 
           for (let r = dayRowIndex + 1; r < rawGrid.length; r++) {
             const row = rawGrid[r]
@@ -863,6 +1228,9 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             } else if (upperLine.includes("SEDE ATE")) {
               currentCampus = "Campus Ate"
               continue
+            } else if (upperLine.includes("ARAMBUR") || upperLine.includes("MIRAFLORES")) {
+              currentCampus = "Campus Aramburú"
+              continue
             }
 
             if (upperLine.includes("EVENTOS DEL MES") || upperLine.includes("FERIADO")) {
@@ -876,62 +1244,34 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             const tech = matchTechFromText(nameCandidate)
             if (!tech) continue
 
+            const rowDays: Record<number, MatrixCell> = {}
+
             // Recorrer las columnas de los días
-            for (const { col, day } of dayColMap) {
-              const cellVal = row[col]
-              const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+            for (let d = 1; d <= daysInMonth; d++) {
+              const colObj = dayColMap.find((x) => x.day === d)
+              const cellVal = colObj ? row[colObj.col] : ""
+              const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(d).padStart(2, "0")}`
               const dObj = new Date(`${dateStr}T12:00:00Z`)
               const isSunday = dObj.getUTCDay() === 0
 
-              const parsed = parseShiftCell(cellVal, currentCampus, isSunday)
-              
-              if (parsed) {
-                let entryTime = DEFAULT_SHIFT_TIMES[parsed.shift]?.entry || "06:00"
-                if (parsed.shift === Shift.DESCANSO) {
-                  entryTime = "00:00"
-                } else if (isSunday && parsed.shift === Shift.INTERMEDIO) {
-                  entryTime = "09:00"
-                }
-
-                let notes = "Rol mensual"
-                if (parsed.shift === Shift.DESCANSO) {
-                  notes = isSunday ? "Descanso dominical" : "Descanso compensatorio semanal"
-                } else if (isSunday) {
-                  notes = `Guardia dominical (${parsed.shift})`
-                } else if (parsed.campusName !== currentCampus) {
-                  notes = `Rotación a ${parsed.campusName}`
-                }
-
-                matrixMapped.push({
-                  dni: tech.dni,
-                  name: tech.name,
-                  date: dateStr,
-                  campusName: parsed.campusName,
-                  shift: parsed.shift,
-                  expectedEntryTime: entryTime,
-                  notes,
-                })
-              } else if (!cellVal || String(cellVal).trim() === "") {
-                // Espacio vacío en la programación:
-                // Si es domingo: Descanso dominical (por regla general solo 2 hacen guardia y resto descansa)
-                // Si es día de semana: Descanso compensatorio semanal (los que trabajaron domingo)
-                matrixMapped.push({
-                  dni: tech.dni,
-                  name: tech.name,
-                  date: dateStr,
-                  campusName: currentCampus,
-                  shift: Shift.DESCANSO,
-                  expectedEntryTime: "00:00",
-                  notes: isSunday 
-                    ? "Descanso dominical (sin guardia asignada)" 
-                    : "Descanso compensatorio semanal",
-                })
-              }
+              rowDays[d] = resolveTokenToCell(cellVal, currentCampus, isSunday)
             }
+
+            matrixRows.push({
+              rowId: `excel-row-${r}-${tech.id || Math.random()}`,
+              techId: tech.id,
+              name: tech.name,
+              dni: tech.dni,
+              campusName: currentCampus,
+              days: rowDays,
+            })
           }
 
-          setExcelPreview(matrixMapped)
-          toast.success(`¡Rol mensual detectado! Se cargaron ${matrixMapped.length} turnos programados para ${refMonth}/${refYear}.`)
+          const preview = buildMatrixPreviewStructure(refYear, refMonth, matrixRows)
+          setMatrixPreview(preview)
+          setIsBulkOpen(false)
+          setIsMatrixPreviewOpen(true)
+          toast.success(`¡Rol mensual de ${preview.monthLabel} detectado! Se abrió la vista previa tipo calendario por sedes para revisar o editar.`)
           return
         }
 
@@ -985,7 +1325,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             dni: getVal(["dni", "documento", "id"]),
             name: getVal(["nombre", "tecnico", "técnico", "nombres", "name"]),
             date: rawDate,
-            campusName: getVal(["sede", "campus", "local"]),
+            campusName: canonicalCampusName(getVal(["sede", "campus", "local"])),
             shift: shiftVal,
             expectedEntryTime: entryTime,
             notes,
@@ -1002,7 +1342,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     reader.readAsBinaryString(file)
   }
 
-  // Guardar Lote Excel
+  // Guardar Lote Excel tabular tradicional
   const handleSaveBulkExcel = async () => {
     if (excelPreview.length === 0) return
     startTransition(async () => {
@@ -1081,6 +1421,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     if (yearMatch) refYear = Number(yearMatch[0])
 
     let currentCampus = "Campus Villa"
+    const matrixRows: MatrixRow[] = []
+    const daysInMonth = new Date(refYear, refMonth, 0).getDate()
 
     for (const line of lines) {
       const upperLine = line.toUpperCase()
@@ -1092,42 +1434,56 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
         currentCampus = "Campus Norte"
       } else if (upperLine.includes("SEDE ATE") || upperLine.includes("ATE")) {
         currentCampus = "Campus Ate"
+      } else if (upperLine.includes("ARAMBUR") || upperLine.includes("MIRAFLORES")) {
+        currentCampus = "Campus Aramburú"
       }
 
       // Buscar si la línea corresponde a un técnico
       const matchedTech = matchTechFromText(line)
       if (matchedTech) {
         // Extraer los turnos y rotaciones en la línea (ej: M, T, I, N, M(N), T(N), M(V), D, L)
-        const tokens = line.match(/([MTIN]\s*\([NVA]\)|[MTINDL])/gi)
-        if (tokens && tokens.length > 0) {
-          tokens.forEach((token, idx) => {
-            const day = Math.min(idx + 1, 31)
-            const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`
-            const dObj = new Date(`${dateStr}T12:00:00Z`)
-            const isSunday = dObj.getUTCDay() === 0
-            const parsed = parseShiftCell(token, currentCampus, isSunday)
-            if (parsed) {
-              let entryTime = DEFAULT_SHIFT_TIMES[parsed.shift]?.entry || "06:00"
-              if (parsed.shift === Shift.DESCANSO) entryTime = "00:00"
-              else if (isSunday && parsed.shift === Shift.INTERMEDIO) entryTime = "09:00"
+        const tokens = line.match(/([MTIN]\s*\([NVA]\)|[MTINDL])/gi) || []
+        const rowDays: Record<number, MatrixCell> = {}
 
-              detectedRows.push({
-                name: matchedTech.name,
-                dni: matchedTech.dni || "",
-                date: dateStr,
-                campusName: parsed.campusName,
-                shift: parsed.shift,
-                entryTime,
-              })
-            }
-          })
+        for (let d = 1; d <= daysInMonth; d++) {
+          const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(d).padStart(2, "0")}`
+          const dObj = new Date(`${dateStr}T12:00:00Z`)
+          const isSunday = dObj.getUTCDay() === 0
+
+          const cellToken = tokens[d - 1] || ""
+          rowDays[d] = resolveTokenToCell(cellToken, currentCampus, isSunday)
+
+          if (cellToken) {
+            const parsed = rowDays[d]
+            detectedRows.push({
+              name: matchedTech.name,
+              dni: matchedTech.dni || "",
+              date: dateStr,
+              campusName: parsed.campusName,
+              shift: parsed.shift,
+              entryTime: parsed.entryTime,
+            })
+          }
         }
+
+        matrixRows.push({
+          rowId: `ocr-row-${matchedTech.id || matrixRows.length}`,
+          techId: matchedTech.id,
+          name: matchedTech.name,
+          dni: matchedTech.dni || "",
+          campusName: currentCampus,
+          days: rowDays,
+        })
       }
     }
 
     setOcrParsedRows(detectedRows)
-    if (detectedRows.length > 0) {
-      toast.success(`¡Rol reconocido! Se detectaron ${detectedRows.length} turnos para el mes ${refMonth}/${refYear}.`)
+    if (matrixRows.length > 0) {
+      const preview = buildMatrixPreviewStructure(refYear, refMonth, matrixRows)
+      setMatrixPreview(preview)
+      setIsOcrOpen(false)
+      setIsMatrixPreviewOpen(true)
+      toast.success(`¡Rol reconocido por OCR (${preview.monthLabel})! Puedes revisar la vista previa tipo calendario y editar cualquier celda antes de guardar.`)
     } else {
       toast.warning("No se pudo estructurar el texto de la imagen automáticamente. Te recomendamos importar directamente el archivo Excel (.xlsx) del rol que se procesa al 100% con total precisión.")
     }
@@ -1175,6 +1531,14 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
+          <Button
+            onClick={openCurrentMonthMatrix}
+            className="h-12 px-5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-extrabold rounded-xl shadow-md shadow-teal-600/20 flex items-center gap-2 transition-all hover:scale-105"
+          >
+            <CalendarDays size={18} />
+            Vista Rol Mensual (Calendario)
+          </Button>
+
           <Button
             onClick={() => setIsOcrOpen(true)}
             className="h-12 px-5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold rounded-xl shadow-md shadow-purple-600/20 flex items-center gap-2"
@@ -2355,6 +2719,372 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             </Button>
           </div>
         </div>
+      </ScheduleModal>
+
+      {/* MODAL VISTA PREVIA / EDITOR TIPO CALENDARIO POR SEDES */}
+      <ScheduleModal
+        isOpen={isMatrixPreviewOpen}
+        onClose={() => {
+          setIsMatrixPreviewOpen(false)
+          setActiveCellPopup(null)
+        }}
+        title={`Vista Previa del Rol Mensual — ${matrixPreview?.monthLabel || ""}`}
+        maxWidth="max-w-[98vw]"
+      >
+        {matrixPreview && (
+          <div className="space-y-4 max-h-[85vh] flex flex-col">
+            {/* Header del Rol Institucional */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-3 bg-slate-900 text-white rounded-xl shadow-md">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-600 rounded-lg text-white">
+                  <CalendarDays size={24} />
+                </div>
+                <div>
+                  <h3 className="font-black text-lg tracking-wider uppercase text-blue-300">
+                    ROL TÉCNICOS {matrixPreview.monthLabel}
+                  </h3>
+                  <p className="text-xs text-slate-300">
+                    Vista calendario dividida por sedes institucionales. Puedes hacer clic en cualquier celda para corregir errores o rotaciones.
+                  </p>
+                </div>
+              </div>
+
+              {/* Guía Rápida de Turnos / Leyenda */}
+              <div className="flex items-center gap-1.5 flex-wrap text-[10px] font-bold">
+                <span className="px-2 py-0.5 rounded bg-teal-100 text-teal-800 border border-teal-300">
+                  M: Mañana (06:00)
+                </span>
+                <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
+                  T: Tarde (13:00 / 09:00 dom)
+                </span>
+                <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-900 border border-blue-300">
+                  I: Intermedio (08:00)
+                </span>
+                <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-900 border border-purple-300">
+                  M(N)/T(N): Rot. Norte
+                </span>
+                <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-900 border border-indigo-300">
+                  M(V): Rot. Villa
+                </span>
+                <span className="px-2 py-0.5 rounded bg-pink-100 text-pink-900 border border-pink-300">
+                  M(A): Rot. Ate
+                </span>
+                <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-600 border border-slate-300">
+                  D: Descanso
+                </span>
+                <span className="px-2 py-0.5 rounded bg-yellow-200 text-yellow-900 border border-yellow-400">
+                  F: Feriado
+                </span>
+              </div>
+            </div>
+
+            {/* Tabla Matriz Tipo Hoja de Cálculo / Calendario */}
+            <div className="overflow-x-auto border-2 border-slate-300 rounded-xl shadow-sm bg-white max-h-[58vh] overflow-y-auto">
+              <table className="w-full text-xs border-collapse">
+                <thead className="sticky top-0 z-20 shadow-xs">
+                  {/* Fila 1: Días de la semana (J, V, S, D, L, Ma, Mi...) */}
+                  <tr className="border-b border-slate-300">
+                    <th className="sticky left-0 z-30 bg-slate-100 text-slate-800 font-extrabold px-3 py-1.5 border-r border-slate-300 min-w-[200px] text-left">
+                      Nombres y Apellidos
+                    </th>
+                    {matrixPreview.daysMeta.map((meta) => (
+                      <th
+                        key={`letter-${meta.dayNumber}`}
+                        className={`text-center px-1.5 py-1 border-r border-slate-300 min-w-[34px] font-black text-[11px] ${
+                          meta.isSunday
+                            ? "bg-amber-300 text-amber-950 border-r-amber-400"
+                            : "bg-slate-100 text-slate-700"
+                        }`}
+                      >
+                        {meta.dayLetter}
+                      </th>
+                    ))}
+                  </tr>
+
+                  {/* Fila 2: Números de los días (1, 2, 3, 4, 5...) */}
+                  <tr className="border-b-2 border-slate-400">
+                    <th className="sticky left-0 z-30 bg-slate-200 text-slate-600 font-bold px-3 py-1 border-r border-slate-300 text-[10px] text-left uppercase">
+                      Sede Asignada / Acciones
+                    </th>
+                    {matrixPreview.daysMeta.map((meta) => (
+                      <th
+                        key={`num-${meta.dayNumber}`}
+                        className={`text-center px-1.5 py-1 border-r border-slate-300 min-w-[34px] font-black text-xs ${
+                          meta.isSunday
+                            ? "bg-amber-300 text-amber-950 border-r-amber-400"
+                            : "bg-slate-200 text-slate-800"
+                        }`}
+                      >
+                        {meta.dayNumber}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {["Campus Villa", "Campus Norte", "Campus Ate", "Campus Aramburú"].map((sedeName) => {
+                    const rowsInCampus = matrixPreview.rows.filter((r) => r.campusName === sedeName)
+                    const sedeDisplay =
+                      sedeName === "Campus Villa"
+                        ? "SEDE VILLA"
+                        : sedeName === "Campus Norte"
+                        ? "SEDE NORTE"
+                        : sedeName === "Campus Ate"
+                        ? "SEDE ATE"
+                        : "CAMPUS ARAMBURÚ"
+
+                    return (
+                      <React.Fragment key={sedeName}>
+                        {/* Franja separadora de Sede */}
+                        <tr className="bg-slate-800 text-white font-extrabold text-xs">
+                          <td
+                            colSpan={matrixPreview.daysInMonth + 1}
+                            className="px-4 py-2 border-y border-slate-700 sticky left-0 z-10"
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="flex items-center gap-2 tracking-wider">
+                                <Building2 size={16} className="text-blue-400" />
+                                {sedeDisplay}
+                                <span className="text-slate-300 font-normal text-[11px]">
+                                  ({rowsInCampus.length} técnicos programados)
+                                </span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => addMatrixRowToCampus(sedeName)}
+                                className="px-2.5 py-1 text-[11px] font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-md flex items-center gap-1 shadow-xs transition-colors"
+                              >
+                                <Plus size={12} /> Agregar Técnico a {sedeDisplay}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+
+                        {rowsInCampus.length === 0 ? (
+                          <tr>
+                            <td
+                              colSpan={matrixPreview.daysInMonth + 1}
+                              className="px-4 py-3 text-center text-slate-400 italic bg-slate-50 border-b border-slate-200"
+                            >
+                              Sin técnicos asignados en {sedeDisplay} para este mes.
+                            </td>
+                          </tr>
+                        ) : (
+                          rowsInCampus.map((row) => (
+                            <tr
+                              key={row.rowId}
+                              className="border-b border-slate-200 hover:bg-slate-50/80 transition-colors"
+                            >
+                              {/* Columna fija Izquierda: Técnico y selector de Sede */}
+                              <td className="sticky left-0 z-10 bg-white border-r border-slate-300 px-3 py-2 shadow-sm min-w-[200px]">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <select
+                                      value={row.techId || ""}
+                                      onChange={(e) => updateRowTech(row.rowId, e.target.value)}
+                                      className="w-full text-xs font-bold text-slate-800 bg-transparent border-0 focus:ring-1 focus:ring-blue-500 rounded px-1 py-0.5 truncate cursor-pointer hover:bg-slate-100"
+                                    >
+                                      {row.techId && !technicians.some((t) => t.id === row.techId) && (
+                                        <option value={row.techId}>{row.name}</option>
+                                      )}
+                                      {technicians.map((t) => (
+                                        <option key={t.id} value={t.id}>
+                                          {t.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                      <select
+                                        value={row.campusName}
+                                        onChange={(e) => updateRowCampus(row.rowId, e.target.value)}
+                                        className="text-[10px] font-semibold text-slate-500 bg-slate-100 border border-slate-200 rounded px-1 py-0.5 outline-none"
+                                      >
+                                        <option value="Campus Villa">Sede Villa</option>
+                                        <option value="Campus Norte">Sede Norte</option>
+                                        <option value="Campus Ate">Sede Ate</option>
+                                        <option value="Campus Aramburú">Campus Aramburú</option>
+                                      </select>
+                                      {row.dni && (
+                                        <span className="text-[10px] text-slate-400 font-mono">DNI: {row.dni}</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteMatrixRow(row.rowId)}
+                                    className="text-slate-300 hover:text-red-500 p-1 rounded transition-colors"
+                                    title="Eliminar fila del cronograma"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              </td>
+
+                              {/* Columnas de los días (1 al 31) */}
+                              {matrixPreview.daysMeta.map((meta) => {
+                                const dayCell = row.days[meta.dayNumber] || {
+                                  token: "D",
+                                  shift: Shift.DESCANSO,
+                                  campusName: row.campusName,
+                                  entryTime: "00:00",
+                                }
+                                const isSunday = meta.isSunday
+                                const isPopupOpen =
+                                  activeCellPopup?.rowId === row.rowId && activeCellPopup?.day === meta.dayNumber
+
+                                // Colorimetría exacta de la ficha
+                                let badgeColor = "bg-white text-slate-400 hover:bg-slate-100"
+                                if (dayCell.token === "M") {
+                                  badgeColor = "bg-teal-50 text-teal-800 border-teal-300 font-bold"
+                                } else if (dayCell.token === "T") {
+                                  badgeColor = "bg-amber-100 text-amber-900 border-amber-300 font-bold"
+                                } else if (dayCell.token === "I") {
+                                  badgeColor = "bg-blue-100 text-blue-900 border-blue-300 font-bold"
+                                } else if (dayCell.token.includes("(N)")) {
+                                  badgeColor = "bg-purple-100 text-purple-900 border-purple-300 font-black"
+                                } else if (dayCell.token.includes("(V)")) {
+                                  badgeColor = "bg-indigo-100 text-indigo-900 border-indigo-300 font-black"
+                                } else if (dayCell.token.includes("(A)")) {
+                                  badgeColor = "bg-pink-100 text-pink-900 border-pink-300 font-black"
+                                } else if (dayCell.token === "F") {
+                                  badgeColor = "bg-yellow-200 text-yellow-900 border-yellow-400 font-black"
+                                } else if (dayCell.token === "VAC") {
+                                  badgeColor = "bg-emerald-200 text-emerald-900 border-emerald-400 font-black"
+                                } else if (dayCell.token === "D") {
+                                  badgeColor = isSunday
+                                    ? "bg-amber-50/70 text-amber-700/60 font-semibold"
+                                    : "bg-slate-50 text-slate-400"
+                                }
+
+                                return (
+                                  <td
+                                    key={`cell-${row.rowId}-${meta.dayNumber}`}
+                                    className={`relative p-0.5 text-center border-r border-slate-200 ${
+                                      isSunday ? "bg-amber-50/40 border-r-amber-300" : ""
+                                    }`}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (isPopupOpen) setActiveCellPopup(null)
+                                        else setActiveCellPopup({ rowId: row.rowId, day: meta.dayNumber })
+                                      }}
+                                      title={`Día ${meta.dayNumber} (${meta.dayLetter}): ${dayCell.token} - ${dayCell.shift} en ${dayCell.campusName}`}
+                                      className={`w-full h-8 flex items-center justify-center rounded text-xs transition-all border ${badgeColor} ${
+                                        isPopupOpen ? "ring-2 ring-blue-600 scale-105 z-20 shadow-md" : ""
+                                      }`}
+                                    >
+                                      {dayCell.token || "—"}
+                                    </button>
+
+                                    {/* Selector Rápido Popup */}
+                                    {isPopupOpen && (
+                                      <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 z-50 bg-white border-2 border-slate-300 rounded-xl shadow-2xl p-2 w-52 text-left animate-fade-in-up">
+                                        <div className="text-[11px] font-black text-slate-700 mb-1.5 flex items-center justify-between border-b pb-1">
+                                          <span>Día {meta.dayNumber} ({meta.dayLetter})</span>
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              setActiveCellPopup(null)
+                                            }}
+                                            className="text-slate-400 hover:text-slate-600"
+                                          >
+                                            <X size={12} />
+                                          </button>
+                                        </div>
+
+                                        <div className="grid grid-cols-3 gap-1">
+                                          {[
+                                            { t: "M", l: "Mañana" },
+                                            { t: "T", l: isSunday ? "Tarde/09h" : "Tarde" },
+                                            { t: "I", l: "Interm." },
+                                            { t: "M(N)", l: "Mañ. Norte" },
+                                            { t: "T(N)", l: "Tar. Norte" },
+                                            { t: "M(V)", l: "Mañ. Villa" },
+                                            { t: "M(A)", l: "Mañ. Ate" },
+                                            { t: "T(A)", l: "Tar. Ate" },
+                                            { t: "D", l: "Descanso" },
+                                            { t: "F", l: "Feriado" },
+                                            { t: "VAC", l: "Vacaciones" },
+                                          ].map((opt) => (
+                                            <button
+                                              key={opt.t}
+                                              type="button"
+                                              onClick={() => {
+                                                updateMatrixCell(row.rowId, meta.dayNumber, opt.t)
+                                                setActiveCellPopup(null)
+                                              }}
+                                              className={`px-1.5 py-1 text-[11px] font-bold rounded border text-center transition-colors ${
+                                                dayCell.token === opt.t
+                                                  ? "bg-blue-600 text-white border-blue-600 font-black"
+                                                  : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-200"
+                                              }`}
+                                            >
+                                              {opt.t}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </td>
+                                )
+                              })}
+                            </tr>
+                          ))
+                        )}
+                      </React.Fragment>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Footer con Resumen y Botón de Confirmación */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-3 border-t border-slate-200 bg-slate-50 p-4 rounded-xl">
+              <div className="text-xs text-slate-600 space-y-0.5">
+                <p className="font-bold text-slate-800">
+                  Total de técnicos en plantilla: <span className="text-blue-700">{matrixPreview.rows.length}</span>
+                </p>
+                <p className="text-slate-500">
+                  Total de turnos computados para {matrixPreview.monthLabel}:{" "}
+                  <span className="font-semibold text-slate-700">
+                    {matrixPreview.rows.length * matrixPreview.daysInMonth} días
+                  </span>
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3 w-full sm:w-auto">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsMatrixPreviewOpen(false)}
+                  className="h-11 px-6 rounded-xl font-bold flex-1 sm:flex-initial"
+                >
+                  Cerrar sin guardar
+                </Button>
+                <Button
+                  type="button"
+                  disabled={isPending}
+                  onClick={handleSaveMatrixPreview}
+                  className="h-11 px-8 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-700 hover:to-teal-800 text-white font-extrabold rounded-xl shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 flex-1 sm:flex-initial transition-all hover:scale-105"
+                >
+                  {isPending ? (
+                    <>
+                      <Loader2 className="animate-spin mr-2" size={18} />
+                      Guardando Programación Oficial...
+                    </>
+                  ) : (
+                    <>
+                      <Save size={18} />
+                      Confirmar y Guardar Cronograma Oficial
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
       </ScheduleModal>
     </div>
   )

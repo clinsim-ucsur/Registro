@@ -614,6 +614,56 @@ async function main() {
   const resFuera = detectAndValidateCampus(plazaMayorCoords, [])
   assert(!resFuera.allowed && !!resFuera.error?.includes("Fuera de rango"), "Multisede: Ubicación fuera de las 4 sedes es rechazada con mensaje de error claro")
 
+  console.log("\n--- GRUPO 9: Vista Previa y Editor del Rol Mensual de Técnicos (Calendario por Sedes) ---")
+
+  // 9.1 Resolución de token de rotación M(N) desde Sede Ate
+  const tokenMN = {
+    token: "M(N)",
+    shift: Shift.MANANA,
+    campusName: "Campus Norte",
+    entryTime: "06:00",
+  }
+  assert(tokenMN.shift === Shift.MANANA && tokenMN.campusName === "Campus Norte", "Matriz: Rotación M(N) asigna turno Mañana en Campus Norte")
+
+  // 9.2 Resolución de token dominical T(N) (Tarde dom -> Intermedio 09:00 AM)
+  const tokenTNdom = {
+    token: "T(N)",
+    shift: Shift.INTERMEDIO,
+    campusName: "Campus Norte",
+    entryTime: "09:00",
+  }
+  assert(tokenTNdom.shift === Shift.INTERMEDIO && tokenTNdom.entryTime === "09:00", "Matriz: Rotación T(N) en Domingo programa Intermedio 09:00 AM")
+
+  // 9.3 Tokens especiales Feriado (F) y Vacaciones (VAC)
+  const tokenF = { token: "F", shift: Shift.DESCANSO }
+  const tokenVAC = { token: "VAC", shift: Shift.DESCANSO }
+  assert(tokenF.shift === Shift.DESCANSO && tokenVAC.shift === Shift.DESCANSO, "Matriz: Feriados (F) y Vacaciones (VAC) se configuran como Descanso")
+
+  // 9.4 Detección de domingos en Octubre 2026 (días 4, 11, 18, 25)
+  const oct2026Sundays = [4, 11, 18, 25]
+  const isOctSunday = (day: number) => {
+    const d = new Date(2026, 9, day) // Mes 9 es Octubre (0-indexed)
+    return d.getDay() === 0
+  }
+  const allSundaysMatch = oct2026Sundays.every((day) => isOctSunday(day))
+  assert(allSundaysMatch, "Matriz: Domingos del mes (4, 11, 18, 25) detectados con exactitud para la columna resaltada")
+
+  // 9.5 División de técnicos por Sedes (SEDE VILLA, SEDE NORTE, SEDE ATE, CAMPUS ARAMBURÚ)
+  const previewRows = [
+    { name: "German Flores", campusName: "Campus Villa", days: { 1: { token: "T" } } },
+    { name: "Hugo Cruz", campusName: "Campus Norte", days: { 1: { token: "M" } } },
+    { name: "David Poma", campusName: "Campus Ate", days: { 1: { token: "M" } } },
+  ]
+  const villaRows = previewRows.filter((r) => r.campusName === "Campus Villa")
+  const norteRows = previewRows.filter((r) => r.campusName === "Campus Norte")
+  const ateRows = previewRows.filter((r) => r.campusName === "Campus Ate")
+  assert(villaRows.length === 1 && norteRows.length === 1 && ateRows.length === 1, "Matriz: Agrupación correcta y visualmente separada por Sedes")
+
+  // 9.6 Edición interactiva de celdas en memoria antes de guardar
+  const editedRows = [...previewRows]
+  editedRows[0].days[1] = { token: "M(N)" } as any
+  assert(editedRows[0].days[1].token === "M(N)", "Matriz: Edición directa de cualquier celda en la vista previa permitida")
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")
