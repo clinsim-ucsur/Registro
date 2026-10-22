@@ -386,7 +386,6 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                 <option value="MANANA">Mañana (6:00 AM — 3:00 PM)</option>
                 <option value="INTERMEDIO">Intermedio (9:00 AM — 6:00 PM / Sáb 8 AM / Dom 10 AM)</option>
                 <option value="TARDE">Tarde (1:00 PM — 10:00 PM)</option>
-                <option value="NOCHE">Noche / Guardia (9:00 PM — 6:00 AM)</option>
               </select>
             </div>
           )}
@@ -478,7 +477,6 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                 <option value="MANANA">Mañana (6:00 AM — 3:00 PM)</option>
                 <option value="INTERMEDIO">Intermedio (9:00 AM — 6:00 PM / Sáb 8 AM / Dom 10 AM)</option>
                 <option value="TARDE">Tarde (1:00 PM — 10:00 PM)</option>
-                <option value="NOCHE">Noche / Guardia (9:00 PM — 6:00 AM)</option>
               </select>
             </div>
           )}

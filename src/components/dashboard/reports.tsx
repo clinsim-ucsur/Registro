@@ -779,7 +779,6 @@ export function DashboardReports({
               <option value="MANANA">Mañana (06:00 / 08:00)</option>
               <option value="INTERMEDIO">Intermedio (09:00 / 11:00)</option>
               <option value="TARDE">Tarde (13:00 / 14:00)</option>
-              <option value="NOCHE">Noche (19:00 / 21:00)</option>
             </select>
           </div>
 

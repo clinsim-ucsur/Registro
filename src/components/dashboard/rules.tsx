@@ -663,7 +663,6 @@ export function DashboardRules({
                   if (s === Shift.MANANA && newEntry !== "06:00") newEntry = "06:00"
                   if (s === Shift.INTERMEDIO && !["08:00", "09:00", "10:00"].includes(newEntry)) newEntry = "09:00"
                   if (s === Shift.TARDE && newEntry !== "13:00") newEntry = "13:00"
-                  if (s === Shift.NOCHE && !["19:00", "20:00", "21:00"].includes(newEntry)) newEntry = "21:00"
                   setFormData({ ...formData, shift: s, expectedEntryTime: newEntry })
                 }}
                 className="w-full h-11 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
@@ -672,7 +671,6 @@ export function DashboardRules({
                 <option value="MANANA">🌅 Turno Mañana (~06:00 AM)</option>
                 <option value="INTERMEDIO">⛅ Turno Intermedio (~09:00 AM)</option>
                 <option value="TARDE">🌆 Turno Tarde (~01:00 PM / 13:00)</option>
-                <option value="NOCHE">🌙 Turno Noche / Guardia (~09:00 PM / 21:00)</option>
               </select>
             </div>
           </div>
@@ -1029,7 +1027,7 @@ export function DashboardRules({
               </div>
               <h2 className="mt-2 text-3xl font-black tracking-tight">Turnos y Reglas de Tolerancia</h2>
               <p className="mt-2 text-sm text-blue-100/80 max-w-2xl font-medium">
-                Visualiza y gestiona claramente qué reglas pertenecen al turno Mañana, Intermedio, Tarde o Noche, y consulta exactamente a qué técnicos afecta cada horario configurado.
+                Visualiza y gestiona claramente qué reglas pertenecen al turno Mañana, Intermedio o Tarde, y consulta exactamente a qué técnicos afecta cada horario configurado.
               </p>
             </div>
 
@@ -1168,8 +1166,8 @@ export function DashboardRules({
         </div>
 
         {/* NAVEGACIÓN POR PESTAÑAS DE TURNOS */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          {(["TODOS", "MANANA", "INTERMEDIO", "TARDE", "NOCHE"] as const).map((shiftKey) => {
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {(["TODOS", "MANANA", "INTERMEDIO", "TARDE"] as const).map((shiftKey) => {
             const conf = SHIFT_CONFIG[shiftKey]
             const Icon = conf.icon
             const isSelected = activeShiftFilter === shiftKey

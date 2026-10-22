@@ -1926,7 +1926,6 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                                 { shift: Shift.INTERMEDIO, label: "Interm. 9 AM", entry: "09:00", icon: "⛅" },
                                 { shift: Shift.INTERMEDIO, label: "Interm. 10 AM", entry: "10:00", icon: "⛅" },
                                 { shift: Shift.TARDE, label: "Tarde", entry: "13:00", icon: "🌆" },
-                                { shift: Shift.NOCHE, label: "Noche", entry: "21:00", icon: "🌙" },
                                 { shift: Shift.DESCANSO, label: "Descanso", entry: "00:00", icon: "🏖️" },
                               ].map((opt, idx) => {
                                 const isSelected = current.shift === opt.shift && current.expectedEntryTime === opt.entry

@@ -100,15 +100,4 @@ export const TECHNICIAN_SHIFT_PRESETS: ShiftPreset[] = [
     grace: 10,
     late: 30,
   },
-  {
-    id: "NOCHE",
-    shift: Shift.NOCHE,
-    name: "Noche / Guardia",
-    scheduleText: "9:00 PM — 6:00 AM",
-    entry: "21:00",
-    daysOfWeek: "1,2,3,4,5,6,0",
-    early: 15,
-    grace: 10,
-    late: 30,
-  },
 ]
