@@ -3,6 +3,7 @@
 import prisma from "@/lib/prisma"
 import { revalidatePath } from "next/cache"
 import { requireAdmin } from "@/lib/session"
+import { DEFAULT_CAMPUS_LOCATIONS } from "@/lib/geofence"
 
 // -------------------------------------------------------------
 // SEDES (CAMPUSES) CRUD
@@ -113,12 +114,84 @@ export async function updateCampusGeoAction(
     return {
       success: true,
       message: geoEnforced
-        ? `Geocerca activada para "${campus.name}" (${radiusMeters} m).`
-        : `Límite por ubicación desactivado para "${campus.name}".`,
+        ? `Ubicación activada para "${campus.name}" (radio: ${radiusMeters} m).`
+        : `Ubicación desactivada para "${campus.name}".`,
+      campus,
     }
   } catch (error: any) {
     console.error("[updateCampusGeoAction] Error:", error)
     return { success: false, message: error.message || "Error al guardar la ubicación de la sede." }
+  }
+}
+
+export async function toggleCampusGeoAction(id: string, geoEnforced: boolean) {
+  try {
+    await requireAdmin()
+    const current = await prisma.campus.findUnique({ where: { id } })
+    if (!current) return { success: false, message: "Sede no encontrada." }
+
+    let lat = current.latitude
+    let lng = current.longitude
+    let radius = current.radiusMeters || 300
+
+    // Si se activa y no tiene coordenadas, aplicar las coordenadas oficiales predeterminadas
+    if (geoEnforced && (lat == null || lng == null)) {
+      const def = DEFAULT_CAMPUS_LOCATIONS[current.name]
+      if (def) {
+        lat = def.latitude
+        lng = def.longitude
+        radius = def.radiusMeters
+      } else {
+        return {
+          success: false,
+          message: "Para activar la geocerca de esta sede, configure primero su latitud y longitud.",
+        }
+      }
+    }
+
+    const campus = await prisma.campus.update({
+      where: { id },
+      data: {
+        geoEnforced,
+        latitude: lat,
+        longitude: lng,
+        radiusMeters: radius,
+      },
+    })
+
+    revalidatePath("/dashboard")
+    revalidatePath("/")
+    return {
+      success: true,
+      message: geoEnforced
+        ? `Ubicación GPS activada para "${campus.name}" (${campus.radiusMeters} m).`
+        : `Ubicación GPS desactivada para "${campus.name}".`,
+      campus,
+    }
+  } catch (error: any) {
+    console.error("[toggleCampusGeoAction] Error:", error)
+    return { success: false, message: error.message || "Error al cambiar el estado de ubicación." }
+  }
+}
+
+export async function toggleAllCampusesGeoAction(geoEnforced: boolean) {
+  try {
+    await requireAdmin()
+    await prisma.campus.updateMany({
+      data: { geoEnforced },
+    })
+
+    revalidatePath("/dashboard")
+    revalidatePath("/")
+    return {
+      success: true,
+      message: geoEnforced
+        ? "Ubicación GPS activada para todas las sedes."
+        : "Ubicación GPS desactivada para todas las sedes.",
+    }
+  } catch (error: any) {
+    console.error("[toggleAllCampusesGeoAction] Error:", error)
+    return { success: false, message: error.message || "Error al actualizar las sedes." }
   }
 }
 

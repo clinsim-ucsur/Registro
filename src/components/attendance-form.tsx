@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button"
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { checkGeofence, detectAndValidateCampus, isGeoActive, type GeoCampus } from "@/lib/geofence"
+import { checkGeofence, detectAndValidateCampus, resolveGeoCampuses, isGeoActive, type GeoCampus } from "@/lib/geofence"
 
 const formSchema = z.object({
   role: z.nativeEnum(Role, { required_error: "Seleccione un rol" }),
@@ -339,19 +339,30 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       radiusMeters: c.radiusMeters ?? 500,
     }))
 
-    // Validación y detección multisede por GPS para todos los roles
-    if (!isOffline && !isContingencyMode) {
+    // Sede tentativa para evaluar si la sede destino requiere GPS
+    const tentativeCampusName = data.campusId || technicianAssignment?.campusName || validatedUser?.campusName || undefined
+    const resolvedCampuses = resolveGeoCampuses(geoCampuses)
+    const targetCampusConfig = tentativeCampusName
+      ? resolvedCampuses.find((c) => c.name.toLowerCase() === tentativeCampusName.toLowerCase())
+      : null
+
+    // La geolocalización solo se exige si está activada en la opción de Sedes y Cursos
+    const requiresGeo = targetCampusConfig
+      ? isGeoActive(targetCampusConfig)
+      : resolvedCampuses.some(isGeoActive)
+
+    if (requiresGeo && !isOffline && !isContingencyMode) {
       try {
         location = await getLocation()
       } catch (e: any) {
-        toast.error(e.message || "Se requiere acceso a su ubicación GPS para registrar la asistencia.", { duration: 6000 })
+        toast.error(e.message || "Se requiere acceso a su ubicación GPS para registrar la asistencia en esta sede.", { duration: 6000 })
         setIsSubmitting(null)
         return
       }
 
-      const geoResult = detectAndValidateCampus(location, geoCampuses)
+      const geoResult = detectAndValidateCampus(location, geoCampuses, tentativeCampusName)
       if (!geoResult.allowed) {
-        toast.error(geoResult.error || "Ubicación fuera del perímetro de las sedes autorizadas.", { duration: 8000 })
+        toast.error(geoResult.error || "Ubicación fuera del perímetro de la sede autorizada.", { duration: 8000 })
         setIsSubmitting(null)
         return
       }
@@ -359,7 +370,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       detectedCampusName = geoResult.detectedCampusName || undefined
     }
 
-    const targetCampusName = data.campusId || detectedCampusName || technicianAssignment?.campusName || validatedUser?.campusName || "Campus Villa"
+    const targetCampusName = data.campusId || detectedCampusName || tentativeCampusName || "Campus Villa"
     
     // Si está offline o en modo contingencia local por red inestable
     if (isOffline || isContingencyMode) {

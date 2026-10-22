@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { createPortal } from "react-dom"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -27,11 +27,14 @@ import {
   createCampusAction, 
   updateCampusAction, 
   updateCampusGeoAction,
+  toggleCampusGeoAction,
+  toggleAllCampusesGeoAction,
   deleteCampusAction,
   createCourseAction, 
   updateCourseAction, 
   deleteCourseAction 
 } from "@/actions/catalogs"
+import { DEFAULT_CAMPUS_LOCATIONS } from "@/lib/geofence"
 
 export type CatalogCampus = {
   id: string
@@ -55,6 +58,17 @@ interface CatalogsProps {
 }
 
 export function DashboardCatalogs({ campuses: initialCampuses, courses: initialCourses }: CatalogsProps) {
+  const [campusesList, setCampusesList] = useState<CatalogCampus[]>(initialCampuses)
+  const [coursesList, setCoursesList] = useState<CatalogCourse[]>(initialCourses)
+
+  useEffect(() => {
+    setCampusesList(initialCampuses)
+  }, [initialCampuses])
+
+  useEffect(() => {
+    setCoursesList(initialCourses)
+  }, [initialCourses])
+
   const [activeTab, setActiveTab] = useState<"sedes" | "cursos">("sedes")
   const [searchCampus, setSearchCampus] = useState("")
   const [searchCourse, setSearchCourse] = useState("")
@@ -77,11 +91,11 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
   const [isProcessing, setIsProcessing] = useState(false)
 
   // Filtered lists
-  const filteredCampuses = initialCampuses.filter(c =>
+  const filteredCampuses = campusesList.filter(c =>
     c.name.toLowerCase().includes(searchCampus.toLowerCase())
   )
 
-  const filteredCourses = initialCourses.filter(c =>
+  const filteredCourses = coursesList.filter(c =>
     c.name.toLowerCase().includes(searchCourse.toLowerCase())
   )
 
@@ -173,17 +187,18 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
     }
   }
 
-  // Geocerca por sede
+  // Geocerca por sede (Activar / Desactivar y configuración de coordenadas)
   const [geoModal, setGeoModal] = useState<CatalogCampus | null>(null)
   const [geoForm, setGeoForm] = useState({ enabled: false, lat: "", lng: "", radius: "300" })
   const [isLocating, setIsLocating] = useState(false)
 
   const handleOpenGeo = (c: CatalogCampus) => {
+    const def = DEFAULT_CAMPUS_LOCATIONS[c.name]
     setGeoForm({
       enabled: !!c.geoEnforced,
-      lat: c.latitude != null ? String(c.latitude) : "",
-      lng: c.longitude != null ? String(c.longitude) : "",
-      radius: String(c.radiusMeters ?? 300),
+      lat: c.latitude != null ? String(c.latitude) : (def?.latitude != null ? String(def.latitude) : ""),
+      lng: c.longitude != null ? String(c.longitude) : (def?.longitude != null ? String(def.longitude) : ""),
+      radius: String(c.radiusMeters ?? def?.radiusMeters ?? 300),
     })
     setGeoModal(c)
   }
@@ -208,11 +223,63 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
     )
   }
 
+  const handleToggleCampusGeo = async (c: CatalogCampus) => {
+    const nextState = !c.geoEnforced
+    setIsProcessing(true)
+    setCampusesList((prev) =>
+      prev.map((item) => (item.id === c.id ? { ...item, geoEnforced: nextState } : item))
+    )
+    try {
+      const res = await toggleCampusGeoAction(c.id, nextState)
+      if (res.success) {
+        toast.success(res.message)
+        if (res.campus) {
+          setCampusesList((prev) =>
+            prev.map((item) => (item.id === c.id ? { ...item, ...res.campus } : item))
+          )
+        }
+      } else {
+        toast.error(res.message)
+        setCampusesList((prev) =>
+          prev.map((item) => (item.id === c.id ? { ...item, geoEnforced: c.geoEnforced } : item))
+        )
+      }
+    } catch {
+      toast.error("Error al cambiar el estado de geolocalización.")
+      setCampusesList((prev) =>
+        prev.map((item) => (item.id === c.id ? { ...item, geoEnforced: c.geoEnforced } : item))
+      )
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const handleToggleAllGeo = async (enable: boolean) => {
+    setIsProcessing(true)
+    setCampusesList((prev) => prev.map((item) => ({ ...item, geoEnforced: enable })))
+    try {
+      const res = await toggleAllCampusesGeoAction(enable)
+      if (res.success) {
+        toast.success(res.message)
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error("Error al actualizar sedes.")
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
   const handleSaveGeo = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!geoModal) return
     const lat = geoForm.lat.trim() === "" ? null : Number(geoForm.lat.replace(",", "."))
     const lng = geoForm.lng.trim() === "" ? null : Number(geoForm.lng.replace(",", "."))
+    if (geoForm.enabled && (lat === null || lng === null)) {
+      toast.error("Para activar la ubicación, ingrese latitud y longitud.")
+      return
+    }
     if ((lat !== null && !Number.isFinite(lat)) || (lng !== null && !Number.isFinite(lng))) {
       toast.error("Latitud o longitud inválidas.")
       return
@@ -227,6 +294,19 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
       })
       if (res.success) {
         toast.success(res.message)
+        setCampusesList((prev) =>
+          prev.map((item) =>
+            item.id === geoModal.id
+              ? {
+                  ...item,
+                  geoEnforced: geoForm.enabled,
+                  latitude: lat,
+                  longitude: lng,
+                  radiusMeters: Number(geoForm.radius),
+                }
+              : item
+          )
+        )
         setGeoModal(null)
       } else {
         toast.error(res.message)
@@ -333,11 +413,68 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
             </Button>
           </div>
 
+          {/* BANNER DE CONTROL DE UBICACIÓN GPS */}
+          {(() => {
+            const activeGeoCount = campusesList.filter((c) => c.geoEnforced).length
+            const isAnyActive = activeGeoCount > 0
+            return (
+              <div className="mx-6 mt-4 p-4 rounded-2xl border flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-50/80 border-slate-200">
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold shrink-0 ${isAnyActive ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"}`}>
+                    <Crosshair size={20} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="font-extrabold text-slate-800 text-sm">
+                        Control de Ubicación GPS:
+                      </p>
+                      <span className={`px-2.5 py-0.5 rounded-full text-xs font-black ${isAnyActive ? "bg-emerald-100 text-emerald-800 border border-emerald-300" : "bg-slate-200 text-slate-700"}`}>
+                        {isAnyActive ? `${activeGeoCount} de ${campusesList.length} sedes activas` : "Desactivada en todas las sedes"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5 font-medium">
+                      {isAnyActive
+                        ? "Los colaboradores que marquen en sedes activas deben encontrarse dentro del perímetro oficial."
+                        : "Por el momento la ubicación está desactivada. Se puede registrar asistencia libremente sin exigir GPS."}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {isAnyActive ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={isProcessing}
+                      onClick={() => handleToggleAllGeo(false)}
+                      className="rounded-xl border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-bold shadow-sm"
+                    >
+                      Desactivar todas
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={isProcessing}
+                      onClick={() => handleToggleAllGeo(true)}
+                      className="rounded-xl border-emerald-300 text-emerald-700 hover:bg-emerald-50 text-xs font-bold shadow-sm"
+                    >
+                      Activar todas
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )
+          })()}
+
           <CardContent className="p-0">
             <Table>
               <TableHeader className="bg-slate-50/80">
                 <TableRow className="border-slate-100">
                   <TableHead className="px-6 font-bold text-slate-600 py-4">Sede / Campus</TableHead>
+                  <TableHead className="font-bold text-slate-600 text-center">Ubicación GPS</TableHead>
                   <TableHead className="font-bold text-slate-600 text-center">Personal Asignado</TableHead>
                   <TableHead className="font-bold text-slate-600 text-center">Registros de Asistencia</TableHead>
                   <TableHead className="font-bold text-slate-600 text-center">Reglas de Horario</TableHead>
@@ -347,7 +484,7 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
               <TableBody>
                 {filteredCampuses.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center py-16 text-slate-400 font-medium">
+                    <TableCell colSpan={6} className="text-center py-16 text-slate-400 font-medium">
                       No se encontraron sedes con ese criterio.
                     </TableCell>
                   </TableRow>
@@ -369,10 +506,29 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
                               <p className="font-extrabold text-slate-800 text-base">{campus.name}</p>
                               <span className="text-[11px] font-semibold text-slate-400">ID: {campus.id.slice(0, 10)}...</span>
                               <span className={`ml-2 inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md ${campus.geoEnforced ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-slate-100 text-slate-400"}`}>
-                                <Crosshair size={10} /> {campus.geoEnforced ? `GPS ${campus.radiusMeters ?? 300} m` : "Sin límite GPS"}
+                                <Crosshair size={10} /> {campus.geoEnforced ? `Radio ${campus.radiusMeters ?? 300} m` : "Sin límite GPS"}
                               </span>
                             </div>
                           </div>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <button
+                            type="button"
+                            disabled={isProcessing}
+                            onClick={() => handleToggleCampusGeo(campus)}
+                            className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-black transition-all cursor-pointer ${
+                              campus.geoEnforced
+                                ? "bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200 shadow-sm"
+                                : "bg-slate-100 text-slate-500 border border-slate-200 hover:bg-slate-200 hover:text-slate-700"
+                            }`}
+                            title={campus.geoEnforced ? "Clic para desactivar validación de ubicación" : "Clic para activar validación de ubicación"}
+                          >
+                            <span className={`w-2 h-2 rounded-full ${campus.geoEnforced ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
+                            {campus.geoEnforced ? "Activada" : "Desactivada"}
+                            <span className={`w-8 h-4 rounded-full p-0.5 ml-1 transition-colors ${campus.geoEnforced ? "bg-emerald-600" : "bg-slate-300"}`}>
+                              <span className={`block w-3 h-3 bg-white rounded-full shadow transition-transform ${campus.geoEnforced ? "translate-x-4" : ""}`} />
+                            </span>
+                          </button>
                         </TableCell>
                         <TableCell className="text-center">
                           <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700">
@@ -611,7 +767,7 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
                 <Crosshair size={24} />
               </div>
               <div>
-                <h3 className="text-2xl font-black text-[#0B1B3D]">Límite por GPS</h3>
+                <h3 className="text-2xl font-black text-[#0B1B3D]">Control de Ubicación GPS</h3>
                 <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">{geoModal.name}</p>
               </div>
             </div>
@@ -622,8 +778,14 @@ export function DashboardCatalogs({ campuses: initialCampuses, courses: initialC
                 className={`flex items-center justify-between p-4 rounded-2xl border cursor-pointer transition-colors ${geoForm.enabled ? "bg-emerald-50 border-emerald-300" : "bg-slate-50 border-slate-200"}`}
               >
                 <div>
-                  <p className="font-bold text-sm text-slate-800">Solo permitir marcar dentro de la sede</p>
-                  <p className="text-xs text-slate-500">Si está activo, se valida la ubicación del dispositivo.</p>
+                  <p className="font-bold text-sm text-slate-800">
+                    {geoForm.enabled ? "Ubicación GPS: ACTIVADA" : "Ubicación GPS: DESACTIVADA"}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {geoForm.enabled
+                      ? "Se exige que el dispositivo esté dentro del radio oficial para marcar."
+                      : "Permite marcar asistencia libremente sin exigir GPS."}
+                  </p>
                 </div>
                 <div className={`w-12 h-7 rounded-full p-1 transition-colors ${geoForm.enabled ? "bg-emerald-500" : "bg-slate-300"}`}>
                   <div className={`w-5 h-5 bg-white rounded-full shadow transition-transform ${geoForm.enabled ? "translate-x-5" : ""}`} />

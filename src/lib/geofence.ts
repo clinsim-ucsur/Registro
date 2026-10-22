@@ -49,28 +49,30 @@ export function isGeoActive(c: GeoCampus): boolean {
 /**
  * Normaliza la lista de sedes combinando la configuración de la BD con las
  * coordenadas predeterminadas de las 4 sedes oficiales.
+ * Por defecto, la geocerca (geoEnforced) está DESACTIVADA (false) salvo que
+ * se active explícitamente desde la opción en Sedes & Cursos.
  */
 export function resolveGeoCampuses(campuses: GeoCampus[]): GeoCampus[] {
   const map = new Map<string, GeoCampus>()
 
-  // Registrar primero las 4 sedes predeterminadas
+  // Registrar primero las 4 sedes predeterminadas con geoEnforced en false por defecto
   for (const [name, loc] of Object.entries(DEFAULT_CAMPUS_LOCATIONS)) {
     map.set(name.toLowerCase(), {
       name,
-      geoEnforced: true,
+      geoEnforced: false,
       latitude: loc.latitude,
       longitude: loc.longitude,
       radiusMeters: loc.radiusMeters,
     })
   }
 
-  // Sobrescribir con configuraciones específicas de la base de datos si existen
+  // Sobrescribir estrictamente con la configuración de la base de datos
   for (const c of campuses) {
     const key = c.name.toLowerCase()
     const fallback = map.get(key)
     map.set(key, {
       name: c.name,
-      geoEnforced: c.geoEnforced ?? fallback?.geoEnforced ?? true,
+      geoEnforced: Boolean(c.geoEnforced),
       latitude: c.latitude ?? fallback?.latitude ?? null,
       longitude: c.longitude ?? fallback?.longitude ?? null,
       radiusMeters: c.radiusMeters ?? fallback?.radiusMeters ?? 500,
@@ -82,21 +84,75 @@ export function resolveGeoCampuses(campuses: GeoCampus[]): GeoCampus[] {
 
 /**
  * Validación multisede y detección automática por GPS:
- * Evalúa las coordenadas actuales del colaborador contra todas las sedes autorizadas.
- * Permite marcar siempre que esté dentro del rango de CUALQUIERA de las 4 sedes
- * e identifica automáticamente en cuál de ellas se encuentra físicamente.
+ * - Si la sede objetivo tiene la geocerca desactivada, se permite marcar directamente.
+ * - Si todas las sedes tienen la geocerca desactivada, se permite marcar directamente.
+ * - Solo se exige y valida GPS cuando la geocerca esté activada en "Sedes & Cursos".
  */
 export function detectAndValidateCampus(
   loc: { lat: number; lng: number; accuracy?: number } | undefined,
-  campuses: GeoCampus[]
+  campuses: GeoCampus[],
+  targetCampusName?: string
 ): GeoDetectionResult {
   const resolved = resolveGeoCampuses(campuses)
+
+  // 1. Si se especificó una sede objetivo (seleccionada en el formulario o asignada)
+  if (targetCampusName) {
+    const target = resolved.find((c) => c.name.toLowerCase() === targetCampusName.toLowerCase())
+    if (target) {
+      // Si la sede no requiere validación de ubicación, permitir sin restricción
+      if (!isGeoActive(target)) {
+        return {
+          allowed: true,
+          detectedCampusName: target.name,
+          distanceMeters: 0,
+        }
+      }
+
+      // Si la sede SÍ tiene activa la ubicación, validar coordenadas
+      if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng)) {
+        return {
+          allowed: false,
+          detectedCampusName: null,
+          distanceMeters: Infinity,
+          error: `La sede "${target.name}" tiene activada la validación de ubicación GPS. Por favor active el GPS de su dispositivo y permita el acceso.`,
+        }
+      }
+
+      if ((loc.accuracy ?? 0) > MAX_ACCURACY_METERS) {
+        return {
+          allowed: false,
+          detectedCampusName: null,
+          distanceMeters: Infinity,
+          error: `La precisión del GPS (${Math.round(loc.accuracy ?? 0)} m) es insuficiente. Acérquese a una ventana o active la ubicación precisa.`,
+        }
+      }
+
+      const dist = distanceMeters(loc.lat, loc.lng, target.latitude!, target.longitude!)
+      if (dist <= target.radiusMeters) {
+        return {
+          allowed: true,
+          detectedCampusName: target.name,
+          distanceMeters: Math.round(dist),
+        }
+      }
+
+      return {
+        allowed: false,
+        detectedCampusName: null,
+        distanceMeters: Math.round(dist),
+        error: `Fuera de rango: No se encuentra dentro del perímetro de "${target.name}" (a ${Math.round(dist)} m, radio permitido: ${target.radiusMeters} m).`,
+      }
+    }
+  }
+
+  // 2. Si no hay sede objetivo fija, evaluar contra sedes con geocerca activa
   const activeTargets = resolved.filter(isGeoActive)
 
+  // Si ninguna sede tiene la ubicación activada, permitir libremente
   if (activeTargets.length === 0) {
     return {
       allowed: true,
-      detectedCampusName: campuses[0]?.name || "Campus Villa",
+      detectedCampusName: targetCampusName || campuses[0]?.name || "Campus Villa",
       distanceMeters: 0,
     }
   }
@@ -152,20 +208,20 @@ export function detectAndValidateCampus(
     allowed: false,
     detectedCampusName: null,
     distanceMeters: Math.round(minAnyDist),
-    error: `Fuera de rango: No se encuentra dentro del perímetro de ninguna de las 4 sedes autorizadas (${campusNames}). Sede más cercana: ${closestCampus.name} a ${Math.round(minAnyDist)} m (radio permitido: ${closestCampus.radiusMeters} m).`,
+    error: `Fuera de rango: No se encuentra dentro del perímetro de ninguna de las sedes con ubicación activa (${campusNames}). Sede más cercana: ${closestCampus.name} a ${Math.round(minAnyDist)} m (radio permitido: ${closestCampus.radiusMeters} m).`,
   }
 }
 
 /**
- * Evalúa una ubicación con la lógica multisede.
- * Retorna null si está permitido (dentro de alguna sede), o un mensaje de error si está fuera de todas.
+ * Evalúa una ubicación con la lógica de sedes.
+ * Retorna null si está permitido, o un mensaje de error si está fuera del perímetro.
  */
 export function checkGeofence(
   loc: { lat: number; lng: number; accuracy?: number } | undefined,
   campuses: GeoCampus[],
-  _selectedCampusNameIgnored?: string
+  targetCampusName?: string
 ): string | null {
-  const result = detectAndValidateCampus(loc, campuses)
+  const result = detectAndValidateCampus(loc, campuses, targetCampusName)
   if (result.allowed) return null
   return result.error || "Ubicación fuera del perímetro permitido."
 }

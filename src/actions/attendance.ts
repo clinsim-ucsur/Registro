@@ -221,22 +221,25 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       }
     }
 
-    // Detección y validación multisede por geolocalización (GPS)
+    // Detección y validación de sede por geolocalización (GPS) según configuración de Sedes & Cursos
     let resolvedCampusName: string | null = null
 
-    if (!data.isOfflineSync && data.location) {
-      let allCampuses: any[] = []
-      try {
-        allCampuses = await prisma.campus.findMany({
-          select: { name: true, geoEnforced: true, latitude: true, longitude: true, radiusMeters: true },
-        })
-      } catch (err) {
-        console.warn("No se pudo consultar sedes desde BD para geocerca, usando catálogo oficial:", err)
-      }
+    const tentativeCampusName = (data.campusId && data.campusId.trim() !== '')
+      ? data.campusId.trim()
+      : (scheduledShift?.campus?.name || user.campus?.name || "Campus Villa")
 
-      // Validación multisede: permite marcar si está en CUALQUIERA de las 4 sedes
-      // y detecta automáticamente en cuál de las 4 sedes se encuentra
-      const geoResult = detectAndValidateCampus(data.location, allCampuses)
+    let allCampuses: any[] = []
+    try {
+      allCampuses = await prisma.campus.findMany({
+        select: { name: true, geoEnforced: true, latitude: true, longitude: true, radiusMeters: true },
+      })
+    } catch (err) {
+      console.warn("No se pudo consultar sedes desde BD para geocerca, usando catálogo oficial:", err)
+    }
+
+    if (!data.isOfflineSync && data.location) {
+      // Validación de sede: respeta la activación/desactivación en Sedes y Cursos
+      const geoResult = detectAndValidateCampus(data.location, allCampuses, tentativeCampusName)
       if (!geoResult.allowed) {
         return { success: false, message: geoResult.error || "Ubicación fuera del perímetro permitido." }
       }
@@ -245,6 +248,15 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         resolvedCampusName = data.campusId.trim()
       } else if (geoResult.detectedCampusName) {
         resolvedCampusName = geoResult.detectedCampusName
+      }
+    } else if (!data.isOfflineSync && !data.location) {
+      // Si la sede tiene activada la geocerca en "Sedes y Cursos", exigir GPS
+      const targetDb = allCampuses.find((c) => c.name.toLowerCase() === tentativeCampusName.toLowerCase())
+      if (targetDb && targetDb.geoEnforced && targetDb.latitude != null && targetDb.longitude != null) {
+        return {
+          success: false,
+          message: `La sede "${targetDb.name}" requiere validación de ubicación GPS para registrar la asistencia.`
+        }
       }
     }
 
