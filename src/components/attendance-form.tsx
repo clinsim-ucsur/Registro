@@ -10,7 +10,7 @@ import { getTodayTechnicianAssignmentAction } from "@/actions/schedules"
 import { toast } from "sonner"
 import {
   Loader2, LogIn, LogOut, Search, UserCheck, CheckCircle2, WifiOff,
-  Wifi, RefreshCw, ShieldCheck, AlertCircle, AlertTriangle, MapPin
+  Wifi, RefreshCw, ShieldCheck, AlertCircle, AlertTriangle
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -662,8 +662,8 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                     </p>
 
                     {watchRole === Role.TECNICO && (
-                      <div className="p-4 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200">
-                        <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
+                      <div className="p-3.5 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
                           <span className="text-xs font-black uppercase tracking-wider text-[#1967D2] flex items-center gap-1">
                             📋 Sede Base / Asignada: {technicianAssignment?.campusName || validatedUser?.campusName || "Campus Villa"}
                           </span>
@@ -672,68 +672,6 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                               Turno: {technicianAssignment.shift} ({technicianAssignment.expectedEntryTime})
                             </span>
                           )}
-                        </div>
-
-                        {/* Indicador de sede por detección automática GPS multisede */}
-                        <div className="mt-2.5 p-3 rounded-xl bg-white/95 border border-blue-200/90 shadow-xs flex items-center gap-3">
-                          <div className="w-9 h-9 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
-                            <MapPin className="w-5 h-5" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-[11px] font-black uppercase tracking-wider text-blue-700">
-                                Sede por GPS Multisede:
-                              </span>
-                              <span className="text-[10px] font-black bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
-                                Detección Automática
-                              </span>
-                            </div>
-                            <p className="text-xs text-slate-600 mt-0.5 leading-snug">
-                              Puedes marcar en cualquiera de las 4 sedes (Villa, Norte, Aramburú o Ate). El sistema identificará y guardará tu sede física por GPS.
-                            </p>
-                          </div>
-                        </div>
-
-                        {/* Selector de turno de marcación (por si rota hoy o es domingo) */}
-                        <div className="mt-3.5 pt-3 border-t border-blue-200/60">
-                          <div className="flex items-center justify-between mb-1.5">
-                            <label className="text-[11px] font-bold text-slate-600 uppercase tracking-wider block">
-                              Turno a marcar hoy:
-                            </label>
-                            <span className="text-[10px] text-blue-700 font-bold bg-white/80 px-2 py-0.5 rounded-md border border-blue-100">
-                              {selectedShift ? `Seleccionado: ${selectedShift}` : "Según horario"}
-                            </span>
-                          </div>
-
-                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-                            {[
-                              { shift: Shift.MANANA, label: "Mañana", time: "6:00 AM", icon: "🌅" },
-                              { shift: Shift.INTERMEDIO, label: "Intermedio", time: "9:00 AM", icon: "⛅" },
-                              { shift: Shift.TARDE, label: "Tarde", time: "1:00 PM", icon: "🌆" },
-                              { shift: Shift.NOCHE, label: "Noche", time: "9:00 PM", icon: "🌙" },
-                            ].map((s) => {
-                              const isCurrent = (selectedShift || technicianAssignment?.shift) === s.shift
-                              return (
-                                <button
-                                  key={s.shift}
-                                  type="button"
-                                  onClick={() => setSelectedShift(s.shift)}
-                                  className={`p-2 rounded-xl text-left border transition-all flex flex-col justify-between ${
-                                    isCurrent
-                                      ? "bg-[#1967D2] text-white border-[#1967D2] shadow-xs ring-2 ring-blue-300"
-                                      : "bg-white text-slate-700 border-slate-200 hover:bg-blue-50/60"
-                                  }`}
-                                >
-                                  <span className="text-xs font-black flex items-center gap-1">
-                                    {s.icon} {s.label}
-                                  </span>
-                                  <span className={`text-[10px] mt-0.5 ${isCurrent ? "text-blue-100" : "text-slate-400 font-semibold"}`}>
-                                    {s.time}
-                                  </span>
-                                </button>
-                              )
-                            })}
-                          </div>
                         </div>
                       </div>
                     )}
