@@ -10,7 +10,8 @@ import { getTodayTechnicianAssignmentAction } from "@/actions/schedules"
 import { toast } from "sonner"
 import {
   Loader2, LogIn, LogOut, Search, UserCheck, CheckCircle2, WifiOff,
-  Wifi, RefreshCw, ShieldCheck, AlertCircle, AlertTriangle
+  Wifi, RefreshCw, ShieldCheck, AlertCircle, AlertTriangle,
+  GraduationCap, Wrench, HeartPulse, Sparkles
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -18,7 +19,6 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { checkGeofence, isGeoActive, type GeoCampus } from "@/lib/geofence"
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 
 const formSchema = z.object({
   role: z.nativeEnum(Role, { required_error: "Seleccione un rol" }),
@@ -78,6 +78,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
   const [isContingencyMode, setIsContingencyMode] = useState(false)
   const [connectionError, setConnectionError] = useState(false)
   const [pendingOfflineCount, setPendingOfflineCount] = useState(0)
+  const [selectResetKey, setSelectResetKey] = useState(0)
 
   const availableCampuses = (propCampuses && propCampuses.length > 0)
     ? propCampuses.map(c => c.name)
@@ -165,6 +166,35 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
   const watchRole = form.watch("role")
   const watchDni = form.watch("dni")
   const showExtraFields = watchRole === Role.DOCENTE || watchRole === Role.PACIENTE_SIMULADO
+
+  const resetFormPreservingRole = (roleToKeep: Role) => {
+    form.reset({
+      role: roleToKeep,
+      dni: "",
+      campusId: undefined,
+      courseId: undefined,
+    })
+    setSelectResetKey((prev) => prev + 1)
+    setValidatedUser(null)
+    setTodayLastRecord(null)
+    setTechnicianAssignment(null)
+    setSelectedShift(null)
+    setConnectionError(false)
+  }
+
+  const handleRoleChange = (newRole: Role) => {
+    if (newRole === watchRole) return
+    form.setValue("role", newRole)
+    form.setValue("dni", "")
+    form.setValue("campusId", undefined)
+    form.setValue("courseId", undefined)
+    setSelectResetKey((prev) => prev + 1)
+    setValidatedUser(null)
+    setTodayLastRecord(null)
+    setTechnicianAssignment(null)
+    setSelectedShift(null)
+    setConnectionError(false)
+  }
 
   useEffect(() => {
     if (watchDni?.length === 8) {
@@ -346,8 +376,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       setPendingOfflineCount(localData.length)
 
       toast.success(`✅ Marcación (${type === "ENTRADA" ? "Ingreso" : "Salida"}) guardada en la memoria local del dispositivo. Se sincronizará automáticamente.`, { duration: 7000 })
-      form.reset({ role: watchRole, dni: "", campusId: data.campusId, courseId: data.courseId })
-      setValidatedUser(null)
+      resetFormPreservingRole(watchRole)
       setIsSubmitting(null)
       return
     }
@@ -367,11 +396,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
 
       if (res.success) {
         toast.success(res.message, { duration: 5000 })
-        form.reset({ role: watchRole, dni: "", campusId: undefined, courseId: undefined })
-        setValidatedUser(null)
-        setTodayLastRecord(null)
-        setTechnicianAssignment(null)
-        setSelectedShift(null)
+        resetFormPreservingRole(watchRole)
       } else {
         toast.error(res.message)
       }
@@ -394,11 +419,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       setPendingOfflineCount(localData.length)
 
       toast.warning(`La red se interrumpió, pero su marcación (${type}) fue guardada de inmediato en el dispositivo y se sincronizará automáticamente.`, { duration: 8000 })
-      form.reset({ role: watchRole, dni: "", campusId: undefined, courseId: undefined })
-      setValidatedUser(null)
-      setTodayLastRecord(null)
-      setTechnicianAssignment(null)
-      setSelectedShift(null)
+      resetFormPreservingRole(watchRole)
     } finally {
       setIsSubmitting(null)
     }
@@ -446,34 +467,174 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       <Form {...form}>
         <form className="space-y-8">
           
+          {/* Selector de Rol de Usuario con sombreado e indicación de rol activo */}
           <FormField
             control={form.control}
             name="role"
             render={({ field }) => (
-              <FormItem className="space-y-3">
-                <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">Rol del Usuario</FormLabel>
-                <FormControl>
-                  <RadioGroup
-                    onValueChange={field.onChange}
-                    defaultValue={field.value}
-                    className="grid grid-cols-3 gap-3"
-                  >
-                    {[
-                      { value: Role.DOCENTE, label: "Docente" },
-                      { value: Role.TECNICO, label: "Técnico" },
-                      { value: Role.PACIENTE_SIMULADO, label: "Paciente Sim." },
-                    ].map((r) => (
-                      <FormItem key={r.value} className="flex items-center space-x-0 space-y-0">
-                        <FormControl>
-                          <RadioGroupItem value={r.value} className="peer sr-only" />
-                        </FormControl>
-                        <FormLabel className="w-full text-center py-5 px-2 rounded-xl border-2 border-slate-200 bg-slate-50 text-slate-600 cursor-pointer transition-all duration-300 hover:bg-slate-100 peer-data-[state=checked]:border-[#1967D2] peer-data-[state=checked]:bg-[#1967D2]/10 peer-data-[state=checked]:text-[#1967D2] peer-data-[state=checked]:shadow-md peer-data-[state=checked]:font-black text-sm md:text-lg">
-                          {r.label}
-                        </FormLabel>
-                      </FormItem>
-                    ))}
-                  </RadioGroup>
-                </FormControl>
+              <FormItem className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <FormLabel className="text-slate-600 text-xs font-black uppercase tracking-widest flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                    Seleccione su Rol de Usuario
+                  </FormLabel>
+                  <span className="text-[11px] font-bold text-slate-400">
+                    Paso 1 de 2
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
+                  {[
+                    {
+                      value: Role.DOCENTE,
+                      title: "Docente",
+                      desc: "Profesores / Instructores",
+                      icon: GraduationCap,
+                      activeGradient: "from-blue-600 via-[#1967D2] to-blue-800 text-white shadow-xl shadow-blue-500/35 border-blue-600 ring-4 ring-blue-100",
+                      activeBadge: "bg-white text-blue-800",
+                      inactiveHover: "hover:border-blue-400 hover:bg-blue-50/40 hover:text-blue-900",
+                    },
+                    {
+                      value: Role.TECNICO,
+                      title: "Técnico",
+                      desc: "Personal Técnico / Soporte",
+                      icon: Wrench,
+                      activeGradient: "from-indigo-600 via-indigo-700 to-indigo-900 text-white shadow-xl shadow-indigo-500/35 border-indigo-600 ring-4 ring-indigo-100",
+                      activeBadge: "bg-white text-indigo-900",
+                      inactiveHover: "hover:border-indigo-400 hover:bg-indigo-50/40 hover:text-indigo-900",
+                    },
+                    {
+                      value: Role.PACIENTE_SIMULADO,
+                      title: "Paciente Sim.",
+                      fullTitle: "Paciente Simulado",
+                      desc: "Actores y Evaluaciones",
+                      icon: HeartPulse,
+                      activeGradient: "from-emerald-600 via-emerald-700 to-teal-800 text-white shadow-xl shadow-emerald-500/35 border-emerald-600 ring-4 ring-emerald-100",
+                      activeBadge: "bg-white text-emerald-900",
+                      inactiveHover: "hover:border-emerald-400 hover:bg-emerald-50/40 hover:text-emerald-900",
+                    },
+                  ].map((r) => {
+                    const isSelected = watchRole === r.value
+                    const IconComp = r.icon
+                    return (
+                      <button
+                        key={r.value}
+                        type="button"
+                        onClick={() => {
+                          field.onChange(r.value)
+                          handleRoleChange(r.value)
+                        }}
+                        className={`relative flex flex-col justify-between p-4 md:p-5 rounded-2xl border-2 text-left transition-all duration-300 cursor-pointer ${
+                          isSelected
+                            ? `bg-gradient-to-br ${r.activeGradient} scale-[1.02]`
+                            : `bg-slate-50/90 text-slate-700 border-slate-200/90 hover:bg-white ${r.inactiveHover} shadow-xs`
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-3">
+                          <div
+                            className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                              isSelected
+                                ? "bg-white/20 text-white shadow-xs"
+                                : "bg-white text-slate-500 border border-slate-200 shadow-xs"
+                            }`}
+                          >
+                            <IconComp className="w-5 h-5" />
+                          </div>
+
+                          {isSelected ? (
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider shadow-sm ${r.activeBadge}`}>
+                              <CheckCircle2 className="w-3 h-3" /> Activo
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold text-slate-400 opacity-60">
+                              Seleccionar
+                            </span>
+                          )}
+                        </div>
+
+                        <div>
+                          <div className={`text-base md:text-lg font-black tracking-tight ${isSelected ? "text-white" : "text-slate-800"}`}>
+                            {r.title}
+                          </div>
+                          <div className={`text-xs mt-0.5 line-clamp-1 ${isSelected ? "text-blue-50/90 opacity-90 font-medium" : "text-slate-500"}`}>
+                            {r.desc}
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {/* Banner de confirmación visual del rol activo */}
+                {(() => {
+                  const roleConfigMap: Partial<Record<Role, {
+                    name: string
+                    bg: string
+                    iconBg: string
+                    accent: string
+                    badge: string
+                    icon: any
+                  }>> = {
+                    [Role.DOCENTE]: {
+                      name: "Docente",
+                      bg: "bg-blue-50/90 border-blue-200 text-blue-950",
+                      iconBg: "bg-blue-600 text-white shadow-blue-500/30",
+                      accent: "text-[#1967D2]",
+                      badge: "bg-[#1967D2] text-white",
+                      icon: GraduationCap,
+                    },
+                    [Role.TECNICO]: {
+                      name: "Personal Técnico",
+                      bg: "bg-indigo-50/90 border-indigo-200 text-indigo-950",
+                      iconBg: "bg-indigo-600 text-white shadow-indigo-500/30",
+                      accent: "text-indigo-700",
+                      badge: "bg-indigo-600 text-white",
+                      icon: Wrench,
+                    },
+                    [Role.PACIENTE_SIMULADO]: {
+                      name: "Paciente Simulado",
+                      bg: "bg-emerald-50/90 border-emerald-200 text-emerald-950",
+                      iconBg: "bg-emerald-600 text-white shadow-emerald-500/30",
+                      accent: "text-emerald-700",
+                      badge: "bg-emerald-600 text-white",
+                      icon: HeartPulse,
+                    },
+                  }
+
+                  const activeConfig = roleConfigMap[watchRole] || {
+                    name: "Docente",
+                    bg: "bg-blue-50/90 border-blue-200 text-blue-950",
+                    iconBg: "bg-blue-600 text-white shadow-blue-500/30",
+                    accent: "text-[#1967D2]",
+                    badge: "bg-[#1967D2] text-white",
+                    icon: GraduationCap,
+                  }
+
+                  const ActiveIcon = activeConfig.icon
+
+                  return (
+                    <div className={`flex items-center justify-between p-3.5 rounded-2xl border-2 transition-all duration-300 ${activeConfig.bg}`}>
+                      <div className="flex items-center gap-3">
+                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center shadow-md ${activeConfig.iconBg}`}>
+                          <ActiveIcon className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className={`text-[10px] font-black uppercase tracking-wider ${activeConfig.accent}`}>
+                            Modo de Marcación Activo
+                          </div>
+                          <div className="text-sm md:text-base font-extrabold text-slate-900">
+                            Registrando asistencia como: <span className={activeConfig.accent}>{activeConfig.name}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <span className={`hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black shadow-xs ${activeConfig.badge}`}>
+                        <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                        Pestaña Activa
+                      </span>
+                    </div>
+                  )
+                })()}
+
                 <FormMessage />
               </FormItem>
             )}
@@ -487,7 +648,11 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">Sede</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                    <Select
+                      key={`campus-select-${selectResetKey}`}
+                      value={field.value || ""}
+                      onValueChange={(val) => field.onChange(val || undefined)}
+                    >
                       <FormControl>
                         <SelectTrigger className="h-16 text-lg font-normal bg-white border-2 border-slate-200 text-slate-800 rounded-xl focus:ring-[#1967D2] focus:border-[#1967D2]">
                           <SelectValue placeholder="Seleccione Sede" />
@@ -512,7 +677,11 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">Curso</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                    <Select
+                      key={`course-select-${selectResetKey}`}
+                      value={field.value || ""}
+                      onValueChange={(val) => field.onChange(val || undefined)}
+                    >
                       <FormControl>
                         <SelectTrigger className="h-16 text-lg font-normal bg-white border-2 border-slate-200 text-slate-800 rounded-xl focus:ring-[#1967D2] focus:border-[#1967D2]">
                           <SelectValue placeholder="Seleccione Curso" />
