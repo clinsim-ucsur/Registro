@@ -96,6 +96,54 @@ function applyGuardiaDominicalLogic(
   return { assignments, workingCount, restingCount }
 }
 
+// 2.2 Simulación de Asignación Dominical Multisede con Apoyo entre Sedes
+function applyMultisedeSundayLogic(
+  technicians: { id: string; name: string; homeCampus: string }[],
+  assignmentsByCampus: {
+    campus: string
+    active: boolean
+    slots: { techId: string; shift: Shift; entryTime: string }[]
+  }[]
+) {
+  const result: Record<string, { shift: Shift; campus: string; entryTime: string; isSupport: boolean }> = {}
+
+  // Por regla: los no seleccionados pasan a descanso
+  technicians.forEach((t) => {
+    result[t.id] = {
+      shift: Shift.DESCANSO,
+      campus: t.homeCampus,
+      entryTime: "00:00",
+      isSupport: false,
+    }
+  })
+
+  // Asignar en sedes activas
+  assignmentsByCampus.forEach((c) => {
+    if (c.active) {
+      c.slots.forEach((s) => {
+        const t = technicians.find((tech) => tech.id === s.techId)
+        if (t) {
+          result[t.id] = {
+            shift: s.shift,
+            campus: c.campus,
+            entryTime: s.entryTime,
+            isSupport: t.homeCampus !== c.campus,
+          }
+        }
+      })
+    }
+  })
+
+  let workingCount = 0
+  let restingCount = 0
+  Object.values(result).forEach((r) => {
+    if (r.shift === Shift.DESCANSO) restingCount++
+    else workingCount++
+  })
+
+  return { result, workingCount, restingCount }
+}
+
 // 3. Simulación de validación de hora anticipada
 function validateEarlyEntrySim(
   entryTimeStr: string,
@@ -248,6 +296,75 @@ async function main() {
     guardResult.assignments["tech-4"].shift === Shift.DESCANSO &&
     guardResult.assignments["tech-5"].shift === Shift.DESCANSO,
     "Todos los técnicos no seleccionados están en Shift.DESCANSO"
+  )
+
+  // 2.2 Validación de Programación Multisede y Apoyo entre Sedes (ej: Domingo 24)
+  const multisedeTechs = [
+    { id: "t-villa-1", name: "Tecnico Villa 1", homeCampus: "Campus Villa" },
+    { id: "t-villa-2", name: "Tecnico Villa 2", homeCampus: "Campus Villa" },
+    { id: "t-norte-1", name: "Tecnico Norte 1", homeCampus: "Campus Norte" },
+    { id: "t-ate-1", name: "Tecnico Ate Apoyo", homeCampus: "Campus Ate" },
+    { id: "t-ate-2", name: "Tecnico Ate Descanso", homeCampus: "Campus Ate" },
+    { id: "t-aramburu", name: "Tecnico Aramburu", homeCampus: "Campus Aramburú" },
+  ]
+
+  const sundayPlan = [
+    {
+      campus: "Campus Villa",
+      active: true,
+      slots: [
+        { techId: "t-villa-1", shift: Shift.MANANA, entryTime: "06:00" },
+        { techId: "t-villa-2", shift: Shift.TARDE, entryTime: "13:00" },
+      ],
+    },
+    {
+      campus: "Campus Norte",
+      active: true,
+      slots: [
+        { techId: "t-norte-1", shift: Shift.MANANA, entryTime: "06:00" },
+        { techId: "t-ate-1", shift: Shift.TARDE, entryTime: "13:00" }, // Técnico de Ate apoyando en Norte
+      ],
+    },
+    {
+      campus: "Campus Ate",
+      active: false, // Sede Ate vacía este domingo
+      slots: [],
+    },
+    {
+      campus: "Campus Aramburú",
+      active: false, // Sede Aramburú vacía este domingo
+      slots: [],
+    },
+  ]
+
+  const multiResult = applyMultisedeSundayLogic(multisedeTechs, sundayPlan)
+  assert(multiResult.workingCount === 4, "Multisede: 4 técnicos trabajando en total (2 en Villa, 2 en Norte)")
+  assert(multiResult.restingCount === 2, "Multisede: 2 técnicos no seleccionados pasan a descanso (Ate y Aramburú)")
+  assert(
+    multiResult.result["t-villa-1"].shift === Shift.MANANA && multiResult.result["t-villa-1"].campus === "Campus Villa",
+    "Multisede: Sede Villa tiene 1 técnico en Mañana (06:00)"
+  )
+  assert(
+    multiResult.result["t-villa-2"].shift === Shift.TARDE && multiResult.result["t-villa-2"].campus === "Campus Villa",
+    "Multisede: Sede Villa tiene 1 técnico en Tarde (13:00)"
+  )
+  assert(
+    multiResult.result["t-norte-1"].shift === Shift.MANANA && multiResult.result["t-norte-1"].campus === "Campus Norte",
+    "Multisede: Sede Norte tiene 1 técnico en Mañana (06:00)"
+  )
+  assert(
+    multiResult.result["t-ate-1"].shift === Shift.TARDE &&
+    multiResult.result["t-ate-1"].campus === "Campus Norte" &&
+    multiResult.result["t-ate-1"].isSupport === true,
+    "Multisede: Técnico de Sede Ate apoya en Sede Norte en Turno Tarde (13:00) y NO va a descanso"
+  )
+  assert(
+    multiResult.result["t-ate-2"].shift === Shift.DESCANSO,
+    "Multisede: Técnico de Ate no asignado pasa automáticamente a Descanso"
+  )
+  assert(
+    multiResult.result["t-aramburu"].shift === Shift.DESCANSO,
+    "Multisede: Técnico de Aramburú no asignado pasa automáticamente a Descanso"
   )
 
   // ----------------------------------------------------

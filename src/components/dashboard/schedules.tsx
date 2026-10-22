@@ -26,7 +26,10 @@ import {
   CalendarDays,
   RefreshCw,
   Zap,
-  ArrowRightLeft
+  ArrowRightLeft,
+  Building2,
+  Check,
+  X
 } from "lucide-react"
 import { toast } from "sonner"
 import * as XLSX from "xlsx"
@@ -128,8 +131,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
   const [isOcrOpen, setIsOcrOpen] = useState(false)
   const [isSundayModalOpen, setIsSundayModalOpen] = useState(false)
   const [sundayDate, setSundayDate] = useState<string>("")
-  const [selectedMorningTechId, setSelectedMorningTechId] = useState<string>("")
-  const [selectedIntermediateTechId, setSelectedIntermediateTechId] = useState<string>("")
+  const [activeCampuses, setActiveCampuses] = useState<Record<string, boolean>>({})
   const [sundayAssignments, setSundayAssignments] = useState<
     Record<
       string,
@@ -143,8 +145,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
   >({})
   const [isSavingSunday, startSundayTransition] = useTransition()
 
-  // Conteo en tiempo real de técnicos trabajando vs en descanso en el domingo
-  const { workingCount, restingCount } = useMemo(() => {
+  // Conteo en tiempo real de técnicos trabajando vs en descanso en el domingo y sedes activas
+  const { workingCount, restingCount, activeCampusesCount } = useMemo(() => {
     let working = 0
     let resting = 0
     technicians.forEach((t) => {
@@ -155,8 +157,9 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
         working++
       }
     })
-    return { workingCount: working, restingCount: resting }
-  }, [sundayAssignments, technicians])
+    const activeCount = campuses.filter((c) => activeCampuses[c.id]).length
+    return { workingCount: working, restingCount: resting, activeCampusesCount: activeCount }
+  }, [sundayAssignments, technicians, campuses, activeCampuses])
 
   // Lista de domingos disponibles en el mes seleccionado o próximos
   const sundaysList = useMemo(() => {
@@ -218,36 +221,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     // Buscar si ya existen turnos registrados en este domingo en schedules
     const existingForDate = schedules.filter((s) => s.date === dateToUse)
     const existingMap = new Map(existingForDate.map((s) => [s.userId, s]))
-
-    // Identificar si ya existen técnicos asignados a la guardia de ese domingo
-    let detectedMorningId = ""
-    let detectedInterId = ""
-
-    technicians.forEach((t) => {
-      const existing = existingMap.get(t.id)
-      if (existing) {
-        if (existing.shift === Shift.MANANA && !detectedMorningId) {
-          detectedMorningId = t.id
-        } else if ((existing.shift === Shift.INTERMEDIO || existing.shift === Shift.TARDE) && !detectedInterId) {
-          detectedInterId = t.id
-        }
-      }
-    })
-
-    // Si aún no están definidos, sugerir según el perfil habitual
-    if (!detectedMorningId) {
-      const candM = technicians.find((t) => (t.defaultShift as Shift) === Shift.MANANA) || technicians[0]
-      detectedMorningId = candM?.id || ""
-    }
-    if (!detectedInterId) {
-      const candI = technicians.find((t) => t.id !== detectedMorningId && ((t.defaultShift as Shift) === Shift.TARDE || (t.defaultShift as Shift) === Shift.INTERMEDIO)) || technicians.find((t) => t.id !== detectedMorningId)
-      detectedInterId = candI?.id || ""
-    }
-
-    setSelectedMorningTechId(detectedMorningId)
-    setSelectedIntermediateTechId(detectedInterId)
-
-    const hasAnyExistingRecords = existingForDate.length > 0
+    const initialActiveCampuses: Record<string, boolean> = {}
 
     technicians.forEach((t) => {
       const existing = existingMap.get(t.id)
@@ -258,88 +232,271 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
           expectedEntryTime: existing.expectedEntryTime,
           notes: existing.notes || (existing.shift === Shift.DESCANSO ? "Descanso dominical" : "Guardia Dominical"),
         }
-      } else if (hasAnyExistingRecords) {
-        // Si ya hay registros para ese domingo y este técnico no tiene, está en descanso
+      } else {
+        // Por defecto, si no tiene asignación previa, inicia en descanso dominical
         initialMap[t.id] = {
           shift: Shift.DESCANSO,
           campusId: t.campus?.id || campuses[0]?.id || "",
           expectedEntryTime: "00:00",
           notes: "Descanso dominical",
         }
-      } else {
-        // Si el domingo es nuevo y sin programar: Asignar guardia estándar de 2 técnicos y resto a Descanso
-        if (t.id === detectedMorningId) {
-          initialMap[t.id] = {
-            shift: Shift.MANANA,
-            campusId: t.campus?.id || campuses[0]?.id || "",
-            expectedEntryTime: "06:00",
-            notes: "Guardia Dominical (Mañana)",
-          }
-        } else if (t.id === detectedInterId) {
-          initialMap[t.id] = {
-            shift: Shift.INTERMEDIO,
-            campusId: t.campus?.id || campuses[0]?.id || "",
-            expectedEntryTime: "09:00",
-            notes: "Guardia Dominical (Intermedio)",
-          }
-        } else {
-          initialMap[t.id] = {
-            shift: Shift.DESCANSO,
-            campusId: t.campus?.id || campuses[0]?.id || "",
-            expectedEntryTime: "00:00",
-            notes: "Descanso dominical",
-          }
-        }
       }
     })
 
+    const hasAnyExistingRecords = existingForDate.length > 0
+
+    campuses.forEach((c) => {
+      if (hasAnyExistingRecords) {
+        // Una sede se marca activa si ya tenía algún técnico asignado a trabajar
+        const hasWorking = existingForDate.some(
+          (s) => s.campusId === c.id && s.shift !== Shift.DESCANSO
+        )
+        initialActiveCampuses[c.id] = hasWorking
+      } else {
+        // Si es un domingo nuevo sin programar: preactivar Villa y Norte (sedes operativas típicas),
+        // y dejar Ate y Aramburú inactivas (vacías) salvo que se decida activarlas
+        const cLower = c.name.toLowerCase()
+        initialActiveCampuses[c.id] = cLower.includes("villa") || cLower.includes("norte")
+      }
+    })
+
+    setActiveCampuses(initialActiveCampuses)
     setSundayAssignments(initialMap)
     setIsSundayModalOpen(true)
   }
 
-  // Aplicar guardia dominical: 1 técnico en Mañana, 1 en Intermedio, y el resto en Descanso
-  const applyGuardiaDominical = () => {
-    if (!selectedMorningTechId && !selectedIntermediateTechId) {
-      toast.warning("Selecciona al menos un técnico para la guardia de domingo.")
+  // Alternar estado activo / sin actividad de una sede
+  const toggleCampusActivity = (campusId: string) => {
+    setActiveCampuses((prev) => {
+      const willBeActive = !prev[campusId]
+      if (!willBeActive) {
+        // Si se desactiva la sede, enviar a todos los técnicos asignados a ella a Descanso
+        setSundayAssignments((curr) => {
+          const next = { ...curr }
+          technicians.forEach((t) => {
+            if (next[t.id]?.campusId === campusId && next[t.id]?.shift !== Shift.DESCANSO) {
+              next[t.id] = {
+                shift: Shift.DESCANSO,
+                campusId: t.campus?.id || campusId,
+                expectedEntryTime: "00:00",
+                notes: "Descanso dominical",
+              }
+            }
+          })
+          return next
+        })
+      }
+      return { ...prev, [campusId]: willBeActive }
+    })
+  }
+
+  // Asignar técnico a una sede específica
+  const assignTechToCampus = (
+    techId: string, 
+    campusId: string, 
+    shift: Shift = Shift.MANANA, 
+    entryTime = "06:00"
+  ) => {
+    if (!techId) return
+    const campusObj = campuses.find((c) => c.id === campusId)
+    const techObj = technicians.find((t) => t.id === techId)
+    const isSupport = techObj?.campus?.id && techObj.campus.id !== campusId
+
+    setSundayAssignments((prev) => ({
+      ...prev,
+      [techId]: {
+        shift,
+        campusId,
+        expectedEntryTime: entryTime,
+        notes: isSupport
+          ? `Guardia dominical en ${campusObj?.name || "sede"} (Apoyo desde ${techObj?.campus?.name || "otra sede"})`
+          : `Guardia dominical en ${campusObj?.name || "sede"}`,
+      },
+    }))
+    setActiveCampuses((prev) => ({ ...prev, [campusId]: true }))
+  }
+
+  // Reemplazar técnico en un slot de una sede
+  const replaceTechInCampus = (oldTechId: string, newTechId: string, campusId: string) => {
+    if (!newTechId || oldTechId === newTechId) return
+    const currentOld = sundayAssignments[oldTechId]
+    const currentShift = currentOld?.shift || Shift.MANANA
+    const currentEntry = currentOld?.expectedEntryTime || "06:00"
+
+    const campusObj = campuses.find((c) => c.id === campusId)
+    const oldTechObj = technicians.find((t) => t.id === oldTechId)
+    const newTechObj = technicians.find((t) => t.id === newTechId)
+    const isSupport = newTechObj?.campus?.id && newTechObj.campus.id !== campusId
+
+    setSundayAssignments((prev) => {
+      const next = { ...prev }
+      if (oldTechId) {
+        next[oldTechId] = {
+          shift: Shift.DESCANSO,
+          campusId: oldTechObj?.campus?.id || campusId,
+          expectedEntryTime: "00:00",
+          notes: "Descanso dominical",
+        }
+      }
+      next[newTechId] = {
+        shift: currentShift,
+        campusId,
+        expectedEntryTime: currentEntry,
+        notes: isSupport
+          ? `Guardia dominical en ${campusObj?.name || "sede"} (Apoyo desde ${newTechObj?.campus?.name || "otra sede"})`
+          : `Guardia dominical en ${campusObj?.name || "sede"}`,
+      }
+      return next
+    })
+    setActiveCampuses((prev) => ({ ...prev, [campusId]: true }))
+  }
+
+  // Quitar técnico de una sede (pasa automáticamente a Descanso)
+  const unassignTech = (techId: string) => {
+    const techObj = technicians.find((t) => t.id === techId)
+    setSundayAssignments((prev) => ({
+      ...prev,
+      [techId]: {
+        shift: Shift.DESCANSO,
+        campusId: techObj?.campus?.id || campuses[0]?.id || "",
+        expectedEntryTime: "00:00",
+        notes: "Descanso dominical",
+      },
+    }))
+  }
+
+  // Asignar rápidamente 1 Mañana + 1 Tarde a una sede específica
+  const quickAssignMorningAndAfternoon = (campusId: string) => {
+    const campusObj = campuses.find((c) => c.id === campusId)
+    
+    // Candidatos en descanso: priorizar personal de esta sede, luego personal de otras sedes (ej: Ate)
+    const restingFromThisCampus = technicians.filter(
+      (t) => t.campus?.id === campusId && (!sundayAssignments[t.id] || sundayAssignments[t.id].shift === Shift.DESCANSO)
+    )
+    const restingFromOtherCampuses = technicians.filter(
+      (t) => t.campus?.id !== campusId && (!sundayAssignments[t.id] || sundayAssignments[t.id].shift === Shift.DESCANSO)
+    )
+
+    const candidates = [...restingFromThisCampus, ...restingFromOtherCampuses]
+
+    if (candidates.length < 2) {
+      toast.warning("No hay suficientes técnicos disponibles en descanso para asignar 2 a esta sede.")
       return
     }
-    if (selectedMorningTechId && selectedIntermediateTechId && selectedMorningTechId === selectedIntermediateTechId) {
-      toast.error("Debes seleccionar dos técnicos diferentes para la Mañana y el Intermedio.")
+
+    const tMorning = candidates[0]
+    const tAfternoon = candidates[1]
+
+    setSundayAssignments((prev) => {
+      const next = { ...prev }
+      const isSupportM = tMorning.campus?.id && tMorning.campus.id !== campusId
+      const isSupportA = tAfternoon.campus?.id && tAfternoon.campus.id !== campusId
+
+      next[tMorning.id] = {
+        shift: Shift.MANANA,
+        campusId,
+        expectedEntryTime: "06:00",
+        notes: isSupportM
+          ? `Guardia dominical en ${campusObj?.name || "sede"} (Apoyo desde ${tMorning.campus?.name || "otra sede"})`
+          : `Guardia dominical en ${campusObj?.name || "sede"}`,
+      }
+      next[tAfternoon.id] = {
+        shift: Shift.TARDE,
+        campusId,
+        expectedEntryTime: "13:00",
+        notes: isSupportA
+          ? `Guardia dominical en ${campusObj?.name || "sede"} (Apoyo desde ${tAfternoon.campus?.name || "otra sede"})`
+          : `Guardia dominical en ${campusObj?.name || "sede"}`,
+      }
+      return next
+    })
+
+    setActiveCampuses((prev) => ({ ...prev, [campusId]: true }))
+    toast.success(`✓ Asignados 2 técnicos a ${campusObj?.name || "la sede"}: ${tMorning.name} (Mañana 06:00) y ${tAfternoon.name} (Tarde 13:00)`)
+  }
+
+  // Plantilla rápida estándar: Villa (2), Norte (2 con apoyo de Ate), Ate vacía, resto en descanso
+  const applyTypicalSundayPreset = () => {
+    const villaCampus = campuses.find((c) => c.name.toLowerCase().includes("villa"))
+    const norteCampus = campuses.find((c) => c.name.toLowerCase().includes("norte"))
+
+    if (!villaCampus || !norteCampus) {
+      toast.warning("No se encontraron las sedes Villa y Norte para aplicar la plantilla.")
       return
     }
 
     setSundayAssignments((prev) => {
-      const next = { ...prev }
+      const next: typeof sundayAssignments = {}
+      // Primero todos a descanso
       technicians.forEach((t) => {
-        if (t.id === selectedMorningTechId) {
-          next[t.id] = {
-            shift: Shift.MANANA,
-            campusId: t.campus?.id || campuses[0]?.id || "",
-            expectedEntryTime: "06:00",
-            notes: "Guardia Dominical (Mañana)",
-          }
-        } else if (t.id === selectedIntermediateTechId) {
-          next[t.id] = {
-            shift: Shift.INTERMEDIO,
-            campusId: t.campus?.id || campuses[0]?.id || "",
-            expectedEntryTime: "09:00",
-            notes: "Guardia Dominical (Intermedio)",
-          }
-        } else {
-          next[t.id] = {
-            shift: Shift.DESCANSO,
-            campusId: t.campus?.id || campuses[0]?.id || "",
-            expectedEntryTime: "00:00",
-            notes: "Descanso dominical",
-          }
+        next[t.id] = {
+          shift: Shift.DESCANSO,
+          campusId: t.campus?.id || campuses[0]?.id || "",
+          expectedEntryTime: "00:00",
+          notes: "Descanso dominical",
         }
       })
+
+      // Asignar Villa: 1 Mañana + 1 Tarde
+      const villaTechs = technicians.filter((t) => t.campus?.id === villaCampus.id)
+      const villaM = villaTechs[0] || technicians[0]
+      const villaT = villaTechs[1] || technicians[1]
+      if (villaM) {
+        next[villaM.id] = {
+          shift: Shift.MANANA,
+          campusId: villaCampus.id,
+          expectedEntryTime: "06:00",
+          notes: "Guardia Dominical en Campus Villa (Mañana)",
+        }
+      }
+      if (villaT && villaT.id !== villaM?.id) {
+        next[villaT.id] = {
+          shift: Shift.TARDE,
+          campusId: villaCampus.id,
+          expectedEntryTime: "13:00",
+          notes: "Guardia Dominical en Campus Villa (Tarde)",
+        }
+      }
+
+      // Asignar Norte: 1 Mañana + 1 Tarde (con apoyo de técnico de Ate si aplica)
+      const remainingForNorte = technicians.filter((t) => t.id !== villaM?.id && t.id !== villaT?.id)
+      const norteTech = remainingForNorte.find((t) => t.campus?.id === norteCampus.id) || remainingForNorte[0]
+      const ateTech = remainingForNorte.find((t) => t.campus?.name.toLowerCase().includes("ate") && t.id !== norteTech?.id) || remainingForNorte.find((t) => t.id !== norteTech?.id)
+
+      if (norteTech) {
+        const isSupN = norteTech.campus?.id && norteTech.campus.id !== norteCampus.id
+        next[norteTech.id] = {
+          shift: Shift.MANANA,
+          campusId: norteCampus.id,
+          expectedEntryTime: "06:00",
+          notes: isSupN 
+            ? `Guardia Dominical en Campus Norte (Apoyo desde ${norteTech.campus?.name || "otra sede"})`
+            : "Guardia Dominical en Campus Norte (Mañana)",
+        }
+      }
+      if (ateTech && ateTech.id !== norteTech?.id) {
+        const isSupA = ateTech.campus?.id && ateTech.campus.id !== norteCampus.id
+        next[ateTech.id] = {
+          shift: Shift.TARDE,
+          campusId: norteCampus.id,
+          expectedEntryTime: "13:00",
+          notes: isSupA 
+            ? `Guardia Dominical en Campus Norte (Apoyo desde ${ateTech.campus?.name || "otra sede"})`
+            : "Guardia Dominical en Campus Norte (Tarde)",
+        }
+      }
+
       return next
     })
 
-    const morningTech = technicians.find((t) => t.id === selectedMorningTechId)
-    const interTech = technicians.find((t) => t.id === selectedIntermediateTechId)
-    toast.success(`✓ Guardia aplicada: ${morningTech?.name || "1"} en Mañana (06:00) y ${interTech?.name || "1"} en Intermedio (09:00). Resto de técnicos en descanso.`)
+    const newActive: Record<string, boolean> = {}
+    campuses.forEach((c) => {
+      const isV = c.id === villaCampus.id
+      const isN = c.id === norteCampus.id
+      newActive[c.id] = isV || isN
+    })
+    setActiveCampuses(newActive)
+    toast.success("✓ Plantilla aplicada: Sede Villa (2 técnicos), Sede Norte (2 técnicos con apoyo de Ate). Sede Ate vacía y resto en descanso.")
   }
 
   // Poner a todos en descanso
@@ -356,69 +513,18 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       })
       return next
     })
+    const allInactive: Record<string, boolean> = {}
+    campuses.forEach((c) => (allInactive[c.id] = false))
+    setActiveCampuses(allInactive)
     toast.info("Todos los técnicos configurados en Descanso Dominical.")
   }
 
-  // Regla habitual: Tarde a Intermedio
-  const applyStandardSundayRule = () => {
-    setSundayAssignments((prev) => {
-      const next = { ...prev }
-      technicians.forEach((t) => {
-        const baseShift = (t.defaultShift as Shift) || Shift.MANANA
-        if (baseShift === Shift.TARDE) {
-          next[t.id] = {
-            ...next[t.id],
-            shift: Shift.INTERMEDIO,
-            expectedEntryTime: "09:00",
-          }
-        } else if (baseShift === Shift.MANANA) {
-          next[t.id] = {
-            ...next[t.id],
-            shift: Shift.MANANA,
-            expectedEntryTime: "06:00",
-          }
-        }
-      })
-      return next
-    })
-    toast.info("Regla aplicada: Personal de la tarde pasa a Intermedio (9:00 AM).")
-  }
-
-  // Todos a Intermedio (Mañana y Tarde)
-  const applyAllToIntermediate = () => {
-    setSundayAssignments((prev) => {
-      const next = { ...prev }
-      technicians.forEach((t) => {
-        const baseShift = (t.defaultShift as Shift) || Shift.MANANA
-        if (baseShift !== Shift.NOCHE) {
-          next[t.id] = {
-            ...next[t.id],
-            shift: Shift.INTERMEDIO,
-            expectedEntryTime: "09:00",
-          }
-        }
-      })
-      return next
-    })
-    toast.info("Todos los técnicos diurnos configurados en Turno Intermedio (9:00 AM).")
-  }
-
-  // Restablecer a perfiles base
-  const resetToDefaultProfileShifts = () => {
-    setSundayAssignments((prev) => {
-      const next = { ...prev }
-      technicians.forEach((t) => {
-        const baseShift = (t.defaultShift as Shift) || Shift.MANANA
-        const def = DEFAULT_SHIFT_TIMES[baseShift] || DEFAULT_SHIFT_TIMES.MANANA
-        next[t.id] = {
-          ...next[t.id],
-          shift: baseShift,
-          expectedEntryTime: def.entry,
-        }
-      })
-      return next
-    })
-    toast.info("Turnos restablecidos a los perfiles habituales de cada técnico.")
+  // Activar todas las sedes
+  const activateAllCampuses = () => {
+    const allActive: Record<string, boolean> = {}
+    campuses.forEach((c) => (allActive[c.id] = true))
+    setActiveCampuses(allActive)
+    toast.info("Todas las sedes marcadas como activas para este domingo.")
   }
 
   const handleSaveSunday = () => {
@@ -430,24 +536,33 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     startSundayTransition(async () => {
       const items: ScheduleItemInput[] = technicians.map((t) => {
         const current = sundayAssignments[t.id]
-        const shift = current?.shift || Shift.INTERMEDIO
-        const def = DEFAULT_SHIFT_TIMES[shift] || DEFAULT_SHIFT_TIMES.INTERMEDIO
+        const shift = current?.shift || Shift.DESCANSO
+        const def = DEFAULT_SHIFT_TIMES[shift] || DEFAULT_SHIFT_TIMES.DESCANSO
+        const isResting = shift === Shift.DESCANSO
+        const assignedCampusId = current?.campusId || t.campus?.id || campuses[0]?.id || ""
+        const campusObj = campuses.find((c) => c.id === assignedCampusId)
+        const isSupport = t.campus?.id && t.campus.id !== assignedCampusId
+
         return {
           userId: t.id,
           date: sundayDate,
-          campusId: current?.campusId || t.campus?.id || campuses[0]?.id || "",
+          campusId: assignedCampusId,
           shift,
-          expectedEntryTime: current?.expectedEntryTime || def.entry,
-          earlyEntryToleranceMinutes: def.early,
-          gracePeriodMinutes: def.grace,
-          lateToleranceMinutes: def.late,
-          notes: current?.notes || "Turno asignado para este domingo",
+          expectedEntryTime: isResting ? "00:00" : (current?.expectedEntryTime || def.entry),
+          earlyEntryToleranceMinutes: isResting ? 0 : def.early,
+          gracePeriodMinutes: isResting ? 0 : def.grace,
+          lateToleranceMinutes: isResting ? 0 : def.late,
+          notes: isResting
+            ? "Descanso dominical"
+            : (isSupport
+                ? `Guardia dominical en ${campusObj?.name || "sede"} (Apoyo desde ${t.campus?.name || "otra sede"})`
+                : `Guardia dominical en ${campusObj?.name || "sede"}`),
         }
       })
 
       const res = await bulkUpsertTechnicianSchedulesAction(items)
       if (res.success) {
-        toast.success(`✓ Turnos guardados exitosamente para el domingo ${sundayDate}`)
+        toast.success(`✓ Programación dominical guardada: ${workingCount} técnicos trabajando en ${activeCampusesCount} sede(s), ${restingCount} en descanso.`)
         // Actualizar tabla en tiempo real
         const refresh = await getTechnicianSchedulesAction({ month: selectedMonth })
         if (refresh.success && refresh.schedules) {
@@ -1682,31 +1797,31 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
         </div>
       </ScheduleModal>
 
-      {/* MODAL GESTOR RÁPIDO DE DOMINGOS */}
+      {/* MODAL GESTOR DE DOMINGOS POR SEDES */}
       <ScheduleModal
         isOpen={isSundayModalOpen}
         onClose={() => setIsSundayModalOpen(false)}
-        title="Asignación de Turnos de Domingo (Guardia Dominical)"
-        maxWidth="max-w-5xl"
+        title="Programación de Sedes y Rotaciones Dominicales"
+        maxWidth="max-w-6xl"
       >
         <div className="space-y-6">
-          {/* Banner explicativo de la regla dominical */}
-          <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-50 via-orange-50 to-amber-50 border border-amber-200/80 flex items-start gap-3">
-            <div className="p-2.5 rounded-xl bg-amber-500 text-white shrink-0 mt-0.5">
+          {/* Banner explicativo multisede */}
+          <div className="p-4 rounded-2xl bg-gradient-to-r from-blue-50 via-indigo-50/60 to-sky-50 border border-blue-200/80 flex items-start gap-3">
+            <div className="p-2.5 rounded-xl bg-[#1967D2] text-white shrink-0 mt-0.5 shadow-sm">
               <Sun size={20} />
             </div>
             <div className="space-y-1">
-              <h4 className="text-sm font-black text-amber-950 flex items-center gap-2">
-                <span>Regla de Guardia Dominical: 2 Técnicos (Mañana e Intermedio)</span>
+              <h4 className="text-sm font-black text-[#0B1B3D] flex items-center gap-2">
+                <span>Configuración de Sedes con Actividad y Rotación de Personal</span>
               </h4>
-              <p className="text-xs font-medium text-amber-800 leading-relaxed">
-                Por regla general, <strong>los domingos sólo se asignan 2 técnicos</strong>: uno en <strong>Mañana (06:00 AM)</strong> y uno en <strong>Intermedio (09:00 AM)</strong>. Todos los demás quedan en <strong>Descanso</strong> (salvo días excepcionales). Quienes trabajan este domingo descansarán en otro día programado en la semana.
+              <p className="text-xs font-medium text-slate-700 leading-relaxed">
+                Elige qué sedes tendrán actividad este domingo y qué técnicos estarán a cargo en cada turno (Mañana, Intermedio o Tarde). Puedes asignar técnicos de cualquier sede para brindar apoyo en otra sede (por ejemplo: personal de Sede Ate apoyando en Norte o Villa) y el sistema les permitirá registrar su asistencia sin inconvenientes. <strong>Los técnicos no asignados pasarán automáticamente a su DÍA DE DESCANSO.</strong>
               </p>
             </div>
           </div>
 
-          {/* Selector de Fecha del Domingo */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-200/80">
+          {/* Selector de Fecha del Domingo y Contadores */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-slate-50 p-4 rounded-2xl border border-slate-200/80">
             <div className="flex-1">
               <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1.5 flex items-center gap-1.5">
                 <CalendarDays size={16} className="text-[#1967D2]" /> Fecha del Domingo a Programar
@@ -1714,7 +1829,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
               <select
                 value={sundayDate}
                 onChange={(e) => openSundayManager(e.target.value)}
-                className="w-full h-11 bg-white border border-slate-200 font-extrabold text-slate-800 rounded-xl px-3 outline-none focus:ring-2 focus:ring-[#1967D2] text-sm"
+                className="w-full h-11 bg-white border border-slate-200 font-extrabold text-slate-800 rounded-xl px-3 outline-none focus:ring-2 focus:ring-[#1967D2] text-sm shadow-xs"
               >
                 {sundaysList.map((sun) => (
                   <option key={sun.date} value={sun.date}>
@@ -1724,151 +1839,355 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
               </select>
             </div>
 
-            <div className="flex items-center gap-2 pt-2 sm:pt-4">
-              <div className="px-3.5 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-black text-xs flex items-center gap-1.5 shadow-xs">
+            <div className="flex flex-wrap items-center gap-2 pt-1 lg:pt-4">
+              <div className="px-3 py-2 rounded-xl bg-blue-50 border border-blue-200 text-blue-800 font-black text-xs flex items-center gap-1.5 shadow-xs">
+                <Building2 size={14} className="text-[#1967D2]" />
+                <span>{activeCampusesCount} Sede(s) Activas</span>
+              </div>
+              <div className="px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-black text-xs flex items-center gap-1.5 shadow-xs">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
                 <span>{workingCount} Trabajando</span>
               </div>
-              <div className="px-3.5 py-2 rounded-xl bg-slate-100 border border-slate-200 text-slate-700 font-bold text-xs flex items-center gap-1.5">
+              <div className="px-3 py-2 rounded-xl bg-slate-100 border border-slate-200 text-slate-700 font-bold text-xs flex items-center gap-1.5">
                 <span>🏖️</span>
                 <span>{restingCount} en Descanso</span>
               </div>
             </div>
           </div>
 
-          {/* PANEL DE GUARDIA DOMINICAL ESTÁNDAR (1 Mañana + 1 Intermedio, Resto Descanso) */}
-          <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-blue-50 via-indigo-50/60 to-sky-50 border-2 border-blue-200 shadow-sm space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-blue-200/60">
-              <div className="flex items-center gap-2">
-                <span className="p-1.5 rounded-lg bg-[#1967D2] text-white font-black text-xs shadow-xs">
-                  🛡️ Guardia Estándar
-                </span>
-                <h4 className="font-black text-sm text-[#0B1B3D]">
-                  Selección Rápida de Guardia (Resto a Descanso)
-                </h4>
-              </div>
-              <span className="text-[11px] font-extrabold text-blue-700 bg-white/90 px-2.5 py-1 rounded-full border border-blue-200">
-                1 Mañana (6 AM) + 1 Intermedio (9 AM)
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Selector Técnico Mañana */}
-              <div className="bg-white p-3.5 rounded-xl border border-blue-100 shadow-xs space-y-1.5">
-                <label className="text-xs font-black uppercase text-amber-800 flex items-center gap-1.5">
-                  <span>🌅</span> Técnico Turno Mañana (06:00 AM — 3:00 PM)
-                </label>
-                <select
-                  value={selectedMorningTechId}
-                  onChange={(e) => setSelectedMorningTechId(e.target.value)}
-                  className="w-full h-10 bg-slate-50 border border-slate-200 rounded-lg px-2.5 text-xs font-extrabold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
-                >
-                  <option value="">-- Seleccionar Técnico Mañana --</option>
-                  {technicians.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name} (Habitual: {t.defaultShift || "Sin turno"}) {t.campus ? `- ${t.campus.name}` : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Selector Técnico Intermedio */}
-              <div className="bg-white p-3.5 rounded-xl border border-blue-100 shadow-xs space-y-1.5">
-                <label className="text-xs font-black uppercase text-cyan-800 flex items-center gap-1.5">
-                  <span>⛅</span> Técnico Turno Intermedio (09:00 AM — 6:00 PM)
-                </label>
-                <select
-                  value={selectedIntermediateTechId}
-                  onChange={(e) => setSelectedIntermediateTechId(e.target.value)}
-                  className="w-full h-10 bg-slate-50 border border-slate-200 rounded-lg px-2.5 text-xs font-extrabold text-slate-800 outline-none focus:ring-2 focus:ring-[#1967D2]"
-                >
-                  <option value="">-- Seleccionar Técnico Intermedio --</option>
-                  {technicians.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name} (Habitual: {t.defaultShift || "Sin turno"}) {t.campus ? `- ${t.campus.name}` : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <div className="flex flex-wrap gap-2.5">
-                <Button
-                  type="button"
-                  onClick={applyGuardiaDominical}
-                  className="bg-[#1967D2] hover:bg-blue-800 text-white font-black text-xs h-10 px-4 rounded-xl shadow-md shadow-blue-500/20 flex items-center gap-2"
-                >
-                  <Zap size={15} />
-                  ⚡ Aplicar Guardia (Resto a Descanso)
-                </Button>
-
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={applyAllDescanso}
-                  className="bg-white border-slate-200 hover:bg-slate-100 text-slate-700 font-bold text-xs h-10 px-3.5 rounded-xl flex items-center gap-1.5"
-                >
-                  <span>🏖️</span>
-                  Poner a Todos en Descanso
-                </Button>
-              </div>
-
-              <div className="flex flex-wrap gap-1.5">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={applyStandardSundayRule}
-                  className="text-[11px] font-bold text-amber-800 hover:bg-amber-100/60 h-8 rounded-lg"
-                  title="Pasa los técnicos de la tarde a Intermedio (9 AM), mantiene Mañana en Mañana (6 AM)"
-                >
-                  Tarde ➔ Intermedio
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={applyAllToIntermediate}
-                  className="text-[11px] font-bold text-blue-800 hover:bg-blue-100/60 h-8 rounded-lg"
-                  title="Pasa todos los técnicos diurnos a Intermedio"
-                >
-                  Todos a Intermedio
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={resetToDefaultProfileShifts}
-                  className="text-[11px] font-bold text-slate-600 hover:bg-slate-200 h-8 rounded-lg"
-                  title="Restablece turnos según el perfil habitual"
-                >
-                  <RefreshCw size={12} className="mr-1" /> Base
-                </Button>
-              </div>
+          {/* Barra de Acciones Rápidas y Plantillas */}
+          <div className="flex flex-wrap items-center justify-between gap-2.5 px-1">
+            <span className="text-xs font-black uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
+              <Sparkles size={14} className="text-amber-500" /> Plantillas y Acciones Rápidas:
+            </span>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={applyTypicalSundayPreset}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs h-9 px-3.5 rounded-xl shadow-xs flex items-center gap-1.5"
+                title="Configura Villa (2 técnicos) y Norte (2 técnicos con apoyo de Ate). Sede Ate vacía y resto a descanso"
+              >
+                <Zap size={14} />
+                Plantilla Típica (Villa 2, Norte 2 c/ apoyo Ate, Ate vacía)
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={activateAllCampuses}
+                className="bg-white border-slate-200 hover:bg-slate-50 text-slate-700 font-bold text-xs h-9 px-3 rounded-xl flex items-center gap-1"
+              >
+                <Building2 size={13} />
+                Activar Todas las Sedes
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={applyAllDescanso}
+                className="bg-white border-slate-200 hover:bg-slate-50 text-slate-700 font-bold text-xs h-9 px-3 rounded-xl flex items-center gap-1"
+              >
+                <span>🏖️</span>
+                Todos a Descanso
+              </Button>
             </div>
           </div>
 
-          {/* Tabla de Técnicos (Permite ajustes individuales para casos excepcionales) */}
+          {/* TARJETAS DE SEDES: CONFIGURACIÓN Y ASIGNACIÓN DE TÉCNICOS */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {campuses.map((campus) => {
+              const isCampusActive = activeCampuses[campus.id] ?? false
+              // Técnicos asignados a trabajar en esta sede este domingo
+              const assignedTechs = technicians.filter(
+                (t) => sundayAssignments[t.id]?.campusId === campus.id && sundayAssignments[t.id]?.shift !== Shift.DESCANSO
+              )
+
+              return (
+                <div
+                  key={campus.id}
+                  className={`rounded-2xl border-2 transition-all p-4 flex flex-col justify-between ${
+                    isCampusActive
+                      ? "bg-white border-blue-200 shadow-md shadow-blue-500/5 ring-1 ring-blue-100"
+                      : "bg-slate-50/70 border-slate-200/80 opacity-85"
+                  }`}
+                >
+                  <div className="space-y-3">
+                    {/* Encabezado de la Sede */}
+                    <div className="flex items-center justify-between pb-2.5 border-b border-slate-100">
+                      <div className="flex items-center gap-2">
+                        <div className={`p-2 rounded-xl text-white font-black shrink-0 ${
+                          isCampusActive ? "bg-[#1967D2]" : "bg-slate-400"
+                        }`}>
+                          <Building2 size={16} />
+                        </div>
+                        <div>
+                          <h4 className="font-black text-sm text-slate-900 leading-tight">
+                            {campus.name}
+                          </h4>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                            {isCampusActive
+                              ? `${assignedTechs.length} ${assignedTechs.length === 1 ? "técnico asignado" : "técnicos asignados"}`
+                              : "Sin actividad este domingo"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => toggleCampusActivity(campus.id)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 border ${
+                            isCampusActive
+                              ? "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200"
+                              : "bg-white text-slate-600 border-slate-200 hover:bg-blue-50 hover:text-[#1967D2] hover:border-blue-200 shadow-xs"
+                          }`}
+                          title={isCampusActive ? "Clic para marcar esta sede sin actividad (vacía)" : "Clic para activar esta sede"}
+                        >
+                          {isCampusActive ? (
+                            <>
+                              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                              <span>Activa</span>
+                            </>
+                          ) : (
+                            <>
+                              <span>⚪</span>
+                              <span>Activar Sede</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Contenido cuando la sede está activa */}
+                    {isCampusActive ? (
+                      <div className="space-y-2.5">
+                        {assignedTechs.length === 0 ? (
+                          <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-200/60 text-amber-900 text-xs font-medium space-y-1">
+                            <p className="font-extrabold flex items-center gap-1.5 text-amber-950">
+                              <AlertCircle size={14} className="text-amber-600 shrink-0" />
+                              Sede activa sin técnicos asignados
+                            </p>
+                            <p className="text-[11px] text-amber-800">
+                              Haz clic en <strong>"+ Asignar Técnico"</strong> o en <strong>"1 Mañana + 1 Tarde"</strong> para designar al personal de guardia.
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {assignedTechs.map((t, idx) => {
+                              const assignInfo = sundayAssignments[t.id]
+                              const isSupport = t.campus?.id && t.campus.id !== campus.id
+
+                              return (
+                                <div
+                                  key={t.id}
+                                  className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-2 transition-all hover:bg-slate-100/60"
+                                >
+                                  {/* Fila Selección de Técnico */}
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-1.5 mb-1">
+                                        <span className="text-[10px] font-black uppercase text-slate-500">
+                                          Técnico #{idx + 1}
+                                        </span>
+                                        {isSupport && (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-md bg-amber-100 text-amber-900 text-[10px] font-black border border-amber-300">
+                                            <ArrowRightLeft size={10} />
+                                            Apoyo desde {t.campus?.name}
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      <select
+                                        value={t.id}
+                                        onChange={(e) => replaceTechInCampus(t.id, e.target.value, campus.id)}
+                                        className="w-full h-9 bg-white border border-slate-200 font-extrabold text-xs text-slate-800 rounded-lg px-2 outline-none focus:ring-2 focus:ring-[#1967D2]"
+                                      >
+                                        <optgroup label={`Personal habitual de ${campus.name}`}>
+                                          {technicians
+                                            .filter((tech) => tech.campus?.id === campus.id)
+                                            .map((tech) => {
+                                              const otherAssign = sundayAssignments[tech.id]
+                                              const isWorkingElsewhere =
+                                                otherAssign?.shift !== Shift.DESCANSO &&
+                                                otherAssign?.campusId !== campus.id
+                                              return (
+                                                <option key={tech.id} value={tech.id}>
+                                                  {tech.name} (Habitual: {tech.defaultShift || "Sin turno"})
+                                                  {isWorkingElsewhere ? " [Asignado en otra sede]" : ""}
+                                                </option>
+                                              )
+                                            })}
+                                        </optgroup>
+                                        <optgroup label="Personal de Otras Sedes (Apoyo / Rotación)">
+                                          {technicians
+                                            .filter((tech) => tech.campus?.id !== campus.id)
+                                            .map((tech) => {
+                                              const otherAssign = sundayAssignments[tech.id]
+                                              const isWorkingElsewhere =
+                                                otherAssign?.shift !== Shift.DESCANSO &&
+                                                otherAssign?.campusId !== campus.id
+                                              return (
+                                                <option key={tech.id} value={tech.id}>
+                                                  {tech.name} (Base: {tech.campus?.name || "Sin sede"})
+                                                  {isWorkingElsewhere ? " [Asignado en otra sede]" : ""}
+                                                </option>
+                                              )
+                                            })}
+                                        </optgroup>
+                                      </select>
+                                    </div>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => unassignTech(t.id)}
+                                      className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition-colors self-end"
+                                      title="Quitar técnico de esta sede (pasa a descanso)"
+                                    >
+                                      <Trash2 size={15} />
+                                    </button>
+                                  </div>
+
+                                  {/* Fila Selección de Turno y Horario */}
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    {[
+                                      { shift: Shift.MANANA, label: "Mañana", entry: "06:00", icon: "🌅" },
+                                      { shift: Shift.INTERMEDIO, label: "Interm. 9 AM", entry: "09:00", icon: "⛅" },
+                                      { shift: Shift.INTERMEDIO, label: "Interm. 10 AM", entry: "10:00", icon: "⛅" },
+                                      { shift: Shift.TARDE, label: "Tarde", entry: "13:00", icon: "🌆" },
+                                    ].map((opt, sIdx) => {
+                                      const isSel =
+                                        assignInfo.shift === opt.shift && assignInfo.expectedEntryTime === opt.entry
+                                      return (
+                                        <button
+                                          key={`${opt.shift}-${opt.entry}-${sIdx}`}
+                                          type="button"
+                                          onClick={() => assignTechToCampus(t.id, campus.id, opt.shift, opt.entry)}
+                                          className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 ${
+                                            isSel
+                                              ? "bg-[#1967D2] text-white border-[#1967D2] shadow-xs font-black ring-1 ring-blue-300 scale-105"
+                                              : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
+                                          }`}
+                                        >
+                                          <span>{opt.icon}</span>
+                                          <span>{opt.label}</span>
+                                        </button>
+                                      )
+                                    })}
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      /* Vista cuando la sede está vacía / sin actividad */
+                      <div className="p-4 rounded-xl bg-slate-100/80 border border-dashed border-slate-200 text-center space-y-1.5">
+                        <p className="text-xs font-black text-slate-600">
+                          Sede Vacía / Sin Actividad este Domingo
+                        </p>
+                        <p className="text-[11px] text-slate-500 max-w-sm mx-auto leading-relaxed">
+                          No se requiere personal en esta sede. Sus técnicos habituales descansarán o podrán apoyar en las sedes activas si son seleccionados.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Acciones de la Tarjeta al pie */}
+                  {isCampusActive && (
+                    <div className="flex flex-wrap items-center gap-2 pt-3 mt-3 border-t border-slate-100">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          // Buscar primer técnico disponible en descanso
+                          const availableTech = technicians.find(
+                            (tech) => !sundayAssignments[tech.id] || sundayAssignments[tech.id].shift === Shift.DESCANSO
+                          )
+                          if (!availableTech) {
+                            toast.warning("Todos los técnicos ya están asignados a una sede.")
+                            return
+                          }
+                          assignTechToCampus(availableTech.id, campus.id, Shift.MANANA, "06:00")
+                        }}
+                        className="bg-white border-blue-200 hover:bg-blue-50 text-[#1967D2] font-black text-xs h-8 px-2.5 rounded-lg flex items-center gap-1 shadow-xs"
+                      >
+                        <Plus size={13} /> Asignar Técnico
+                      </Button>
+
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => quickAssignMorningAndAfternoon(campus.id)}
+                        className="text-[11px] font-extrabold text-blue-800 hover:bg-blue-100/60 h-8 px-2.5 rounded-lg flex items-center gap-1"
+                        title="Asigna 1 técnico a la Mañana (06:00) y 1 técnico a la Tarde (13:00)"
+                      >
+                        <Zap size={12} className="text-amber-500" /> 1 Mañana + 1 Tarde
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+
+          {/* RESUMEN DE PERSONAL EN DESCANSO DOMINICAL */}
+          <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/90 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-black uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+                <span>🏖️</span> Personal que pasa a DÍA DE DESCANSO este Domingo ({restingCount})
+              </span>
+              <span className="text-[11px] font-medium text-slate-500">
+                Los no seleccionados pasan automáticamente a descanso
+              </span>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {technicians
+                .filter((t) => !sundayAssignments[t.id] || sundayAssignments[t.id].shift === Shift.DESCANSO)
+                .map((t) => (
+                  <span
+                    key={t.id}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-white text-slate-700 border border-slate-200 shadow-xs"
+                  >
+                    <span>🏖️</span>
+                    <span>{t.name}</span>
+                    <span className="text-[10px] text-slate-400 font-normal">
+                      ({t.campus?.name || "Sin sede"})
+                    </span>
+                  </span>
+                ))}
+              {restingCount === 0 && (
+                <span className="text-xs text-slate-400 italic">
+                  Todos los técnicos tienen guardia asignada para este domingo.
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* TABLA TÉCNICO POR TÉCNICO (DETALLE GENERAL Y REAJUSTES RÁPIDOS) */}
           <div className="space-y-2">
             <div className="flex items-center justify-between px-1">
               <span className="text-xs font-black uppercase tracking-wider text-slate-600">
-                Detalle Técnico por Técnico (Edición Individual para Casos Excepcionales)
+                Detalle General de Asignación por Técnico
               </span>
               <span className="text-[11px] text-slate-400 font-medium">
-                Haz clic en cualquier turno para modificarlo individualmente
+                Puedes ajustar turnos y sedes individualmente en cualquier momento
               </span>
             </div>
 
             <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-xs">
-              <div className="max-h-[380px] overflow-y-auto">
+              <div className="max-h-[340px] overflow-y-auto">
                 <table className="w-full text-left border-collapse">
                   <thead className="bg-slate-50 sticky top-0 z-10 border-b border-slate-200 text-[11px] font-black uppercase tracking-wider text-slate-500">
                     <tr>
                       <th className="py-3 px-3">Técnico</th>
-                      <th className="py-3 px-3">Turno Habitual</th>
-                      <th className="py-3 px-3">Asignación para este Domingo</th>
-                      <th className="py-3 px-3">Sede</th>
+                      <th className="py-3 px-3">Sede Base</th>
+                      <th className="py-3 px-3">Turno Dominical Asignado</th>
+                      <th className="py-3 px-3">Sede de Asignación</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs">
@@ -1879,8 +2198,9 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                         expectedEntryTime: "00:00",
                         notes: "Descanso dominical",
                       }
-                      const baseShift = (t.defaultShift as Shift) || Shift.MANANA
                       const isResting = current.shift === Shift.DESCANSO
+                      const isSupport = !isResting && t.campus?.id && t.campus.id !== current.campusId
+                      const assignedCampusObj = campuses.find((c) => c.id === current.campusId)
 
                       return (
                         <tr 
@@ -1906,16 +2226,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                           </td>
 
                           <td className="py-3 px-3">
-                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                              baseShift === Shift.MANANA
-                                ? "bg-amber-50 text-amber-700 border border-amber-200"
-                                : baseShift === Shift.INTERMEDIO
-                                ? "bg-cyan-50 text-cyan-700 border border-cyan-200"
-                                : baseShift === Shift.TARDE
-                                ? "bg-purple-50 text-purple-700 border border-purple-200"
-                                : "bg-indigo-50 text-indigo-700 border border-indigo-200"
-                            }`}>
-                              {baseShift === Shift.MANANA ? "🌅 Mañana" : baseShift === Shift.TARDE ? "🌆 Tarde" : baseShift === Shift.INTERMEDIO ? "⛅ Interm." : "🌙 Noche"}
+                            <span className="text-xs font-bold text-slate-700">
+                              {t.campus?.name || "Sin sede asignada"}
                             </span>
                           </td>
 
@@ -1934,17 +2246,21 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                                     key={`${opt.shift}-${opt.entry}-${idx}`}
                                     type="button"
                                     onClick={() => {
+                                      const isNowResting = opt.shift === Shift.DESCANSO
                                       setSundayAssignments((prev) => ({
                                         ...prev,
                                         [t.id]: {
                                           ...current,
                                           shift: opt.shift,
                                           expectedEntryTime: opt.entry,
-                                          notes: opt.shift === Shift.DESCANSO 
+                                          notes: isNowResting
                                             ? "Descanso dominical" 
                                             : `Guardia especial de Domingo (${opt.label})`,
                                         },
                                       }))
+                                      if (!isNowResting && current.campusId) {
+                                        setActiveCampuses((prev) => ({ ...prev, [current.campusId]: true }))
+                                      }
                                     }}
                                     className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 ${
                                       isSelected
@@ -1960,14 +2276,19 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                                 )
                               })}
                             </div>
-                            <div className="mt-1">
+                            <div className="mt-1 flex items-center gap-2">
                               {isResting ? (
                                 <span className="text-[9px] font-extrabold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full inline-flex items-center gap-1 border border-slate-200">
                                   <span>🏖️</span> En Descanso Dominical
                                 </span>
                               ) : (
                                 <span className="text-[9px] font-black text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full inline-flex items-center gap-1 border border-emerald-200">
-                                  <span>🟢</span> Asignado a Guardia: {current.shift} ({current.expectedEntryTime})
+                                  <span>🟢</span> Asignado: {current.shift} ({current.expectedEntryTime}) en {assignedCampusObj?.name}
+                                </span>
+                              )}
+                              {isSupport && (
+                                <span className="text-[9px] font-black text-amber-900 bg-amber-100 px-2 py-0.5 rounded-full inline-flex items-center gap-1 border border-amber-300">
+                                  <ArrowRightLeft size={9} /> Apoyo desde {t.campus?.name}
                                 </span>
                               )}
                             </div>
@@ -1978,13 +2299,15 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                               value={current.campusId}
                               disabled={isResting}
                               onChange={(e) => {
+                                const newCampusId = e.target.value
                                 setSundayAssignments((prev) => ({
                                   ...prev,
                                   [t.id]: {
                                     ...current,
-                                    campusId: e.target.value,
+                                    campusId: newCampusId,
                                   },
                                 }))
+                                setActiveCampuses((prev) => ({ ...prev, [newCampusId]: true }))
                               }}
                               className={`h-8 text-xs font-bold bg-white border border-slate-200 rounded-lg px-2 text-slate-700 outline-none focus:ring-1 focus:ring-blue-500 ${
                                 isResting ? "opacity-50 cursor-not-allowed" : ""
@@ -2027,7 +2350,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                   <Loader2 className="animate-spin mr-2" size={18} /> Guardando Turnos...
                 </>
               ) : (
-                `Guardar Programación Dominical (${workingCount} trabajando, ${restingCount} en descanso)`
+                `Guardar Programación Dominical (${workingCount} trabajando en ${activeCampusesCount} sedes, ${restingCount} en descanso)`
               )}
             </Button>
           </div>
