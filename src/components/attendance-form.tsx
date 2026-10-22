@@ -321,8 +321,8 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       return
     }
 
-    if (showExtraFields && !data.courseId) {
-      toast.error("Por favor seleccione el Curso de simulación")
+    if (showExtraFields && (!data.campusId || !data.courseId)) {
+      toast.error("Por favor seleccione Sede y Curso")
       return
     }
 
@@ -359,7 +359,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       detectedCampusName = geoResult.detectedCampusName || undefined
     }
 
-    const targetCampusName = detectedCampusName || technicianAssignment?.campusName || validatedUser?.campusName || "Campus Villa"
+    const targetCampusName = data.campusId || detectedCampusName || technicianAssignment?.campusName || validatedUser?.campusName || "Campus Villa"
     
     // Si está offline o en modo contingencia local por red inestable
     if (isOffline || isContingencyMode) {
@@ -524,7 +524,38 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
           />
 
           {showExtraFields && (
-            <div className="space-y-2 animate-fade-in-up">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-fade-in-up">
+              <FormField
+                control={form.control}
+                name="campusId"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">
+                      Sede
+                    </FormLabel>
+                    <Select
+                      key={`campus-select-${selectResetKey}`}
+                      value={field.value || ""}
+                      onValueChange={(val) => field.onChange(val || undefined)}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="h-16 text-lg font-normal bg-white border-2 border-slate-200 text-slate-800 rounded-xl focus:ring-[#1967D2] focus:border-[#1967D2]">
+                          <SelectValue placeholder="Seleccione Sede" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent alignItemWithTrigger={false} side="bottom" sideOffset={4} className="bg-white text-slate-800 border-slate-200 rounded-xl text-xl max-h-[300px] overflow-y-auto">
+                        {availableCampuses.map((cName) => (
+                          <SelectItem key={cName} value={cName} className="py-3">
+                            {cName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
               <FormField
                 control={form.control}
                 name="courseId"

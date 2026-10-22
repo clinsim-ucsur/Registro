@@ -241,7 +241,9 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         return { success: false, message: geoResult.error || "Ubicación fuera del perímetro permitido." }
       }
 
-      if (geoResult.detectedCampusName) {
+      if (data.campusId && data.campusId.trim() !== '') {
+        resolvedCampusName = data.campusId.trim()
+      } else if (geoResult.detectedCampusName) {
         resolvedCampusName = geoResult.detectedCampusName
       }
     }
