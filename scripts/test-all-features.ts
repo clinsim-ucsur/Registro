@@ -1,4 +1,5 @@
 import { PrismaClient, Shift, Role, RecordStatus } from "@prisma/client"
+import { detectAndValidateCampus } from "../src/lib/geofence"
 
 const prisma = new PrismaClient()
 
@@ -277,11 +278,26 @@ async function main() {
   console.log("\n--- GRUPO 4: Verificación de Reglas y Catálogos en Base de Datos ---")
   let dbTechnicians: any[] = []
   try {
-    const [campuses, toleranceRules, technicians] = await Promise.all([
-      prisma.campus.findMany(),
-      prisma.toleranceRule.findMany(),
-      prisma.user.findMany({ where: { role: Role.TECNICO } }),
-    ])
+    let campuses: any[] = []
+    let toleranceRules: any[] = []
+    let technicians: any[] = []
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await Promise.all([
+          prisma.campus.findMany(),
+          prisma.toleranceRule.findMany(),
+          prisma.user.findMany({ where: { role: Role.TECNICO } }),
+        ])
+        campuses = res[0]
+        toleranceRules = res[1]
+        technicians = res[2]
+        break
+      } catch (e) {
+        if (attempt === 3) throw e
+        await new Promise((r) => setTimeout(r, 1200))
+      }
+    }
     dbTechnicians = technicians
 
     assert(campuses.length >= 3, `Sedes registradas en BD: ${campuses.map(c => c.name).join(", ")}`)
@@ -450,6 +466,36 @@ async function main() {
       "Validación Unificada: Resuelve usuario, estado del día y turno en 1 sola llamada (reducción de latencia 66%)"
     )
   }
+
+  // ----------------------------------------------------
+  // TEST GRUPO 8: VALIDACIÓN MULTISEDE Y DETECCIÓN AUTOMÁTICA POR GPS
+  // ----------------------------------------------------
+  console.log("\n--- GRUPO 8: Validación Multisede y Detección Automática por GPS ---")
+
+  // 8.1 Marcación en Campus Villa (incluso con base en Ate): debe ser válido y auto-detectar Villa
+  const villaCoords = { lat: -12.2038, lng: -76.9738, accuracy: 20 }
+  const resVilla = detectAndValidateCampus(villaCoords, [])
+  assert(resVilla.allowed && resVilla.detectedCampusName === "Campus Villa", "Multisede: Coordenadas en Campus Villa son aprobadas y detectan 'Campus Villa'")
+
+  // 8.2 Marcación en Campus Norte: debe detectar Campus Norte
+  const norteCoords = { lat: -11.9705, lng: -77.0685, accuracy: 15 }
+  const resNorte = detectAndValidateCampus(norteCoords, [])
+  assert(resNorte.allowed && resNorte.detectedCampusName === "Campus Norte", "Multisede: Coordenadas en Campus Norte son aprobadas y detectan 'Campus Norte'")
+
+  // 8.3 Marcación en Campus Aramburú: debe detectar Campus Aramburú
+  const aramburuCoords = { lat: -12.1009, lng: -77.0253, accuracy: 25 }
+  const resAramburu = detectAndValidateCampus(aramburuCoords, [])
+  assert(resAramburu.allowed && resAramburu.detectedCampusName === "Campus Aramburú", "Multisede: Coordenadas en Campus Aramburú son aprobadas y detectan 'Campus Aramburú'")
+
+  // 8.4 Marcación en Campus Ate: debe detectar Campus Ate
+  const ateCoords = { lat: -12.0287, lng: -76.8992, accuracy: 18 }
+  const resAte = detectAndValidateCampus(ateCoords, [])
+  assert(resAte.allowed && resAte.detectedCampusName === "Campus Ate", "Multisede: Coordenadas en Campus Ate son aprobadas y detectan 'Campus Ate'")
+
+  // 8.5 Marcación fuera de rango (ej. Plaza Mayor de Lima): debe ser rechazada con indicación de la sede más cercana
+  const plazaMayorCoords = { lat: -12.04318, lng: -77.02824, accuracy: 20 }
+  const resFuera = detectAndValidateCampus(plazaMayorCoords, [])
+  assert(!resFuera.allowed && !!resFuera.error?.includes("Fuera de rango"), "Multisede: Ubicación fuera de las 4 sedes es rechazada con mensaje de error claro")
 
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)

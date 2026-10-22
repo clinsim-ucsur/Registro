@@ -5,7 +5,7 @@ import { PrismaClient, Role, RecordType, RecordStatus } from "@prisma/client"
 
 import prisma from "@/lib/prisma"
 import { limaMinutesOfDay, limaDayOfWeek } from "@/lib/timezone"
-import { checkGeofence } from "@/lib/geofence"
+import { checkGeofence, detectAndValidateCampus } from "@/lib/geofence"
 import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
 import { Shift } from "@prisma/client"
 
@@ -221,24 +221,42 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       }
     }
 
-    // Resolver Campus de marcación:
-    // 1. data.campusId si vino del formulario (seleccionado o auto-asignado)
-    // 2. Si no vino, pero hay cronograma hoy -> usar campus del cronograma
-    // 3. Si no hay cronograma, pero el usuario tiene campus base -> usar su campus
-    let resolvedCampusName = data.campusId && data.campusId.trim() !== '' ? data.campusId.trim() : null
-    if (!resolvedCampusName && scheduledShift?.campus?.name) {
-      resolvedCampusName = scheduledShift.campus.name
-    } else if (!resolvedCampusName && user.campus?.name) {
-      resolvedCampusName = user.campus.name
+    // Detección y validación multisede por geolocalización (GPS)
+    let resolvedCampusName: string | null = null
+
+    if (!data.isOfflineSync && data.location) {
+      let allCampuses: any[] = []
+      try {
+        allCampuses = await prisma.campus.findMany({
+          select: { name: true, geoEnforced: true, latitude: true, longitude: true, radiusMeters: true },
+        })
+      } catch (err) {
+        console.warn("No se pudo consultar sedes desde BD para geocerca, usando catálogo oficial:", err)
+      }
+
+      // Validación multisede: permite marcar si está en CUALQUIERA de las 4 sedes
+      // y detecta automáticamente en cuál de las 4 sedes se encuentra
+      const geoResult = detectAndValidateCampus(data.location, allCampuses)
+      if (!geoResult.allowed) {
+        return { success: false, message: geoResult.error || "Ubicación fuera del perímetro permitido." }
+      }
+
+      if (geoResult.detectedCampusName) {
+        resolvedCampusName = geoResult.detectedCampusName
+      }
     }
 
-    // Límite por geolocalización según la configuración de la sede
-    if (!data.isOfflineSync) {
-      const allCampuses = await prisma.campus.findMany({
-        select: { name: true, geoEnforced: true, latitude: true, longitude: true, radiusMeters: true },
-      })
-      const geoError = checkGeofence(data.location, allCampuses, resolvedCampusName || undefined)
-      if (geoError) return { success: false, message: geoError }
+    // Fallbacks si no hubo coordenadas GPS o en modo contingencia / offline:
+    if (!resolvedCampusName) {
+      if (data.campusId && data.campusId.trim() !== '') {
+        resolvedCampusName = data.campusId.trim()
+      } else if (scheduledShift?.campus?.name) {
+        resolvedCampusName = scheduledShift.campus.name
+      } else if (user.campus?.name) {
+        resolvedCampusName = user.campus.name
+      } else {
+        resolvedCampusName = "Campus Villa"
+      }
     }
 
     // Resolver Campus ID en BD
@@ -406,7 +424,7 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
 
     return { 
       success: true, 
-      message: `✓ Se registró exitosamente su ${data.type.toLowerCase()}: ${user.name}`
+      message: `✓ Se registró exitosamente su ${data.type.toLowerCase()}: ${user.name} (${resolvedCampusName})`
     }
     
   } catch (error) {

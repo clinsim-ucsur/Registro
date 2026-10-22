@@ -10,15 +10,14 @@ import { getTodayTechnicianAssignmentAction } from "@/actions/schedules"
 import { toast } from "sonner"
 import {
   Loader2, LogIn, LogOut, Search, UserCheck, CheckCircle2, WifiOff,
-  Wifi, RefreshCw, ShieldCheck, AlertCircle, AlertTriangle,
-  GraduationCap, Wrench, HeartPulse, Sparkles
+  Wifi, RefreshCw, ShieldCheck, AlertCircle, AlertTriangle, MapPin
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { checkGeofence, isGeoActive, type GeoCampus } from "@/lib/geofence"
+import { checkGeofence, detectAndValidateCampus, isGeoActive, type GeoCampus } from "@/lib/geofence"
 
 const formSchema = z.object({
   role: z.nativeEnum(Role, { required_error: "Seleccione un rol" }),
@@ -322,27 +321,26 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       return
     }
 
-    if (showExtraFields && (!data.campusId || !data.courseId)) {
-      toast.error("Seleccione Sede y Curso")
+    if (showExtraFields && !data.courseId) {
+      toast.error("Por favor seleccione el Curso de simulación")
       return
     }
 
     setIsSubmitting(type)
 
     let location: { lat: number; lng: number; accuracy: number } | undefined
+    let detectedCampusName: string | undefined = undefined
+
     const geoCampuses: GeoCampus[] = (propCampuses ?? []).map((c) => ({
       name: c.name,
       geoEnforced: !!c.geoEnforced,
       latitude: c.latitude ?? null,
       longitude: c.longitude ?? null,
-      radiusMeters: c.radiusMeters ?? 300,
+      radiusMeters: c.radiusMeters ?? 500,
     }))
-    const targetCampusName = data.campusId || technicianAssignment?.campusName || validatedUser?.campusName || undefined
 
-    const needsGeo = targetCampusName
-      ? geoCampuses.some((c) => c.name.toLowerCase() === targetCampusName.toLowerCase() && isGeoActive(c))
-      : geoCampuses.some(isGeoActive)
-    if (needsGeo) {
+    // Validación y detección multisede por GPS para todos los roles
+    if (!isOffline && !isContingencyMode) {
       try {
         location = await getLocation()
       } catch (e: any) {
@@ -350,13 +348,18 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         setIsSubmitting(null)
         return
       }
-      const geoError = checkGeofence(location, geoCampuses, targetCampusName)
-      if (geoError) {
-        toast.error(geoError, { duration: 7000 })
+
+      const geoResult = detectAndValidateCampus(location, geoCampuses)
+      if (!geoResult.allowed) {
+        toast.error(geoResult.error || "Ubicación fuera del perímetro de las sedes autorizadas.", { duration: 8000 })
         setIsSubmitting(null)
         return
       }
+
+      detectedCampusName = geoResult.detectedCampusName || undefined
     }
+
+    const targetCampusName = detectedCampusName || technicianAssignment?.campusName || validatedUser?.campusName || "Campus Villa"
     
     // Si está offline o en modo contingencia local por red inestable
     if (isOffline || isContingencyMode) {
@@ -467,55 +470,35 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       <Form {...form}>
         <form className="space-y-8">
           
-          {/* Selector de Rol de Usuario con sombreado e indicación de rol activo */}
+          {/* Selector de Rol de Usuario limpio con color diferencial por rol */}
           <FormField
             control={form.control}
             name="role"
             render={({ field }) => (
-              <FormItem className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <FormLabel className="text-slate-600 text-xs font-black uppercase tracking-widest flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                    Seleccione su Rol de Usuario
-                  </FormLabel>
-                  <span className="text-[11px] font-bold text-slate-400">
-                    Paso 1 de 2
-                  </span>
-                </div>
+              <FormItem className="space-y-2">
+                <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">
+                  Rol del Usuario
+                </FormLabel>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
+                <div className="grid grid-cols-3 gap-3">
                   {[
                     {
                       value: Role.DOCENTE,
                       title: "Docente",
-                      desc: "Profesores / Instructores",
-                      icon: GraduationCap,
-                      activeGradient: "from-blue-600 via-[#1967D2] to-blue-800 text-white shadow-xl shadow-blue-500/35 border-blue-600 ring-4 ring-blue-100",
-                      activeBadge: "bg-white text-blue-800",
-                      inactiveHover: "hover:border-blue-400 hover:bg-blue-50/40 hover:text-blue-900",
+                      activeClass: "bg-[#1967D2] text-white border-[#1967D2] shadow-sm",
                     },
                     {
                       value: Role.TECNICO,
                       title: "Técnico",
-                      desc: "Personal Técnico / Soporte",
-                      icon: Wrench,
-                      activeGradient: "from-indigo-600 via-indigo-700 to-indigo-900 text-white shadow-xl shadow-indigo-500/35 border-indigo-600 ring-4 ring-indigo-100",
-                      activeBadge: "bg-white text-indigo-900",
-                      inactiveHover: "hover:border-indigo-400 hover:bg-indigo-50/40 hover:text-indigo-900",
+                      activeClass: "bg-indigo-600 text-white border-indigo-600 shadow-sm",
                     },
                     {
                       value: Role.PACIENTE_SIMULADO,
                       title: "Paciente Sim.",
-                      fullTitle: "Paciente Simulado",
-                      desc: "Actores y Evaluaciones",
-                      icon: HeartPulse,
-                      activeGradient: "from-emerald-600 via-emerald-700 to-teal-800 text-white shadow-xl shadow-emerald-500/35 border-emerald-600 ring-4 ring-emerald-100",
-                      activeBadge: "bg-white text-emerald-900",
-                      inactiveHover: "hover:border-emerald-400 hover:bg-emerald-50/40 hover:text-emerald-900",
+                      activeClass: "bg-emerald-600 text-white border-emerald-600 shadow-sm",
                     },
                   ].map((r) => {
                     const isSelected = watchRole === r.value
-                    const IconComp = r.icon
                     return (
                       <button
                         key={r.value}
@@ -524,159 +507,32 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                           field.onChange(r.value)
                           handleRoleChange(r.value)
                         }}
-                        className={`relative flex flex-col justify-between p-4 md:p-5 rounded-2xl border-2 text-left transition-all duration-300 cursor-pointer ${
+                        className={`w-full py-4 px-2 rounded-xl border-2 text-center text-sm md:text-base font-bold transition-all duration-200 cursor-pointer ${
                           isSelected
-                            ? `bg-gradient-to-br ${r.activeGradient} scale-[1.02]`
-                            : `bg-slate-50/90 text-slate-700 border-slate-200/90 hover:bg-white ${r.inactiveHover} shadow-xs`
+                            ? `${r.activeClass}`
+                            : "bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200"
                         }`}
                       >
-                        <div className="flex items-start justify-between gap-2 mb-3">
-                          <div
-                            className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
-                              isSelected
-                                ? "bg-white/20 text-white shadow-xs"
-                                : "bg-white text-slate-500 border border-slate-200 shadow-xs"
-                            }`}
-                          >
-                            <IconComp className="w-5 h-5" />
-                          </div>
-
-                          {isSelected ? (
-                            <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider shadow-sm ${r.activeBadge}`}>
-                              <CheckCircle2 className="w-3 h-3" /> Activo
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-bold text-slate-400 opacity-60">
-                              Seleccionar
-                            </span>
-                          )}
-                        </div>
-
-                        <div>
-                          <div className={`text-base md:text-lg font-black tracking-tight ${isSelected ? "text-white" : "text-slate-800"}`}>
-                            {r.title}
-                          </div>
-                          <div className={`text-xs mt-0.5 line-clamp-1 ${isSelected ? "text-blue-50/90 opacity-90 font-medium" : "text-slate-500"}`}>
-                            {r.desc}
-                          </div>
-                        </div>
+                        {r.title}
                       </button>
                     )
                   })}
                 </div>
-
-                {/* Banner de confirmación visual del rol activo */}
-                {(() => {
-                  const roleConfigMap: Partial<Record<Role, {
-                    name: string
-                    bg: string
-                    iconBg: string
-                    accent: string
-                    badge: string
-                    icon: any
-                  }>> = {
-                    [Role.DOCENTE]: {
-                      name: "Docente",
-                      bg: "bg-blue-50/90 border-blue-200 text-blue-950",
-                      iconBg: "bg-blue-600 text-white shadow-blue-500/30",
-                      accent: "text-[#1967D2]",
-                      badge: "bg-[#1967D2] text-white",
-                      icon: GraduationCap,
-                    },
-                    [Role.TECNICO]: {
-                      name: "Personal Técnico",
-                      bg: "bg-indigo-50/90 border-indigo-200 text-indigo-950",
-                      iconBg: "bg-indigo-600 text-white shadow-indigo-500/30",
-                      accent: "text-indigo-700",
-                      badge: "bg-indigo-600 text-white",
-                      icon: Wrench,
-                    },
-                    [Role.PACIENTE_SIMULADO]: {
-                      name: "Paciente Simulado",
-                      bg: "bg-emerald-50/90 border-emerald-200 text-emerald-950",
-                      iconBg: "bg-emerald-600 text-white shadow-emerald-500/30",
-                      accent: "text-emerald-700",
-                      badge: "bg-emerald-600 text-white",
-                      icon: HeartPulse,
-                    },
-                  }
-
-                  const activeConfig = roleConfigMap[watchRole] || {
-                    name: "Docente",
-                    bg: "bg-blue-50/90 border-blue-200 text-blue-950",
-                    iconBg: "bg-blue-600 text-white shadow-blue-500/30",
-                    accent: "text-[#1967D2]",
-                    badge: "bg-[#1967D2] text-white",
-                    icon: GraduationCap,
-                  }
-
-                  const ActiveIcon = activeConfig.icon
-
-                  return (
-                    <div className={`flex items-center justify-between p-3.5 rounded-2xl border-2 transition-all duration-300 ${activeConfig.bg}`}>
-                      <div className="flex items-center gap-3">
-                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center shadow-md ${activeConfig.iconBg}`}>
-                          <ActiveIcon className="w-5 h-5" />
-                        </div>
-                        <div>
-                          <div className={`text-[10px] font-black uppercase tracking-wider ${activeConfig.accent}`}>
-                            Modo de Marcación Activo
-                          </div>
-                          <div className="text-sm md:text-base font-extrabold text-slate-900">
-                            Registrando asistencia como: <span className={activeConfig.accent}>{activeConfig.name}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <span className={`hidden sm:inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black shadow-xs ${activeConfig.badge}`}>
-                        <span className="w-2 h-2 rounded-full bg-white animate-pulse" />
-                        Pestaña Activa
-                      </span>
-                    </div>
-                  )
-                })()}
-
                 <FormMessage />
               </FormItem>
             )}
           />
 
           {showExtraFields && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in-up">
-              <FormField
-                control={form.control}
-                name="campusId"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">Sede</FormLabel>
-                    <Select
-                      key={`campus-select-${selectResetKey}`}
-                      value={field.value || ""}
-                      onValueChange={(val) => field.onChange(val || undefined)}
-                    >
-                      <FormControl>
-                        <SelectTrigger className="h-16 text-lg font-normal bg-white border-2 border-slate-200 text-slate-800 rounded-xl focus:ring-[#1967D2] focus:border-[#1967D2]">
-                          <SelectValue placeholder="Seleccione Sede" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent alignItemWithTrigger={false} side="bottom" sideOffset={4} className="bg-white text-slate-800 border-slate-200 rounded-xl text-xl max-h-[300px] overflow-y-auto">
-                        {availableCampuses.map((cName) => (
-                          <SelectItem key={cName} value={cName} className="py-3">
-                            {cName}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
+            <div className="space-y-2 animate-fade-in-up">
               <FormField
                 control={form.control}
                 name="courseId"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">Curso</FormLabel>
+                    <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">
+                      Curso
+                    </FormLabel>
                     <Select
                       key={`course-select-${selectResetKey}`}
                       value={field.value || ""}
@@ -778,7 +634,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                       <div className="p-4 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200">
                         <div className="flex items-center justify-between flex-wrap gap-2 mb-2">
                           <span className="text-xs font-black uppercase tracking-wider text-[#1967D2] flex items-center gap-1">
-                            📍 Sede Asignada Hoy:
+                            📋 Sede Base / Asignada: {technicianAssignment?.campusName || validatedUser?.campusName || "Campus Villa"}
                           </span>
                           {technicianAssignment?.shift && (
                             <span className="text-[11px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full bg-[#1967D2] text-white">
@@ -787,36 +643,24 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                           )}
                         </div>
 
-                        {/* Selector de sede con valor por defecto la sede asignada */}
-                        <div className="mt-2">
-                          <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block mb-1">
-                            Sede de marcación (cámbiala si estás rotando):
-                          </label>
-                          <Select
-                            value={form.watch("campusId") || technicianAssignment?.campusName || ""}
-                            onValueChange={(val) => form.setValue("campusId", val || undefined)}
-                          >
-                            <SelectTrigger className="h-12 text-base font-bold bg-white border border-blue-200 text-slate-800 rounded-xl focus:ring-[#1967D2]">
-                              <SelectValue placeholder="Seleccione Sede para hoy" />
-                            </SelectTrigger>
-                            <SelectContent alignItemWithTrigger={false} side="bottom" sideOffset={4} className="bg-white text-slate-800 border-slate-200 rounded-xl max-h-[250px] overflow-y-auto">
-                              {availableCampuses.map((cName) => (
-                                <SelectItem key={cName} value={cName} className="py-2.5 font-semibold">
-                                  {cName}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          {technicianAssignment?.source === "SCHEDULE" && (
-                            <p className="text-[10px] text-blue-700 mt-1 font-semibold">
-                              ✓ Asignado por cronograma mensual para hoy.
+                        {/* Indicador de sede por detección automática GPS multisede */}
+                        <div className="mt-2.5 p-3 rounded-xl bg-white/95 border border-blue-200/90 shadow-xs flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-lg bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                            <MapPin className="w-5 h-5" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] font-black uppercase tracking-wider text-blue-700">
+                                Sede por GPS Multisede:
+                              </span>
+                              <span className="text-[10px] font-black bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
+                                Detección Automática
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-600 mt-0.5 leading-snug">
+                              Puedes marcar en cualquiera de las 4 sedes (Villa, Norte, Aramburú o Ate). El sistema identificará y guardará tu sede física por GPS.
                             </p>
-                          )}
-                          {technicianAssignment?.source === "DEFAULT_PROFILE" && (
-                            <p className="text-[10px] text-slate-500 mt-1">
-                              ℹ Sede predeterminada del perfil. Si rotas hoy, cámbiala arriba.
-                            </p>
-                          )}
+                          </div>
                         </div>
 
                         {/* Selector de turno de marcación (por si rota hoy o es domingo) */}
