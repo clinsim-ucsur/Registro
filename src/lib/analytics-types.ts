@@ -26,10 +26,17 @@ export type AnalyticsData = {
   byRole: { role: string; label: string; total: number }[]
   topLate: { userId: string; name: string; dni: string; role: string; tardanzas: number; faltas: number }[]
   campuses: { id: string; name: string }[]
-  registeredStaff: {
+    registeredStaff: {
     total: number
     docentes: number
     tecnicos: number
     pacientes: number
+  }
+  overtime?: {
+    totalRawHours: number
+    totalCountedHours: number
+    minMinutesThreshold: number
+    staffWithOvertimeCount: number
+    topOvertime: { userId: string; name: string; dni: string; role: string; countedHours: number; rawHours: number }[]
   }
 }

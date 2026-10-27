@@ -2,6 +2,7 @@ import prisma from "@/lib/prisma"
 import type { Prisma } from "@prisma/client"
 import type { AnalyticsData } from "@/lib/analytics-types"
 import { addDaysToKey, formatDayLabel, formatDayMonthLabel, limaDayKey, limaHour, startOfLimaDay } from "@/lib/timezone"
+import { computeOvertimeForRecords, DEFAULT_OVERTIME_SETTINGS, type OvertimeSettings } from "@/lib/overtime"
 
 const ROLE_LABELS: Record<string, string> = {
   DOCENTE: "Docentes",
@@ -26,7 +27,7 @@ export async function computeAnalytics({ days, campusId }: { days: number; campu
 
   const campusFilter: Prisma.AttendanceRecordWhereInput = campusId ? { campusId } : {}
 
-  const [records, prevGroups, campuses, allStaffCounts] = await Promise.all([
+  const [records, prevGroups, campuses, allStaffCounts, rawSettings, techSchedules] = await Promise.all([
     prisma.attendanceRecord.findMany({
       where: { timestamp: { gte: from, lt: to }, ...campusFilter },
       select: {
@@ -36,7 +37,7 @@ export async function computeAnalytics({ days, campusId }: { days: number; campu
         userId: true,
         campus: { select: { name: true } },
         course: { select: { name: true } },
-        user: { select: { name: true, dni: true, role: true } },
+        user: { select: { id: true, name: true, dni: true, role: true, defaultShift: true, campus: { select: { name: true } } } },
       },
       orderBy: { timestamp: "asc" },
     }),
@@ -51,6 +52,13 @@ export async function computeAnalytics({ days, campusId }: { days: number; campu
       where: { role: { in: ["DOCENTE", "TECNICO", "PACIENTE_SIMULADO"] } },
       _count: { _all: true },
     }),
+    prisma.systemSetting.findMany({
+      where: { key: { in: ["OVERTIME_MIN_MINUTES", "OVERTIME_ROUNDING_MODE", "OVERTIME_WORKDAY_HOURS"] } },
+    }).catch(() => []),
+    prisma.technicianSchedule.findMany({
+      where: { date: { gte: fromKey, lte: todayKey } },
+      include: { campus: { select: { name: true } } },
+    }).catch(() => []),
   ])
 
   let staffDocentes = 0
@@ -164,6 +172,33 @@ export async function computeAnalytics({ days, campusId }: { days: number; campu
     byHour.push({ hour: `${String(h).padStart(2, "0")}:00`, ...e })
   }
 
+  // ---------- Control de Horas Extras ----------
+  const settingsMap = new Map<string, string>()
+  for (const s of (rawSettings as any[]) || []) {
+    settingsMap.set(s.key, s.value)
+  }
+  const overtimeSettings: OvertimeSettings = {
+    minMinutes: settingsMap.has("OVERTIME_MIN_MINUTES")
+      ? parseInt(settingsMap.get("OVERTIME_MIN_MINUTES")!, 10) || DEFAULT_OVERTIME_SETTINGS.minMinutes
+      : DEFAULT_OVERTIME_SETTINGS.minMinutes,
+    roundingMode: (settingsMap.get("OVERTIME_ROUNDING_MODE") as any) || DEFAULT_OVERTIME_SETTINGS.roundingMode,
+    workdayHours: settingsMap.has("OVERTIME_WORKDAY_HOURS")
+      ? parseInt(settingsMap.get("OVERTIME_WORKDAY_HOURS")!, 10) || DEFAULT_OVERTIME_SETTINGS.workdayHours
+      : DEFAULT_OVERTIME_SETTINGS.workdayHours,
+  }
+
+  const schedMap = new Map<string, { shift: string; expectedEntryTime: string; campusName?: string }>()
+  for (const s of (techSchedules as any[]) || []) {
+    const key = `${s.userId}_${s.date}`
+    schedMap.set(key, {
+      shift: s.shift,
+      expectedEntryTime: s.expectedEntryTime,
+      campusName: s.campus?.name,
+    })
+  }
+
+  const overtimeResult = computeOvertimeForRecords(records, schedMap, overtimeSettings)
+
   return {
     range: { days, fromKey, toKey: todayKey },
     campusId: campusId ?? null,
@@ -209,6 +244,20 @@ export async function computeAnalytics({ days, campusId }: { days: number; campu
       docentes: staffDocentes,
       tecnicos: staffTecnicos,
       pacientes: staffPacientes,
+    },
+    overtime: {
+      totalRawHours: overtimeResult.totalRawHours,
+      totalCountedHours: overtimeResult.totalCountedHours,
+      minMinutesThreshold: overtimeSettings.minMinutes,
+      staffWithOvertimeCount: overtimeResult.totalStaffWithOvertime,
+      topOvertime: overtimeResult.staffSummaries.slice(0, 5).map((s) => ({
+        userId: s.userId,
+        name: s.userName,
+        dni: s.userDni,
+        role: s.role,
+        countedHours: s.totalCountedHours,
+        rawHours: s.totalRawHours,
+      })),
     },
   }
 }

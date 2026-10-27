@@ -26,6 +26,7 @@ import { DashboardSchedules } from "@/components/dashboard/schedules"
 import { ForceChangePasswordModal } from "@/components/dashboard/force-change-password-modal"
 import { getAdminSession } from "@/lib/session"
 import { computeAnalytics } from "@/lib/analytics"
+import { getOvertimeSettingsAction } from "@/actions/overtime"
 
 export default async function DashboardPage() {
   const session = await getAdminSession()
@@ -40,7 +41,7 @@ export default async function DashboardPage() {
     return permissions.includes(moduleId)
   }
 
-  const [records, users, admins, weeklyAnalytics, initialAnalytics, rules, campuses, catalogCampuses, catalogCourses, technicianSchedules] = await Promise.all([
+  const [records, users, admins, weeklyAnalytics, initialAnalytics, rules, campuses, catalogCampuses, catalogCourses, technicianSchedules, overtimeSettings] = await Promise.all([
     prisma.attendanceRecord.findMany({
       orderBy: { timestamp: 'desc' },
       take: 1000,
@@ -105,6 +106,7 @@ export default async function DashboardPage() {
       },
       take: 300,
     }),
+    getOvertimeSettingsAction(),
   ])
 
   // Determinar default tab accesible
@@ -280,7 +282,11 @@ export default async function DashboardPage() {
 
             {hasAccess("reports") && (
               <TabsContent value="reports" className="m-0 p-0 outline-none">
-                <DashboardReports initialRecords={records} campuses={campuses} />
+                <DashboardReports
+                  initialRecords={records}
+                  campuses={campuses}
+                  initialOvertimeSettings={overtimeSettings}
+                />
               </TabsContent>
             )}
 

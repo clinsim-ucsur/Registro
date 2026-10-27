@@ -5,7 +5,7 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, XAx
 import { toast } from "sonner"
 import {
   Activity, AlarmClock, BookOpen, CalendarRange, CheckCircle2, Clock, Loader2, MapPin,
-  TrendingDown, TrendingUp, Trophy, UserX, Users, Briefcase, Stethoscope, Wrench, FileSpreadsheet
+  TrendingDown, TrendingUp, Trophy, UserX, Users, Briefcase, Stethoscope, Wrench, FileSpreadsheet, Timer
 } from "lucide-react"
 import * as XLSX from "xlsx"
 
@@ -20,6 +20,7 @@ const COLORS = {
   excepcion: "#8b5cf6",
   salidas: "#94a3b8",
   primary: "#1967D2",
+  overtime: "#8b5cf6",
 }
 
 const ROLE_STYLES: Record<string, { label: string; className: string }> = {
@@ -181,6 +182,9 @@ export function DashboardAnalytics({ initialData, lockedCampus }: { initialData:
         { "Métrica": "Faltas Registradas", "Valor": kpis.faltas },
         { "Métrica": "Excepciones / Permisos", "Valor": kpis.excepciones },
         { "Métrica": "Colaboradores Únicos Activos", "Valor": kpis.activeUsers },
+        { "Métrica": "Horas Extras Realizadas (Bruto)", "Valor": `${data.overtime?.totalRawHours ?? 0} hrs` },
+        { "Métrica": "Horas Extras Contabilizadas", "Valor": `${data.overtime?.totalCountedHours ?? 0} hrs` },
+        { "Métrica": "Umbral Mínimo H. Extras", "Valor": `${data.overtime?.minMinutesThreshold ?? 60} minutos` },
       ]
       const wsKpis = XLSX.utils.json_to_sheet(kpisData)
       wsKpis["!cols"] = [{ wch: 38 }, { wch: 34 }]
@@ -310,7 +314,7 @@ export function DashboardAnalytics({ initialData, lockedCampus }: { initialData:
 
       <div className={`space-y-6 transition-opacity duration-300 ${isPending ? "opacity-60" : "opacity-100"}`}>
         {/* ---------- KPIs ---------- */}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 md:gap-6">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 md:gap-5">
           <KpiCard title="Registros totales" value={kpis.total} icon={Activity} accent={COLORS.primary} delay={0.05}>
             <Delta current={kpis.total} previous={kpis.prevTotal} />
           </KpiCard>
@@ -332,7 +336,13 @@ export function DashboardAnalytics({ initialData, lockedCampus }: { initialData:
 
           <KpiCard title="Faltas" value={kpis.faltas} icon={UserX} accent={COLORS.falta} delay={0.2}>
             <span className="text-xs font-bold text-slate-400">
-              <Users size={12} className="inline mr-1 -mt-0.5" />{kpis.activeUsers} usuarios activos en el periodo
+              <Users size={12} className="inline mr-1 -mt-0.5" />{kpis.activeUsers} activos en el periodo
+            </span>
+          </KpiCard>
+
+          <KpiCard title="Horas Extras" value={`${data.overtime?.totalCountedHours ?? 0} hrs`} icon={Timer} accent={COLORS.overtime} delay={0.25}>
+            <span className="text-xs font-bold text-slate-500">
+              Realiz.: {data.overtime?.totalRawHours ?? 0}h (Mín. {data.overtime?.minMinutesThreshold ?? 60}m)
             </span>
           </KpiCard>
         </div>

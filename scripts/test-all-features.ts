@@ -664,6 +664,153 @@ async function main() {
   editedRows[0].days[1] = { token: "M(N)" } as any
   assert(editedRows[0].days[1].token === "M(N)", "Matriz: Edición directa de cualquier celda en la vista previa permitida")
 
+  // =========================================================================
+  // GRUPO 10: CONTROL DE HORAS EXTRAS Y UMBRAL MÍNIMO CONFIGURABLE (1 HORA)
+  // =========================================================================
+  console.log("\n--- GRUPO 10: Control de Horas Extras y Umbral Mínimo (Mín. 1 Hora) ---")
+
+  const { computeOvertimeForRecords, DEFAULT_OVERTIME_SETTINGS } = await import("../src/lib/overtime")
+
+  // 10.1 Simulación: Salida con 30 minutos de exceso (NO supera el umbral de 60m)
+  // Entrada 06:00, Salida 15:30 (esperada 15:00) -> 30 min extra -> 0 horas contabilizadas
+  const records30m = [
+    {
+      userId: "tech-1",
+      timestamp: new Date("2026-10-15T06:00:00-05:00"),
+      type: "ENTRADA",
+      user: { id: "tech-1", name: "Técnico Uno", dni: "10000001", role: Role.TECNICO, defaultShift: Shift.MANANA },
+      campus: { name: "Campus Villa" },
+    },
+    {
+      userId: "tech-1",
+      timestamp: new Date("2026-10-15T15:30:00-05:00"),
+      type: "SALIDA",
+      user: { id: "tech-1", name: "Técnico Uno", dni: "10000001", role: Role.TECNICO, defaultShift: Shift.MANANA },
+      campus: { name: "Campus Villa" },
+    },
+  ]
+  const otRes30m = computeOvertimeForRecords(records30m, new Map(), DEFAULT_OVERTIME_SETTINGS)
+  assert(
+    otRes30m.pairs[0].rawExtraMinutes === 30 &&
+    otRes30m.pairs[0].qualifies === false &&
+    otRes30m.pairs[0].countedHours === 0,
+    "H. Extras: Exceso de 30m (< 60m umbral) NO califica y contabiliza 0 horas"
+  )
+
+  // 10.2 Simulación: Salida con 59 minutos de exceso (estrictamente menor a 1 hora) -> 0 horas
+  const records59m = [
+    {
+      userId: "tech-1",
+      timestamp: new Date("2026-10-15T06:00:00-05:00"),
+      type: "ENTRADA",
+      user: { id: "tech-1", name: "Técnico Uno", dni: "10000001", role: Role.TECNICO, defaultShift: Shift.MANANA },
+      campus: { name: "Campus Villa" },
+    },
+    {
+      userId: "tech-1",
+      timestamp: new Date("2026-10-15T15:59:00-05:00"),
+      type: "SALIDA",
+      user: { id: "tech-1", name: "Técnico Uno", dni: "10000001", role: Role.TECNICO, defaultShift: Shift.MANANA },
+      campus: { name: "Campus Villa" },
+    },
+  ]
+  const otRes59m = computeOvertimeForRecords(records59m, new Map(), DEFAULT_OVERTIME_SETTINGS)
+  assert(
+    otRes59m.pairs[0].rawExtraMinutes === 59 &&
+    otRes59m.pairs[0].qualifies === false &&
+    otRes59m.pairs[0].countedHours === 0,
+    "H. Extras: Exceso de 59m (< 60m) NO se contabiliza (0 horas reconocidas)"
+  )
+
+  // 10.3 Simulación: Salida con exactamente 60 minutos (1 hora cumplida) -> Califica y computa 1.0 hr
+  const records60m = [
+    {
+      userId: "tech-1",
+      timestamp: new Date("2026-10-15T06:00:00-05:00"),
+      type: "ENTRADA",
+      user: { id: "tech-1", name: "Técnico Uno", dni: "10000001", role: Role.TECNICO, defaultShift: Shift.MANANA },
+      campus: { name: "Campus Villa" },
+    },
+    {
+      userId: "tech-1",
+      timestamp: new Date("2026-10-15T16:00:00-05:00"),
+      type: "SALIDA",
+      user: { id: "tech-1", name: "Técnico Uno", dni: "10000001", role: Role.TECNICO, defaultShift: Shift.MANANA },
+      campus: { name: "Campus Villa" },
+    },
+  ]
+  const otRes60m = computeOvertimeForRecords(records60m, new Map(), DEFAULT_OVERTIME_SETTINGS)
+  assert(
+    otRes60m.pairs[0].rawExtraMinutes === 60 &&
+    otRes60m.pairs[0].qualifies === true &&
+    otRes60m.pairs[0].countedHours === 1.0,
+    "H. Extras: Exceso de 60m (>= 1 hora) califica exitosamente y contabiliza 1.0 hr"
+  )
+
+  // 10.4 Simulación: Salida con 1 hora y 45 minutos (105 min) en modo DECIMAL -> 1.75 hrs
+  const records105m = [
+    {
+      userId: "tech-1",
+      timestamp: new Date("2026-10-15T06:00:00-05:00"),
+      type: "ENTRADA",
+      user: { id: "tech-1", name: "Técnico Uno", dni: "10000001", role: Role.TECNICO, defaultShift: Shift.MANANA },
+      campus: { name: "Campus Villa" },
+    },
+    {
+      userId: "tech-1",
+      timestamp: new Date("2026-10-15T16:45:00-05:00"),
+      type: "SALIDA",
+      user: { id: "tech-1", name: "Técnico Uno", dni: "10000001", role: Role.TECNICO, defaultShift: Shift.MANANA },
+      campus: { name: "Campus Villa" },
+    },
+  ]
+  const otRes105m = computeOvertimeForRecords(records105m, new Map(), DEFAULT_OVERTIME_SETTINGS)
+  assert(
+    otRes105m.pairs[0].rawExtraMinutes === 105 &&
+    otRes105m.pairs[0].countedHours === 1.75 &&
+    otRes105m.totalCountedHours === 1.75,
+    "H. Extras: Exceso de 1h 45m (105m) contabiliza 1.75 hrs en modo decimal"
+  )
+
+  // 10.5 Simulación: Parámetro configurable modificado dinámicamente (umbral cambiado a 45 min)
+  const customSettings45m = { minMinutes: 45, roundingMode: "DECIMAL" as const, workdayHours: 9 }
+  const otResCustom = computeOvertimeForRecords(records59m, new Map(), customSettings45m)
+  assert(
+    otResCustom.pairs[0].qualifies === true &&
+    otResCustom.pairs[0].countedHours === 0.98,
+    "H. Extras: Modificación dinámica de parámetro (a 45m) permite computar excesos >= 45m"
+  )
+
+  // 10.6 Simulación: Turno de descanso trabajado (todas las horas cuentan como extras)
+  const recordsDescanso = [
+    {
+      userId: "tech-2",
+      timestamp: new Date("2026-10-15T08:00:00-05:00"),
+      type: "ENTRADA",
+      user: { id: "tech-2", name: "Técnico Dos", dni: "10000002", role: Role.TECNICO, defaultShift: Shift.DESCANSO },
+      campus: { name: "Campus Norte" },
+    },
+    {
+      userId: "tech-2",
+      timestamp: new Date("2026-10-15T16:00:00-05:00"),
+      type: "SALIDA",
+      user: { id: "tech-2", name: "Técnico Dos", dni: "10000002", role: Role.TECNICO, defaultShift: Shift.DESCANSO },
+      campus: { name: "Campus Norte" },
+    },
+  ]
+  const otResDescanso = computeOvertimeForRecords(recordsDescanso, new Map(), DEFAULT_OVERTIME_SETTINGS)
+  assert(
+    otResDescanso.pairs[0].countedHours === 8.0,
+    "H. Extras: Jornada trabajada en día de descanso computa la totalidad de horas (8.0 hrs)"
+  )
+
+  // 10.7 Formateo visual de tiempo (ej: 135 minutos -> '2h 15m')
+  const { formatMinutesToHoursAndMins } = await import("../src/lib/overtime")
+  assert(
+    formatMinutesToHoursAndMins(135) === "2h 15m" && formatMinutesToHoursAndMins(60) === "1 h",
+    "H. Extras: Formateo visual amigable '2h 15m' y '1 h' verificado"
+  )
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")

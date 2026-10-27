@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition, useMemo } from "react"
+import { useState, useTransition, useMemo, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -9,7 +9,8 @@ import {
   FileText, FileSpreadsheet, DownloadCloud, Filter, Calendar, Search, RefreshCw,
   Building2, Users, CheckCircle2, Clock, AlertTriangle, ShieldAlert, Sparkles, Loader2,
   FileDown, Layers, BarChart3, TrendingUp, TrendingDown, Sun, Sunset, Moon, Coffee,
-  Award, AlertCircle, FileCode, CheckSquare, Eye, ArrowUpDown, ArrowRight
+  Award, AlertCircle, FileCode, CheckSquare, Eye, ArrowUpDown, ArrowRight,
+  Sliders, Timer, ShieldCheck, Settings, Check, X
 } from "lucide-react"
 import * as XLSX from "xlsx"
 import jsPDF from "jspdf"
@@ -19,6 +20,16 @@ import { Role, RecordType, RecordStatus, Shift } from "@prisma/client"
 import { fetchFilteredRecordsAction, type ReportFilterParams } from "@/actions/reports"
 import { formatLimaDate, formatLimaTime, limaDayKey, addDaysToKey } from "@/lib/timezone"
 import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
+import {
+  DEFAULT_OVERTIME_SETTINGS,
+  type OvertimeSettings,
+  computeOvertimeForRecords,
+  formatMinutesToHoursAndMins,
+} from "@/lib/overtime"
+import {
+  getOvertimeSettingsAction,
+  updateOvertimeSettingsAction,
+} from "@/actions/overtime"
 
 export type AttendanceItem = {
   id: string
@@ -52,6 +63,13 @@ export type StaffConsolidated = {
   excepciones: number
   punctualityRate: number
   statusLevel: "EXCELENTE" | "REGULAR" | "CRITICO"
+  rawOvertimeMinutes: number
+  rawOvertimeHours: number
+  countedOvertimeMinutes: number
+  countedOvertimeHours: number
+  formattedRawTime: string
+  formattedCountedHours: string
+  daysWithOvertime: number
 }
 
 const ROLE_LABELS: Record<string, string> = {
@@ -80,12 +98,43 @@ const SHIFT_LABELS: Record<Shift, { label: string; icon: any; color: string }> =
 export function DashboardReports({
   initialRecords,
   campuses,
+  initialOvertimeSettings,
 }: {
   initialRecords: any[]
   campuses: { id: string; name: string }[]
+  initialOvertimeSettings?: OvertimeSettings
 }) {
   const [records, setRecords] = useState<AttendanceItem[]>(initialRecords)
   const [isPending, startTransition] = useTransition()
+
+  // Configuración de Horas Extras
+  const [overtimeSettings, setOvertimeSettings] = useState<OvertimeSettings>(
+    initialOvertimeSettings || DEFAULT_OVERTIME_SETTINGS
+  )
+  const [isOvertimeModalOpen, setIsOvertimeModalOpen] = useState(false)
+  const [isSavingOvertime, setIsSavingOvertime] = useState(false)
+  const [tempMinMinutes, setTempMinMinutes] = useState(overtimeSettings.minMinutes)
+  const [tempRoundingMode, setTempRoundingMode] = useState<"DECIMAL" | "HORAS_COMPLETAS">(overtimeSettings.roundingMode)
+  const [tempWorkdayHours, setTempWorkdayHours] = useState(overtimeSettings.workdayHours)
+
+  // Sincronizar configuración si cambia desde el servidor
+  useEffect(() => {
+    if (initialOvertimeSettings) {
+      setOvertimeSettings(initialOvertimeSettings)
+      setTempMinMinutes(initialOvertimeSettings.minMinutes)
+      setTempRoundingMode(initialOvertimeSettings.roundingMode)
+      setTempWorkdayHours(initialOvertimeSettings.workdayHours)
+    } else {
+      getOvertimeSettingsAction().then((s) => {
+        if (s) {
+          setOvertimeSettings(s)
+          setTempMinMinutes(s.minMinutes)
+          setTempRoundingMode(s.roundingMode)
+          setTempWorkdayHours(s.workdayHours)
+        }
+      })
+    }
+  }, [initialOvertimeSettings])
 
   // Vista activa de la tabla: "DETALLADO" | "CONSOLIDADO"
   const [activeViewTab, setActiveViewTab] = useState<"DETALLADO" | "CONSOLIDADO">("DETALLADO")
@@ -104,7 +153,7 @@ export function DashboardReports({
   const [searchTerm, setSearchTerm] = useState("")
 
   // Ordenamiento en la vista de consolidado
-  const [consolidatedSort, setConsolidatedSort] = useState<"tardanzas" | "faltas" | "puntualidad" | "nombre">("tardanzas")
+  const [consolidatedSort, setConsolidatedSort] = useState<"tardanzas" | "faltas" | "puntualidad" | "nombre" | "horasExtras">("tardanzas")
 
   // Aplicar filtros en el servidor
   const handleApplyFilters = () => {
@@ -169,6 +218,35 @@ export function DashboardReports({
   }
 
   // =====================================================================
+  // CÁLCULO DE HORAS EXTRAS Y AUDITORÍA
+  // =====================================================================
+  const overtimeResult = useMemo(() => {
+    return computeOvertimeForRecords(records, new Map(), overtimeSettings)
+  }, [records, overtimeSettings])
+
+  const handleSaveOvertimeSettings = async () => {
+    setIsSavingOvertime(true)
+    try {
+      const res = await updateOvertimeSettingsAction({
+        minMinutes: Number(tempMinMinutes),
+        roundingMode: tempRoundingMode,
+        workdayHours: Number(tempWorkdayHours),
+      })
+      if (res.success && res.settings) {
+        setOvertimeSettings(res.settings as OvertimeSettings)
+        toast.success(res.message)
+        setIsOvertimeModalOpen(false)
+      } else {
+        toast.error(res.message || "Error al actualizar la configuración.")
+      }
+    } catch (e: any) {
+      toast.error(e.message || "Error de conexión.")
+    } finally {
+      setIsSavingOvertime(false)
+    }
+  }
+
+  // =====================================================================
   // MÉTRICAS DE CONTROL CALCULADAS DINÁMICAMENTE
   // =====================================================================
   const controlMetrics = useMemo(() => {
@@ -200,14 +278,19 @@ export function DashboardReports({
       absenceRate,
       exitCoverage,
       uniqueStaff: activeUsers.size,
+      totalCountedOvertimeHours: overtimeResult.totalCountedHours,
+      totalRawOvertimeHours: overtimeResult.totalRawHours,
+      totalStaffWithOvertime: overtimeResult.totalStaffWithOvertime,
+      minOvertimeMinutes: overtimeSettings.minMinutes,
     }
-  }, [records])
+  }, [records, overtimeResult, overtimeSettings])
 
   // =====================================================================
   // CONSOLIDADO POR COLABORADOR (AUDITORÍA RRHH Y NÓMINA)
   // =====================================================================
   const staffConsolidated = useMemo(() => {
     const map = new Map<string, StaffConsolidated>()
+    const staffOtMap = new Map(overtimeResult.staffSummaries.map((s) => [s.userId, s]))
 
     for (const r of records) {
       const u = r.user
@@ -226,6 +309,13 @@ export function DashboardReports({
         excepciones: 0,
         punctualityRate: 100,
         statusLevel: "EXCELENTE" as const,
+        rawOvertimeMinutes: 0,
+        rawOvertimeHours: 0,
+        countedOvertimeMinutes: 0,
+        countedOvertimeHours: 0,
+        formattedRawTime: "0 min",
+        formattedCountedHours: "0 hrs",
+        daysWithOvertime: 0,
       }
 
       if (r.type === "SALIDA") {
@@ -252,21 +342,31 @@ export function DashboardReports({
       if (rate < 80 || item.faltas >= 2) statusLevel = "CRITICO"
       else if (rate < 95 || item.tardanzas >= 2) statusLevel = "REGULAR"
 
+      const ot = staffOtMap.get(item.userId)
+
       return {
         ...item,
         punctualityRate: rate,
         statusLevel,
+        rawOvertimeMinutes: ot?.totalRawExtraMinutes || 0,
+        rawOvertimeHours: ot?.totalRawHours || 0,
+        countedOvertimeMinutes: ot?.totalCountedExtraMinutes || 0,
+        countedOvertimeHours: ot?.totalCountedHours || 0,
+        formattedRawTime: ot?.formattedRawTime || "0 min",
+        formattedCountedHours: ot?.formattedCountedHours || "0 hrs",
+        daysWithOvertime: ot?.totalDaysWithOvertime || 0,
       }
     })
 
     // Ordenamiento configurable
     return list.sort((a, b) => {
+      if (consolidatedSort === "horasExtras") return b.countedOvertimeHours - a.countedOvertimeHours || b.rawOvertimeHours - a.rawOvertimeHours
       if (consolidatedSort === "tardanzas") return b.tardanzas - a.tardanzas
       if (consolidatedSort === "faltas") return b.faltas - a.faltas
       if (consolidatedSort === "puntualidad") return a.punctualityRate - b.punctualityRate
       return a.name.localeCompare(b.name)
     })
-  }, [records, consolidatedSort])
+  }, [records, consolidatedSort, overtimeResult])
 
   // =====================================================================
   // RESUMEN DE CONTROL POR SEDE
@@ -372,17 +472,45 @@ export function DashboardReports({
         "Faltas": staff.faltas,
         "Total Salidas": staff.totalSalidas,
         "% Puntualidad": `${staff.punctualityRate}%`,
+        "H. Extras Realizadas (Total)": staff.formattedRawTime,
+        [`H. Extras Contabilizadas (Mín. ${overtimeSettings.minMinutes}m)`]: staff.countedOvertimeHours,
+        "Días con H. Extras": staff.daysWithOvertime,
         "Nivel Cumplimiento": staff.statusLevel === "EXCELENTE" ? "Excelente" : staff.statusLevel === "REGULAR" ? "Regular" : "Crítico / En Alerta",
       }))
       const wsConsolidated = XLSX.utils.json_to_sheet(consolidatedData)
       wsConsolidated["!cols"] = [
         { wch: 14 }, { wch: 40 }, { wch: 18 }, { wch: 26 }, { wch: 24 },
         { wch: 16 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 14 },
-        { wch: 16 }, { wch: 22 },
+        { wch: 16 }, { wch: 26 }, { wch: 30 }, { wch: 18 }, { wch: 22 },
       ]
       XLSX.utils.book_append_sheet(workbook, wsConsolidated, "2. Consolidado RRHH")
 
-      // HOJA 3: Resumen por Sede
+      // HOJA 3: Detalle de Horas Extras de Técnicos
+      const overtimeDetailData = overtimeResult.pairs.map((pair) => ({
+        "Fecha": pair.date,
+        "DNI": pair.userDni,
+        "Colaborador": pair.userName,
+        "Turno": pair.shift,
+        "Sede": pair.campusName,
+        "Hora Ingreso": pair.entryTime,
+        "Hora Salida": pair.exitTime,
+        "Salida Programada": pair.scheduledExitTime,
+        "Exceso Real": formatMinutesToHoursAndMins(pair.rawExtraMinutes),
+        [`Supera Umbral (${overtimeSettings.minMinutes}m)`]: pair.qualifies ? "SÍ (Computable)" : `NO (< ${overtimeSettings.minMinutes}m)`,
+        "Horas Contabilizadas": pair.countedHours,
+      }))
+      const wsOvertime = XLSX.utils.json_to_sheet(
+        overtimeDetailData.length > 0
+          ? overtimeDetailData
+          : [{ "Información": "No se registraron jornadas con exceso de jornada en el rango seleccionado." }]
+      )
+      wsOvertime["!cols"] = [
+        { wch: 14 }, { wch: 14 }, { wch: 38 }, { wch: 18 }, { wch: 22 },
+        { wch: 14 }, { wch: 14 }, { wch: 18 }, { wch: 18 }, { wch: 26 }, { wch: 22 },
+      ]
+      XLSX.utils.book_append_sheet(workbook, wsOvertime, "3. Horas Extras Detalladas")
+
+      // HOJA 4: Resumen por Sede
       const campusData = campusSummary.map((c) => ({
         "Sede Universitaria": c.name,
         "Total Ingresos": c.entradas,
@@ -394,9 +522,9 @@ export function DashboardReports({
       }))
       const wsCampus = XLSX.utils.json_to_sheet(campusData)
       wsCampus["!cols"] = [{ wch: 30 }, { wch: 16 }, { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 20 }]
-      XLSX.utils.book_append_sheet(workbook, wsCampus, "3. Resumen por Sede")
+      XLSX.utils.book_append_sheet(workbook, wsCampus, "4. Resumen por Sede")
 
-      // HOJA 4: Resumen por Turno
+      // HOJA 5: Resumen por Turno
       const shiftData = shiftSummary.map((s) => ({
         "Turno": s.shiftName,
         "Total Ingresos": s.entradas,
@@ -407,9 +535,9 @@ export function DashboardReports({
       }))
       const wsShift = XLSX.utils.json_to_sheet(shiftData)
       wsShift["!cols"] = [{ wch: 32 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 20 }]
-      XLSX.utils.book_append_sheet(workbook, wsShift, "4. Resumen por Turno")
+      XLSX.utils.book_append_sheet(workbook, wsShift, "5. Resumen por Turno")
 
-      // HOJA 5: Métricas de Control (KPIs)
+      // HOJA 6: Métricas de Control (KPIs)
       const kpiData = [
         { "Métrica de Control": "Rango de Fechas Consultado", "Valor": `${startDate || "Inicio"} al ${endDate || "Hoy"}` },
         { "Métrica de Control": "Total de Registros Procesados", "Valor": controlMetrics.total },
@@ -420,16 +548,20 @@ export function DashboardReports({
         { "Métrica de Control": "Tasa de Faltas Injustificadas", "Valor": `${controlMetrics.absenceRate}% (${controlMetrics.faltas} faltas)` },
         { "Métrica de Control": "Cobertura de Salidas Registradas", "Valor": `${controlMetrics.exitCoverage}%` },
         { "Métrica de Control": "Total de Personal Único Activo", "Valor": controlMetrics.uniqueStaff },
+        { "Métrica de Control": "Parámetro Corte H. Extras", "Valor": `Mínimo ${overtimeSettings.minMinutes} minutos (>= 1 hora)` },
+        { "Métrica de Control": "H. Extras Realizadas en Bruto", "Valor": `${controlMetrics.totalRawOvertimeHours} horas` },
+        { "Métrica de Control": "H. Extras Contabilizadas (Reconocidas)", "Valor": `${controlMetrics.totalCountedOvertimeHours} horas reconocidas` },
+        { "Métrica de Control": "Personal con Horas Extras Reconocidas", "Valor": `${controlMetrics.totalStaffWithOvertime} colaboradores` },
         { "Métrica de Control": "Fecha y Hora de Emisión", "Valor": new Date().toLocaleString("es-PE") },
       ]
       const wsKpis = XLSX.utils.json_to_sheet(kpiData)
-      wsKpis["!cols"] = [{ wch: 38 }, { wch: 34 }]
-      XLSX.utils.book_append_sheet(workbook, wsKpis, "5. Métricas de Control")
+      wsKpis["!cols"] = [{ wch: 42 }, { wch: 38 }]
+      XLSX.utils.book_append_sheet(workbook, wsKpis, "6. Métricas de Control")
 
       const dateTag = `${startDate || "inicio"}_al_${endDate || "fin"}`
       const fileName = `Reporte_UCSUR_Consolidado_Asistencia_${dateTag}.xlsx`
       XLSX.writeFile(workbook, fileName)
-      toast.success("Libro Excel completo con 5 hojas generado con éxito.")
+      toast.success("Libro Excel completo con 6 hojas generado con éxito.")
     } catch (e) {
       console.error(e)
       toast.error("Hubo un error al generar el archivo Excel multi-hoja.")
@@ -516,7 +648,7 @@ export function DashboardReports({
       // Recuadro Resumen de Métricas de Control
       doc.setFillColor(248, 250, 252) // slate-50
       doc.setDrawColor(226, 232, 240) // slate-200
-      doc.roundedRect(14, 32, 269, 20, 2, 2, "FD")
+      doc.roundedRect(14, 32, 269, 24, 2, 2, "FD")
 
       doc.setFont("helvetica", "bold")
       doc.setFontSize(9)
@@ -524,16 +656,18 @@ export function DashboardReports({
 
       const rangeText = startDate && endDate ? `Del ${startDate} al ${endDate}` : "Todos los periodos"
       doc.text(`Rango: ${rangeText}`, 18, 39)
-      doc.text(`Sede: ${campusId ? campuses.find(c => c.id === campusId)?.name || "Filtrada" : "Todas las sedes"}`, 18, 47)
+      doc.text(`Sede: ${campusId ? campuses.find(c => c.id === campusId)?.name || "Filtrada" : "Todas las sedes"}`, 18, 46)
+      doc.text(`H. Extras Contab.: ${controlMetrics.totalCountedOvertimeHours} hrs (Mín. ${overtimeSettings.minMinutes}m) | Realiz.: ${controlMetrics.totalRawOvertimeHours}h`, 18, 52)
 
-      doc.text(`Puntualidad: ${controlMetrics.punctualityRate}%`, 110, 39)
-      doc.text(`Total Entradas: ${controlMetrics.entradas}`, 110, 47)
+      doc.text(`Puntualidad: ${controlMetrics.punctualityRate}%`, 130, 39)
+      doc.text(`Total Entradas: ${controlMetrics.entradas}`, 130, 46)
+      doc.text(`Total Salidas: ${controlMetrics.salidas}`, 130, 52)
 
-      doc.text(`Tardanzas: ${controlMetrics.tardanzas}`, 180, 39)
-      doc.text(`Faltas: ${controlMetrics.faltas}`, 180, 47)
+      doc.text(`Tardanzas: ${controlMetrics.tardanzas}`, 195, 39)
+      doc.text(`Faltas: ${controlMetrics.faltas}`, 195, 46)
 
-      doc.text(`Personal Activo: ${controlMetrics.uniqueStaff}`, 235, 39)
-      doc.text(`Total Filas: ${records.length}`, 235, 47)
+      doc.text(`Personal Activo: ${controlMetrics.uniqueStaff}`, 240, 39)
+      doc.text(`Total Filas: ${records.length}`, 240, 46)
 
       // Tabla de Registros
       const tableRows = records.slice(0, 1000).map((record) => {
@@ -557,7 +691,7 @@ export function DashboardReports({
       })
 
       autoTable(doc, {
-        startY: 56,
+        startY: 59,
         head: [["Fecha", "Hora", "DNI", "Nombre Completo", "Rol", "Turno", "Tipo", "Estado", "Sede"]],
         body: tableRows,
         theme: "grid",
@@ -866,7 +1000,7 @@ export function DashboardReports({
       {/* ================================================================= */}
       {/* PANEL DE MÉTRICAS DE CONTROL (KPIS CLAVE) */}
       {/* ================================================================= */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3.5">
         {/* KPI 1: Puntualidad General */}
         <div className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50/70 to-white p-4 shadow-xs">
           <div className="flex items-center justify-between text-emerald-700">
@@ -922,7 +1056,36 @@ export function DashboardReports({
           <p className="text-[11px] font-bold text-rose-700 mt-1">{controlMetrics.absenceRate}% ausentismo</p>
         </div>
 
-        {/* KPI 6: Personal Evaluado */}
+        {/* KPI 6: HORAS EXTRAS TÉCNICOS (NUEVO) */}
+        <div className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50/80 to-white p-4 shadow-xs relative overflow-hidden group">
+          <div className="flex items-center justify-between text-violet-700">
+            <span className="text-[10px] font-black uppercase tracking-wider">H. Extras Técnicos</span>
+            <button
+              type="button"
+              onClick={() => {
+                setTempMinMinutes(overtimeSettings.minMinutes)
+                setTempRoundingMode(overtimeSettings.roundingMode)
+                setTempWorkdayHours(overtimeSettings.workdayHours)
+                setIsOvertimeModalOpen(true)
+              }}
+              title="Configurar umbral de horas extras"
+              className="p-1 rounded-lg bg-violet-100 hover:bg-violet-200 text-violet-700 transition-colors"
+            >
+              <Sliders size={13} />
+            </button>
+          </div>
+          <p className="text-2xl font-black text-violet-900 mt-1 tabular-nums">
+            {controlMetrics.totalCountedOvertimeHours} <span className="text-xs font-bold text-violet-600">hrs</span>
+          </p>
+          <div className="mt-1 flex items-center justify-between gap-1 text-[11px]">
+            <span className="text-slate-500 font-medium">Realiz.: {controlMetrics.totalRawOvertimeHours}h</span>
+            <span className="font-bold text-violet-700 bg-violet-100 px-1.5 py-0.5 rounded text-[10px]">
+              Mín. {overtimeSettings.minMinutes}m
+            </span>
+          </div>
+        </div>
+
+        {/* KPI 7: Personal Evaluado */}
         <div className="rounded-2xl border border-indigo-200 bg-indigo-50/40 p-4 shadow-xs">
           <div className="flex items-center justify-between text-indigo-700">
             <span className="text-[10px] font-black uppercase tracking-wider">Colaboradores</span>
@@ -930,6 +1093,50 @@ export function DashboardReports({
           </div>
           <p className="text-2xl font-black text-indigo-900 mt-1 tabular-nums">{controlMetrics.uniqueStaff}</p>
           <p className="text-[11px] font-medium text-indigo-700 mt-1">Con actividad</p>
+        </div>
+      </div>
+
+      {/* ================================================================= */}
+      {/* BANNER INFORMATIVO: CONTROL Y REGLA DE HORAS EXTRAS */}
+      {/* ================================================================= */}
+      <div className="rounded-2xl border border-violet-200/90 bg-gradient-to-r from-violet-50/90 via-indigo-50/50 to-white p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs">
+        <div className="flex items-start sm:items-center gap-3">
+          <div className="p-2.5 bg-violet-600 text-white rounded-xl shadow-md shadow-violet-500/20 shrink-0">
+            <Timer size={20} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h4 className="text-sm font-black text-slate-800">Control Oficial de Horas Extras</h4>
+              <span className="inline-flex items-center gap-1 text-[10px] font-black px-2.5 py-0.5 rounded-full bg-violet-100 text-violet-800 border border-violet-200">
+                <ShieldCheck size={12} /> Umbral de Reconocimiento: Mínimo {overtimeSettings.minMinutes} min (1 hora)
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 font-medium mt-1">
+              Las horas extras se contabilizan <strong>únicamente</strong> cuando la permanencia excede como mínimo {overtimeSettings.minMinutes} minutos de la jornada oficial (9h). Los excesos menores a {overtimeSettings.minMinutes} min no se contabilizan (0 horas).
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4 self-end md:self-auto shrink-0">
+          <div className="text-right">
+            <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Total a Computar</p>
+            <p className="text-lg font-black text-violet-700 tabular-nums">
+              {controlMetrics.totalCountedOvertimeHours} hrs{" "}
+              <span className="text-xs text-slate-400 font-normal">({controlMetrics.totalStaffWithOvertime} con extras)</span>
+            </p>
+          </div>
+          <Button
+            type="button"
+            onClick={() => {
+              setTempMinMinutes(overtimeSettings.minMinutes)
+              setTempRoundingMode(overtimeSettings.roundingMode)
+              setTempWorkdayHours(overtimeSettings.workdayHours)
+              setIsOvertimeModalOpen(true)
+            }}
+            className="h-9 px-3.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-bold text-xs shadow-sm flex items-center gap-1.5"
+          >
+            <Sliders size={14} /> Configurar Parámetro
+          </Button>
         </div>
       </div>
 
@@ -1041,6 +1248,7 @@ export function DashboardReports({
                 onChange={(e) => setConsolidatedSort(e.target.value as any)}
                 className="h-9 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none"
               >
+                <option value="horasExtras">Más Horas Extras (Contabilizadas)</option>
                 <option value="tardanzas">Más Tardanzas</option>
                 <option value="faltas">Más Faltas</option>
                 <option value="puntualidad">Menor Puntualidad</option>
@@ -1139,13 +1347,15 @@ export function DashboardReports({
                     <TableHead className="font-bold text-amber-700 text-xs text-center">Tardanzas</TableHead>
                     <TableHead className="font-bold text-rose-700 text-xs text-center">Faltas</TableHead>
                     <TableHead className="font-bold text-slate-600 text-xs text-center">Salidas</TableHead>
+                    <TableHead className="font-bold text-violet-700 text-xs text-center">H. Extras Realiz.</TableHead>
+                    <TableHead className="font-bold text-emerald-700 text-xs text-center">H. Extras Contab.</TableHead>
                     <TableHead className="font-bold text-slate-600 text-xs text-right px-6">Puntualidad</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {staffConsolidated.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-12 text-slate-400 font-medium">
+                      <TableCell colSpan={11} className="text-center py-12 text-slate-400 font-medium">
                         No hay personal con actividad en el periodo consultado.
                       </TableCell>
                     </TableRow>
@@ -1191,6 +1401,22 @@ export function DashboardReports({
                           <TableCell className="text-center font-bold text-slate-500 text-sm">
                             {s.totalSalidas}
                           </TableCell>
+                          {/* Horas Extras Realizadas (Total bruto) */}
+                          <TableCell className="text-center">
+                            <span className="text-xs font-semibold text-slate-600">
+                              {s.formattedRawTime}
+                            </span>
+                          </TableCell>
+                          {/* Horas Extras Contabilizadas (Superó umbral) */}
+                          <TableCell className="text-center">
+                            {s.countedOvertimeHours > 0 ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-black bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                <Sparkles size={11} /> +{s.countedOvertimeHours} hrs
+                              </span>
+                            ) : (
+                              <span className="text-xs font-medium text-slate-400">0 hrs</span>
+                            )}
+                          </TableCell>
                           <TableCell className="px-6 text-right">
                             <span className={`px-3 py-1 rounded-full text-xs font-black border ${levelBg}`}>
                               {s.punctualityRate}%
@@ -1206,6 +1432,169 @@ export function DashboardReports({
           </CardContent>
         )}
       </Card>
+
+      {/* ================================================================= */}
+      {/* MODAL: CONFIGURACIÓN DE PARÁMETROS DE HORAS EXTRAS */}
+      {/* ================================================================= */}
+      {isOvertimeModalOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-fade-in-up p-4">
+          <div className="w-full max-w-lg rounded-3xl bg-white p-6 md:p-8 shadow-2xl border border-slate-100 space-y-6">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-violet-100 text-violet-700 rounded-2xl shadow-sm">
+                  <Sliders size={22} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-800">Parámetros de Horas Extras</h3>
+                  <p className="text-xs text-slate-500 font-medium">Configura las reglas de cómputo para nómina de técnicos</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsOvertimeModalOpen(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 rounded-xl hover:bg-slate-100 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Alerta explicativa de la regla */}
+            <div className="rounded-2xl border border-violet-200 bg-violet-50/70 p-4 text-xs space-y-1.5">
+              <div className="flex items-center gap-1.5 font-black text-violet-900">
+                <ShieldCheck size={16} /> Política de Corte Mínimo
+              </div>
+              <p className="text-violet-800/90 leading-relaxed font-medium">
+                Solo se computarán y reconocerán horas extras cuando el colaborador haya excedido como mínimo el tiempo configurado. Si se retira con menos tiempo de exceso, se contabilizarán <strong>0 horas extras</strong>.
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              {/* Umbral mínimo en minutos */}
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-slate-700 flex items-center justify-between mb-1.5">
+                  <span>Umbral Mínimo Requerido (Minutos)</span>
+                  <span className="text-violet-600 font-black text-sm">{tempMinMinutes} min ({Math.round((tempMinMinutes / 60) * 10) / 10} h)</span>
+                </label>
+                <Input
+                  type="number"
+                  min="0"
+                  max="300"
+                  step="5"
+                  value={tempMinMinutes}
+                  onChange={(e) => setTempMinMinutes(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                  className="h-11 rounded-xl bg-slate-50 border-slate-200 font-bold text-slate-800 text-base"
+                />
+
+                {/* Atajos rápidos de minutos */}
+                <div className="mt-2 flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] font-bold text-slate-400">Atajos:</span>
+                  {[
+                    { label: "30 min", value: 30 },
+                    { label: "45 min", value: 45 },
+                    { label: "60 min (1 hora)", value: 60 },
+                    { label: "90 min (1.5 h)", value: 90 },
+                    { label: "120 min (2 h)", value: 120 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.value}
+                      type="button"
+                      onClick={() => setTempMinMinutes(preset.value)}
+                      className={`text-xs font-bold px-2.5 py-1 rounded-lg transition-all ${
+                        tempMinMinutes === preset.value
+                          ? "bg-violet-600 text-white shadow-sm"
+                          : "bg-slate-100 hover:bg-slate-200 text-slate-700"
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Modo de Redondeo */}
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1.5">
+                  Formato de Liquidación de Horas
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setTempRoundingMode("DECIMAL")}
+                    className={`p-3 rounded-2xl border text-left transition-all ${
+                      tempRoundingMode === "DECIMAL"
+                        ? "border-violet-600 bg-violet-50 text-violet-900 shadow-sm"
+                        : "border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700"
+                    }`}
+                  >
+                    <p className="text-xs font-black">Decimal Proporcional</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">Ej: 75 min = 1.25 hrs, 90 min = 1.5 hrs</p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setTempRoundingMode("HORAS_COMPLETAS")}
+                    className={`p-3 rounded-2xl border text-left transition-all ${
+                      tempRoundingMode === "HORAS_COMPLETAS"
+                        ? "border-violet-600 bg-violet-50 text-violet-900 shadow-sm"
+                        : "border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700"
+                    }`}
+                  >
+                    <p className="text-xs font-black">Horas Completas</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">Ej: 75 min = 1.0 hr, 119 min = 1.0 hr</p>
+                  </button>
+                </div>
+              </div>
+
+              {/* Jornada laboral estándar */}
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1.5">
+                  Jornada Laboral Oficial Diaria (Horas)
+                </label>
+                <Input
+                  type="number"
+                  min="6"
+                  max="14"
+                  value={tempWorkdayHours}
+                  onChange={(e) => setTempWorkdayHours(Math.max(6, parseInt(e.target.value, 10) || 9))}
+                  className="h-11 rounded-xl bg-slate-50 border-slate-200 font-bold text-slate-800 text-sm"
+                />
+                <p className="text-[11px] text-slate-400 mt-1 font-medium">
+                  Estándar institucional: 9 horas (8 horas laborales + 1 hora de refrigerio).
+                </p>
+              </div>
+            </div>
+
+            {/* Botones de acción */}
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsOvertimeModalOpen(false)}
+                disabled={isSavingOvertime}
+                className="rounded-xl h-11 px-5 border-slate-200 font-bold text-slate-600 hover:bg-slate-100"
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                onClick={handleSaveOvertimeSettings}
+                disabled={isSavingOvertime}
+                className="rounded-xl h-11 px-6 bg-violet-600 hover:bg-violet-700 text-white font-black shadow-md shadow-violet-500/20"
+              >
+                {isSavingOvertime ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin mr-2" /> Guardando...
+                  </>
+                ) : (
+                  <>
+                    <Check size={16} className="mr-2" /> Guardar Parámetros
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
