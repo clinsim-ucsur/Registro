@@ -30,7 +30,9 @@ import {
   Building2,
   Check,
   X,
-  Save
+  Save,
+  ChevronLeft,
+  ChevronRight
 } from "lucide-react"
 import { toast } from "sonner"
 import * as XLSX from "xlsx"
@@ -157,6 +159,34 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
   })
   const [filterCampus, setFilterCampus] = useState<string>("ALL")
   const [searchTerm, setSearchTerm] = useState("")
+  const [isLoadingMonth, setIsLoadingMonth] = useState(false)
+
+  // Carga automática del cronograma completo desde el servidor al cambiar de mes
+  useEffect(() => {
+    if (!selectedMonth) return
+    let isMounted = true
+    const fetchSchedulesForMonth = async () => {
+      setIsLoadingMonth(true)
+      try {
+        const res = await getTechnicianSchedulesAction({ month: selectedMonth })
+        if (res.success && res.schedules && isMounted) {
+          setSchedules((prev) => {
+            const others = prev.filter((s) => !s.date.startsWith(selectedMonth))
+            return [...others, ...(res.schedules as any)]
+          })
+        }
+      } catch (err) {
+        console.error("Error al cargar cronogramas del mes:", err)
+      } finally {
+        if (isMounted) setIsLoadingMonth(false)
+      }
+    }
+
+    fetchSchedulesForMonth()
+    return () => {
+      isMounted = false
+    }
+  }, [selectedMonth])
 
   // Modales
   const [isIndividualOpen, setIsIndividualOpen] = useState(false)
@@ -1039,16 +1069,51 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     toast.success(`Técnico añadido a ${campusName}.`)
   }
 
-  // Abrir vista previa del mes actual consultado en base de datos
-  const openCurrentMonthMatrix = () => {
+  // Funciones de navegación de meses (formato YYYY-MM)
+  const getNextMonth = (curMonth: string) => {
+    const [year, month] = (curMonth || "").split("-").map(Number)
+    if (!year || !month) {
+      const now = new Date()
+      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+    }
+    const nextDate = new Date(year, month, 1)
+    return `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, "0")}`
+  }
+
+  const getPrevMonth = (curMonth: string) => {
+    const [year, month] = (curMonth || "").split("-").map(Number)
+    if (!year || !month) {
+      const now = new Date()
+      return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+    }
+    const prevDate = new Date(year, month - 2, 1)
+    return `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, "0")}`
+  }
+
+  // Abrir vista previa del mes consultado en base de datos
+  const openCurrentMonthMatrix = async (targetMonth?: string) => {
+    const target = targetMonth || selectedMonth || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`
     let y = new Date().getFullYear()
     let m = new Date().getMonth() + 1
-    if (selectedMonth) {
-      const parts = selectedMonth.split("-")
-      if (parts.length === 2) {
-        y = parseInt(parts[0], 10)
-        m = parseInt(parts[1], 10)
+    const parts = target.split("-")
+    if (parts.length === 2) {
+      y = parseInt(parts[0], 10)
+      m = parseInt(parts[1], 10)
+    }
+
+    // Traer datos frescos del mes directamente desde la base de datos
+    let monthRecords: ScheduleRecord[] = schedules.filter((s) => s.date.startsWith(target))
+    try {
+      const res = await getTechnicianSchedulesAction({ month: target })
+      if (res.success && res.schedules && res.schedules.length > 0) {
+        monthRecords = res.schedules as any
+        setSchedules((prev) => {
+          const others = prev.filter((s) => !s.date.startsWith(target))
+          return [...others, ...(res.schedules as any)]
+        })
       }
+    } catch (e) {
+      console.warn("No se pudo refrescar cronograma del servidor para la matriz, usando datos locales:", e)
     }
 
     const daysInMonth = new Date(y, m, 0).getDate()
@@ -1070,7 +1135,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
         const dateObj = new Date(y, m - 1, d)
         const isSunday = dateObj.getDay() === 0
 
-        const existing = schedules.find((s) => s.userId === t.id && s.date === dateStr)
+        const existing = monthRecords.find((s) => s.userId === t.id && s.date === dateStr)
         if (existing) {
           let token = "M"
           if (existing.shift === Shift.MANANA) token = "M"
@@ -1106,6 +1171,12 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     const preview = buildMatrixPreviewStructure(y, m, rows)
     setMatrixPreview(preview)
     setIsMatrixPreviewOpen(true)
+  }
+
+  const handleChangeMatrixMonth = async (newMonth: string) => {
+    if (!newMonth) return
+    setSelectedMonth(newMonth)
+    await openCurrentMonthMatrix(newMonth)
   }
 
   // Guardar definitivamente la Matriz de Cronograma Mensual
@@ -1532,7 +1603,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
 
         <div className="flex flex-wrap items-center gap-3">
           <Button
-            onClick={openCurrentMonthMatrix}
+            onClick={() => openCurrentMonthMatrix()}
             className="h-12 px-5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-extrabold rounded-xl shadow-md shadow-teal-600/20 flex items-center gap-2 transition-all hover:scale-105"
           >
             <CalendarDays size={18} />
@@ -2740,10 +2811,38 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                   <CalendarDays size={24} />
                 </div>
                 <div>
-                  <h3 className="font-black text-lg tracking-wider uppercase text-blue-300">
-                    ROL TÉCNICOS {matrixPreview.monthLabel}
-                  </h3>
-                  <p className="text-xs text-slate-300">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <h3 className="font-black text-lg tracking-wider uppercase text-blue-300">
+                      ROL TÉCNICOS {matrixPreview.monthLabel}
+                    </h3>
+
+                    {/* Selector y Navegación de Mes */}
+                    <div className="flex items-center gap-1 bg-slate-800/90 border border-slate-700/80 rounded-lg p-1 shadow-inner">
+                      <button
+                        type="button"
+                        onClick={() => handleChangeMatrixMonth(getPrevMonth(selectedMonth))}
+                        className="p-1 hover:bg-slate-700 text-slate-300 hover:text-white rounded transition-colors"
+                        title="Mes anterior"
+                      >
+                        <ChevronLeft size={16} />
+                      </button>
+                      <input
+                        type="month"
+                        value={selectedMonth}
+                        onChange={(e) => handleChangeMatrixMonth(e.target.value)}
+                        className="bg-transparent text-white font-bold text-xs px-2 py-0.5 outline-none cursor-pointer"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleChangeMatrixMonth(getNextMonth(selectedMonth))}
+                        className="p-1 hover:bg-slate-700 text-slate-300 hover:text-white rounded transition-colors"
+                        title="Mes siguiente"
+                      >
+                        <ChevronRight size={16} />
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-300 mt-1">
                     Vista calendario dividida por sedes institucionales. Puedes hacer clic en cualquier celda para corregir errores o rotaciones.
                   </p>
                 </div>
