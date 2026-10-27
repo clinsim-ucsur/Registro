@@ -32,7 +32,10 @@ import {
   X,
   Save,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  ChevronDown,
+  ChevronUp,
+  Search,
 } from "lucide-react"
 import { toast } from "sonner"
 import * as XLSX from "xlsx"
@@ -42,6 +45,8 @@ import {
   bulkUpsertTechnicianSchedulesAction,
   getTechnicianSchedulesAction,
 } from "@/actions/schedules"
+import { getOvertimeReportAction } from "@/actions/overtime"
+import type { UserOvertimeSummary } from "@/lib/overtime"
 import { DEFAULT_SHIFT_TIMES, type ScheduleItemInput } from "@/lib/schedule-constants"
 import { Shift } from "@prisma/client"
 
@@ -193,6 +198,79 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
   const [isBulkOpen, setIsBulkOpen] = useState(false)
   const [isOcrOpen, setIsOcrOpen] = useState(false)
   const [isSundayModalOpen, setIsSundayModalOpen] = useState(false)
+  const [isOvertimeModalOpen, setIsOvertimeModalOpen] = useState(false)
+
+  // Control y Visualización de Horas Extras
+  const [overtimeSummaries, setOvertimeSummaries] = useState<UserOvertimeSummary[]>([])
+  const [overtimePairs, setOvertimePairs] = useState<any[]>([])
+  const [isLoadingOvertime, setIsLoadingOvertime] = useState(false)
+  const [totalOvertimeHours, setTotalOvertimeHours] = useState<number>(0)
+  const [totalStaffWithOvertime, setTotalStaffWithOvertime] = useState<number>(0)
+  const [overtimeThreshold, setOvertimeThreshold] = useState<number>(60)
+  const [overtimeSearchTerm, setOvertimeSearchTerm] = useState("")
+  const [expandedTechId, setExpandedTechId] = useState<string | null>(null)
+
+  const fetchOvertimeData = async () => {
+    setIsLoadingOvertime(true)
+    try {
+      const [yearStr, monthStr] = selectedMonth.split("-")
+      const y = parseInt(yearStr, 10) || new Date().getFullYear()
+      const m = parseInt(monthStr, 10) || new Date().getMonth() + 1
+      const daysInMonth = new Date(y, m, 0).getDate()
+      const startDate = `${selectedMonth}-01`
+      const endDate = `${selectedMonth}-${String(daysInMonth).padStart(2, "0")}`
+
+      const res = await getOvertimeReportAction({
+        startDate,
+        endDate,
+        role: "TECNICO",
+      })
+
+      if (res.success && res.staffSummaries) {
+        setOvertimeSummaries(res.staffSummaries)
+        setOvertimePairs(res.pairs || [])
+        setTotalOvertimeHours(res.totalCountedHours || 0)
+        setTotalStaffWithOvertime(res.totalStaffWithOvertime || 0)
+        if ("settings" in res && res.settings) {
+          setOvertimeThreshold(res.settings.minMinutes)
+        }
+      }
+    } catch (err) {
+      console.error("Error al cargar horas extras:", err)
+    } finally {
+      setIsLoadingOvertime(false)
+    }
+  }
+
+  // Cargar horas extras al cambiar de mes
+  useEffect(() => {
+    fetchOvertimeData()
+  }, [selectedMonth])
+
+  // Mapa de horas extras por técnico para consulta rápida en la matriz
+  const techOvertimeMap = useMemo(() => {
+    const map = new Map<string, { countedHours: number; rawHours: number; daysCount: number; formattedRaw: string }>()
+    for (const s of overtimeSummaries) {
+      map.set(s.userId, {
+        countedHours: s.totalCountedHours,
+        rawHours: s.totalRawHours,
+        daysCount: s.totalDaysWithOvertime,
+        formattedRaw: s.formattedRawTime,
+      })
+    }
+    return map
+  }, [overtimeSummaries])
+
+  // Filtrado de técnicos en el modal de horas extras
+  const filteredOvertimeStaff = useMemo(() => {
+    let list = overtimeSummaries
+    if (overtimeSearchTerm.trim()) {
+      const q = overtimeSearchTerm.toLowerCase().trim()
+      list = list.filter((s) => s.userName.toLowerCase().includes(q) || s.userDni.includes(q))
+    }
+    return [...list].sort((a, b) => b.totalCountedHours - a.totalCountedHours)
+  }, [overtimeSummaries, overtimeSearchTerm])
+
   const [sundayDate, setSundayDate] = useState<string>("")
   const [activeCampuses, setActiveCampuses] = useState<Record<string, boolean>>({})
   const [sundayAssignments, setSundayAssignments] = useState<
@@ -1741,38 +1819,38 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Bloque 1: Programación y Operación */}
           <Button
             onClick={() => openCurrentMonthMatrix()}
-            className="h-12 px-5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-extrabold rounded-xl shadow-md shadow-teal-600/20 flex items-center gap-2 transition-all hover:scale-105"
+            className="h-11 px-4 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-extrabold rounded-xl shadow-sm flex items-center gap-2 transition-all hover:scale-[1.02]"
           >
-            <CalendarDays size={18} />
-            Vista Rol Mensual (Calendario)
-          </Button>
-
-          <Button
-            onClick={() => setIsOcrOpen(true)}
-            className="h-12 px-5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold rounded-xl shadow-md shadow-purple-600/20 flex items-center gap-2"
-          >
-            <ImageIcon size={18} />
-            Cargar Foto / Rol
-          </Button>
-
-          <Button
-            onClick={() => setIsBulkOpen(true)}
-            variant="outline"
-            className="h-12 px-5 border-2 border-emerald-500 text-emerald-700 hover:bg-emerald-50 font-bold rounded-xl flex items-center gap-2"
-          >
-            <FileSpreadsheet size={18} />
-            Importar Excel
+            <CalendarDays size={17} />
+            Rol Mensual (Calendario)
           </Button>
 
           <Button
             onClick={() => openSundayManager()}
-            className="h-12 px-5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold rounded-xl shadow-md shadow-orange-500/20 flex items-center gap-2 transition-transform hover:scale-105"
+            className="h-11 px-4 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold rounded-xl shadow-sm flex items-center gap-2 transition-all hover:scale-[1.02]"
           >
-            <Sun size={20} className="text-yellow-100" />
+            <Sun size={17} />
             Turnos de Domingo
+          </Button>
+
+          <Button
+            onClick={() => {
+              fetchOvertimeData()
+              setIsOvertimeModalOpen(true)
+            }}
+            className="h-11 px-4 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-extrabold rounded-xl shadow-sm flex items-center gap-2 transition-all hover:scale-[1.02]"
+          >
+            <Clock size={17} />
+            Horas Extras
+            {totalOvertimeHours > 0 && (
+              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white/25 text-white text-[11px] font-black">
+                {totalOvertimeHours}h
+              </span>
+            )}
           </Button>
 
           <Button
@@ -1790,10 +1868,31 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
               })
               setIsIndividualOpen(true)
             }}
-            className="h-12 px-5 bg-[#1967D2] hover:bg-blue-800 text-white font-bold rounded-xl shadow-md shadow-blue-500/20 flex items-center gap-2"
+            className="h-11 px-4 bg-[#1967D2] hover:bg-blue-800 text-white font-bold rounded-xl shadow-sm flex items-center gap-2 transition-all hover:scale-[1.02]"
           >
-            <Plus size={18} />
+            <Plus size={17} />
             Asignar Turno
+          </Button>
+
+          <div className="h-6 w-px bg-slate-200 hidden sm:block" />
+
+          {/* Bloque 2: Herramientas de Carga Masiva */}
+          <Button
+            onClick={() => setIsBulkOpen(true)}
+            variant="outline"
+            className="h-11 px-3.5 border-slate-200 text-slate-700 hover:bg-slate-50 font-bold rounded-xl flex items-center gap-2"
+          >
+            <FileSpreadsheet size={16} className="text-emerald-600" />
+            Importar Excel
+          </Button>
+
+          <Button
+            onClick={() => setIsOcrOpen(true)}
+            variant="outline"
+            className="h-11 px-3.5 border-slate-200 text-slate-700 hover:bg-slate-50 font-bold rounded-xl flex items-center gap-2"
+          >
+            <ImageIcon size={16} className="text-purple-600" />
+            Cargar Foto / Rol
           </Button>
         </div>
       </div>
@@ -1842,6 +1941,48 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
               className="h-12 bg-slate-50 border-slate-200 font-medium text-slate-800 rounded-xl"
             />
           </div>
+        </div>
+      </Card>
+
+      {/* Banner Resumen Visual de Horas Extras del Mes */}
+      <Card className="rounded-[1.5rem] border-purple-200/80 shadow-xs bg-gradient-to-r from-purple-50/70 via-indigo-50/40 to-white p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-purple-600 text-white flex items-center justify-center shrink-0 shadow-sm shadow-purple-600/20">
+              <Clock size={20} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-black text-slate-800">
+                  Control de Horas Extras — {selectedMonth}
+                </h4>
+                {totalOvertimeHours > 0 ? (
+                  <span className="px-2 py-0.5 rounded-full text-xs font-black bg-purple-100 text-purple-800 border border-purple-300">
+                    +{totalOvertimeHours} hrs reconocidas
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-slate-100 text-slate-500">
+                    0 hrs reconocidas
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {totalStaffWithOvertime}{" "}
+                {totalStaffWithOvertime === 1 ? "técnico calificado" : "técnicos calificados"} con sobretiempo (umbral mínimo de {overtimeThreshold} min).
+              </p>
+            </div>
+          </div>
+
+          <Button
+            onClick={() => {
+              fetchOvertimeData()
+              setIsOvertimeModalOpen(true)
+            }}
+            className="h-9 px-4 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl shadow-xs flex items-center gap-2 self-start sm:self-auto"
+          >
+            <Sparkles size={14} />
+            Ver Detalle por Técnico
+          </Button>
         </div>
       </Card>
 
@@ -2993,34 +3134,6 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                   </p>
                 </div>
               </div>
-
-              {/* Guía Rápida de Turnos / Leyenda */}
-              <div className="flex items-center gap-1.5 flex-wrap text-[10px] font-bold">
-                <span className="px-2 py-0.5 rounded bg-teal-100 text-teal-800 border border-teal-300">
-                  M: Mañana (06:00)
-                </span>
-                <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
-                  T: Tarde (13:00 / 09:00 dom)
-                </span>
-                <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-900 border border-blue-300">
-                  I: Intermedio (08:00)
-                </span>
-                <span className="px-2 py-0.5 rounded bg-violet-100 text-violet-900 border border-violet-400 font-black">
-                  EV: Evento / Comisión
-                </span>
-                <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-900 border border-purple-300">
-                  (N) / (A) / (V) / (AR): Rotaciones de Sede
-                </span>
-                <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-600 border border-slate-300">
-                  D: Descanso
-                </span>
-                <span className="px-2 py-0.5 rounded bg-yellow-200 text-yellow-900 border border-yellow-400">
-                  F: Feriado
-                </span>
-                <span className="px-2 py-0.5 rounded bg-emerald-200 text-emerald-900 border border-emerald-400 font-black">
-                  VAC: Vacaciones
-                </span>
-              </div>
             </div>
 
             {/* Tabla Matriz Tipo Hoja de Cálculo / Calendario */}
@@ -3138,20 +3251,40 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                                         </option>
                                       ))}
                                     </select>
-                                    <div className="flex items-center gap-1.5 mt-0.5">
-                                      <select
-                                        value={row.campusName}
-                                        onChange={(e) => updateRowCampus(row.rowId, e.target.value)}
-                                        className="text-[10px] font-semibold text-slate-500 bg-slate-100 border border-slate-200 rounded px-1 py-0.5 outline-none"
-                                      >
-                                        <option value="Campus Villa">Sede Villa</option>
-                                        <option value="Campus Norte">Sede Norte</option>
-                                        <option value="Campus Ate">Sede Ate</option>
-                                        <option value="Campus Aramburú">Campus Aramburú</option>
-                                      </select>
-                                      {row.dni && (
-                                        <span className="text-[10px] text-slate-400 font-mono">DNI: {row.dni}</span>
-                                      )}
+                                    <div className="flex items-center justify-between gap-1 mt-0.5">
+                                      <div className="flex items-center gap-1.5 min-w-0">
+                                        <select
+                                          value={row.campusName}
+                                          onChange={(e) => updateRowCampus(row.rowId, e.target.value)}
+                                          className="text-[10px] font-semibold text-slate-500 bg-slate-100 border border-slate-200 rounded px-1 py-0.5 outline-none"
+                                        >
+                                          <option value="Campus Villa">Sede Villa</option>
+                                          <option value="Campus Norte">Sede Norte</option>
+                                          <option value="Campus Ate">Sede Ate</option>
+                                          <option value="Campus Aramburú">Campus Aramburú</option>
+                                        </select>
+                                        {row.dni && (
+                                          <span className="text-[10px] text-slate-400 font-mono hidden xl:inline">DNI: {row.dni}</span>
+                                        )}
+                                      </div>
+                                      {(() => {
+                                        const ot = row.techId ? techOvertimeMap.get(row.techId) : null
+                                        if (!ot || ot.countedHours <= 0) return null
+                                        return (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation()
+                                              setIsOvertimeModalOpen(true)
+                                            }}
+                                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-black bg-purple-100 text-purple-800 border border-purple-300 hover:bg-purple-200 transition-colors shrink-0 shadow-xs"
+                                            title={`Horas Extras: ${ot.countedHours} hrs (${ot.daysCount} días). Clic para ver detalle.`}
+                                          >
+                                            <Clock size={10} className="text-purple-600" />
+                                            <span>+{ot.countedHours}h</span>
+                                          </button>
+                                        )
+                                      })()}
                                     </div>
                                   </div>
                                   <button
@@ -3530,6 +3663,256 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             </div>
           </div>
         )}
+      </ScheduleModal>
+
+      {/* Modal Visual: Resumen y Detalle de Horas Extras de Técnicos */}
+      <ScheduleModal
+        isOpen={isOvertimeModalOpen}
+        onClose={() => setIsOvertimeModalOpen(false)}
+        title="Control y Horas Extras de Técnicos"
+        maxWidth="max-w-4xl"
+      >
+        <div className="space-y-6">
+          {/* Subtítulo y mes */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-200">
+            <div>
+              <p className="text-sm font-bold text-slate-700">
+                Periodo: <span className="text-purple-700 font-black">{selectedMonth}</span>
+              </p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Cálculo de permanencia posterior al horario de salida. Umbral mínimo para calificar:{" "}
+                <strong className="text-purple-700">{overtimeThreshold} minutos</strong>.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={fetchOvertimeData}
+              disabled={isLoadingOvertime}
+              className="self-start sm:self-auto text-xs font-bold gap-1.5"
+            >
+              <RefreshCw size={13} className={isLoadingOvertime ? "animate-spin" : ""} />
+              Actualizar
+            </Button>
+          </div>
+
+          {/* Tarjetas KPI Resumen */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-purple-50 to-indigo-50 border border-purple-200 shadow-xs">
+              <span className="text-[10px] font-black uppercase tracking-wider text-purple-600 block">
+                Total Horas Reconocidas
+              </span>
+              <div className="text-2xl font-black text-purple-900 mt-1 flex items-baseline gap-1">
+                {totalOvertimeHours} <span className="text-sm font-bold text-purple-600">hrs</span>
+              </div>
+              <p className="text-[11px] text-purple-700/80 font-medium mt-1">
+                Superaron el umbral oficial (≥ {overtimeThreshold}m)
+              </p>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-200 shadow-xs">
+              <span className="text-[10px] font-black uppercase tracking-wider text-emerald-600 block">
+                Técnicos con H. Extras
+              </span>
+              <div className="text-2xl font-black text-emerald-900 mt-1 flex items-baseline gap-1">
+                {totalStaffWithOvertime}{" "}
+                <span className="text-sm font-bold text-emerald-600">/ {technicians.length}</span>
+              </div>
+              <p className="text-[11px] text-emerald-700/80 font-medium mt-1">
+                Colaboradores con turnos calificados
+              </p>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200 shadow-xs">
+              <span className="text-[10px] font-black uppercase tracking-wider text-amber-600 block">
+                Regla de Calificación
+              </span>
+              <div className="text-2xl font-black text-amber-900 mt-1 flex items-baseline gap-1">
+                ≥ {overtimeThreshold} <span className="text-sm font-bold text-amber-600">min</span>
+              </div>
+              <p className="text-[11px] text-amber-700/80 font-medium mt-1">
+                Excesos menores computan 0 horas
+              </p>
+            </div>
+          </div>
+
+          {/* Buscador de técnicos */}
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <Input
+                placeholder="Buscar técnico por nombre o DNI..."
+                value={overtimeSearchTerm}
+                onChange={(e) => setOvertimeSearchTerm(e.target.value)}
+                className="pl-9 h-10 text-xs font-medium rounded-xl bg-slate-50 border-slate-200"
+              />
+            </div>
+          </div>
+
+          {/* Lista Visual de Técnicos y sus Horas Extras */}
+          <div className="space-y-3 max-h-[460px] overflow-y-auto pr-1">
+            {filteredOvertimeStaff.length === 0 ? (
+              <div className="text-center py-12 text-slate-400 font-medium">
+                No se encontraron registros de horas extras para el criterio de búsqueda.
+              </div>
+            ) : (
+              filteredOvertimeStaff.map((staff) => {
+                const maxCounted = Math.max(1, ...overtimeSummaries.map((s) => s.totalCountedHours))
+                const percentage = Math.min(100, Math.round((staff.totalCountedHours / maxCounted) * 100))
+                const hasOvertime = staff.totalCountedHours > 0
+                const isExpanded = expandedTechId === staff.userId
+                const staffPairs = overtimePairs.filter((p) => p.userId === staff.userId)
+
+                return (
+                  <div
+                    key={staff.userId}
+                    className={`rounded-2xl border transition-all p-4 ${
+                      hasOvertime
+                        ? "bg-white border-purple-200 shadow-sm hover:border-purple-300"
+                        : "bg-slate-50/70 border-slate-200 opacity-80"
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      {/* Avatar y Datos del Técnico */}
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`w-11 h-11 rounded-2xl flex items-center justify-center text-sm font-black text-white shrink-0 shadow-xs ${
+                            hasOvertime
+                              ? "bg-gradient-to-br from-purple-600 to-indigo-600"
+                              : "bg-slate-400"
+                          }`}
+                        >
+                          {staff.userName
+                            .split(" ")
+                            .filter(Boolean)
+                            .slice(0, 2)
+                            .map((w) => w[0])
+                            .join("")
+                            .toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-sm font-black text-slate-800 leading-tight">
+                              {staff.userName}
+                            </h4>
+                            <span className="text-[10px] font-bold px-1.5 py-0.2 bg-slate-100 text-slate-600 rounded">
+                              DNI {staff.userDni}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-slate-500 mt-1">
+                            <span className="flex items-center gap-1 font-semibold">
+                              <MapPin size={11} className="text-blue-500" />
+                              {staff.campusName || "Campus Villa"}
+                            </span>
+                            <span>•</span>
+                            <span className="font-medium">
+                              Turno base: <strong className="text-slate-700">{staff.shift}</strong>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Métricas Visuales y Badge */}
+                      <div className="flex items-center gap-4 self-end sm:self-center">
+                        <div className="text-right">
+                          <div className="flex items-baseline justify-end gap-1">
+                            <span className={`text-xl font-black ${hasOvertime ? "text-purple-700" : "text-slate-400"}`}>
+                              {staff.totalCountedHours}
+                            </span>
+                            <span className="text-xs font-bold text-slate-400">hrs</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400">
+                            {hasOvertime
+                              ? `${staff.totalDaysWithOvertime} ${staff.totalDaysWithOvertime === 1 ? "día" : "días"} con sobretiempo`
+                              : "Sin horas calificadas"}
+                          </p>
+                        </div>
+
+                        {staffPairs.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setExpandedTechId(isExpanded ? null : staff.userId)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                            title={isExpanded ? "Ocultar detalle de días" : "Ver detalle de días"}
+                          >
+                            {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Barra de Progreso Visual */}
+                    {hasOvertime && (
+                      <div className="mt-3 pt-3 border-t border-slate-100">
+                        <div className="flex items-center justify-between text-[11px] text-slate-500 font-bold mb-1">
+                          <span>
+                            Bruto acumulado: <strong className="text-slate-700">{staff.formattedRawTime}</strong>
+                          </span>
+                          <span className="text-purple-700 font-black">
+                            Reconocido: +{staff.totalCountedHours} hrs
+                          </span>
+                        </div>
+                        <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-purple-500 to-indigo-600 transition-all duration-500"
+                            style={{ width: `${percentage}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Desplegable con Detalle de Marcaciones por Día */}
+                    {isExpanded && staffPairs.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5 animate-fade-in-up">
+                        <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">
+                          Marcaciones y salidas registradas:
+                        </p>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs text-left">
+                            <thead>
+                              <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 uppercase">
+                                <th className="pb-1.5">Fecha</th>
+                                <th className="pb-1.5">Sede</th>
+                                <th className="pb-1.5">Salida Programada</th>
+                                <th className="pb-1.5">Salida Real</th>
+                                <th className="pb-1.5 text-right">Exceso</th>
+                                <th className="pb-1.5 text-right">Estado</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-50">
+                              {staffPairs.map((p, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50/50">
+                                  <td className="py-1 font-bold text-slate-800">📅 {p.date}</td>
+                                  <td className="py-1 text-slate-600">{p.campusName}</td>
+                                  <td className="py-1 text-slate-500">{p.expectedExit}</td>
+                                  <td className="py-1 font-mono font-bold text-slate-800">{p.actualExit}</td>
+                                  <td className="py-1 text-right font-mono font-semibold text-slate-700">
+                                    +{Math.floor(p.rawExtraMinutes / 60)}h {p.rawExtraMinutes % 60}m
+                                  </td>
+                                  <td className="py-1 text-right">
+                                    {p.qualifies ? (
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                        Califica (+{p.countedExtraMinutes}m)
+                                      </span>
+                                    ) : (
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-500">
+                                        No califica (&lt; {overtimeThreshold}m)
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </div>
       </ScheduleModal>
     </div>
   )
