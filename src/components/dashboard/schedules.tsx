@@ -806,6 +806,16 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     return "Campus Villa"
   }
 
+  // Código corto para tokens de rotación (N: Norte, A: Ate, AR: Aramburú, V: Villa)
+  const getCampusCode = (campusName: string): string => {
+    const canon = canonicalCampusName(campusName)
+    if (canon.includes("Norte")) return "N"
+    if (canon.includes("Ate")) return "A"
+    if (canon.includes("Aramburú")) return "AR"
+    if (canon.includes("Villa")) return "V"
+    return "V"
+  }
+
   // Parsear contenido de celda de turno y rotación (ej: M, T, I, N, M(N), T(N), M(V), M(A), D, DESC)
   const resolveTokenToCell = (rawToken: any, defaultCampusName: string, isSunday = false): MatrixCell => {
     const str = String(rawToken || "").trim()
@@ -855,14 +865,15 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       }
     }
 
-    // Formato de rotación: LETRA(SEDE), ej: M(N), T(N), I(N), M(V), T(V), M(A)
-    const rotMatch = upper.match(/^([MTIN])\s*\(([NVA])\)$/i)
+    // Formato de rotación: LETRA(SEDE), ej: M(N), T(N), I(N), M(V), T(V), M(A), M(AR)
+    const rotMatch = upper.match(/^([MTIN])\s*\(([A-Z0-9]+)\)$/i)
     if (rotMatch) {
       const shiftLetter = rotMatch[1].toUpperCase()
       const campusCode = rotMatch[2].toUpperCase()
       let targetCampus = defaultCampusName
       if (campusCode === "N") targetCampus = "Campus Norte"
       else if (campusCode === "A") targetCampus = "Campus Ate"
+      else if (campusCode === "AR") targetCampus = "Campus Aramburú"
       else if (campusCode === "V") targetCampus = "Campus Villa"
 
       let shift: Shift = Shift.MANANA
@@ -993,6 +1004,119 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       }
     })
   }
+
+  // Actualizar turno y/o sede de forma directa y limpia
+  const updateMatrixCellShiftAndCampus = (
+    rowId: string,
+    day: number,
+    shiftLetter: "M" | "T" | "I" | "EV" | "D" | "F" | "VAC",
+    targetCampusName?: string
+  ) => {
+    if (!matrixPreview) return
+    const meta = matrixPreview.daysMeta.find((m) => m.dayNumber === day)
+    const isSunday = meta?.isSunday || false
+
+    setMatrixPreview((prev) => {
+      if (!prev) return null
+      const updatedRows = prev.rows.map((r) => {
+        if (r.rowId !== rowId) return r
+        const updatedDays = { ...r.days }
+        const currentCell = updatedDays[day]
+        const resolvedCampus = canonicalCampusName(
+          targetCampusName || currentCell?.campusName || r.campusName
+        )
+        const isBaseCampus = resolvedCampus === canonicalCampusName(r.campusName)
+
+        let token: string = shiftLetter
+        if (["M", "T", "I"].includes(shiftLetter) && !isBaseCampus) {
+          const code = getCampusCode(resolvedCampus)
+          token = `${shiftLetter}(${code})`
+        }
+
+        updatedDays[day] = resolveTokenToCell(token, resolvedCampus, isSunday)
+        return {
+          ...r,
+          days: updatedDays,
+        }
+      })
+      return {
+        ...prev,
+        rows: updatedRows,
+      }
+    })
+  }
+
+  // Cambiar únicamente la sede asignada para este día (actualiza token de rotación manteniendo el turno)
+  const updateMatrixCellCampus = (rowId: string, day: number, targetCampusName: string) => {
+    if (!matrixPreview) return
+    const meta = matrixPreview.daysMeta.find((m) => m.dayNumber === day)
+    const isSunday = meta?.isSunday || false
+
+    setMatrixPreview((prev) => {
+      if (!prev) return null
+      const updatedRows = prev.rows.map((r) => {
+        if (r.rowId !== rowId) return r
+        const updatedDays = { ...r.days }
+        const currentCell = updatedDays[day]
+        const resolvedCampus = canonicalCampusName(targetCampusName)
+        const isBaseCampus = resolvedCampus === canonicalCampusName(r.campusName)
+
+        const rawToken = (currentCell?.token || "D").toUpperCase().trim()
+        let baseLetter = "D"
+        if (rawToken.startsWith("M")) baseLetter = "M"
+        else if (rawToken.startsWith("T")) baseLetter = "T"
+        else if (rawToken.startsWith("I")) baseLetter = "I"
+        else if (rawToken.startsWith("EV")) baseLetter = "EV"
+        else if (rawToken.startsWith("VAC")) baseLetter = "VAC"
+        else if (rawToken.startsWith("F")) baseLetter = "F"
+        else baseLetter = "D"
+
+        let token: string = baseLetter
+        if (["M", "T", "I"].includes(baseLetter) && !isBaseCampus) {
+          const code = getCampusCode(resolvedCampus)
+          token = `${baseLetter}(${code})`
+        }
+
+        updatedDays[day] = resolveTokenToCell(token, resolvedCampus, isSunday)
+        return {
+          ...r,
+          days: updatedDays,
+        }
+      })
+      return {
+        ...prev,
+        rows: updatedRows,
+      }
+    })
+  }
+
+  // Lista de sedes disponibles para rotación
+  const availableCampusList = useMemo(() => {
+    return Array.from(
+      new Set([
+        "Campus Villa",
+        "Campus Norte",
+        "Campus Ate",
+        "Campus Aramburú",
+        ...campuses.map((c) => canonicalCampusName(c.name)),
+      ])
+    )
+  }, [campuses])
+
+  // Cerrar selector popup al hacer clic fuera
+  useEffect(() => {
+    if (!activeCellPopup) return
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null
+      if (target && !target.closest("[data-cell-popup]")) {
+        setActiveCellPopup(null)
+      }
+    }
+    window.addEventListener("mousedown", handleClickOutside)
+    return () => {
+      window.removeEventListener("mousedown", handleClickOutside)
+    }
+  }, [activeCellPopup])
 
   const updateRowCampus = (rowId: string, newCampusName: string) => {
     if (!matrixPreview) return
@@ -2885,19 +3009,16 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                   EV: Evento / Comisión
                 </span>
                 <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-900 border border-purple-300">
-                  M(N)/T(N): Rot. Norte
-                </span>
-                <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-900 border border-indigo-300">
-                  M(V): Rot. Villa
-                </span>
-                <span className="px-2 py-0.5 rounded bg-pink-100 text-pink-900 border border-pink-300">
-                  M(A): Rot. Ate
+                  (N) / (A) / (V) / (AR): Rotaciones de Sede
                 </span>
                 <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-600 border border-slate-300">
                   D: Descanso
                 </span>
                 <span className="px-2 py-0.5 rounded bg-yellow-200 text-yellow-900 border border-yellow-400">
                   F: Feriado
+                </span>
+                <span className="px-2 py-0.5 rounded bg-emerald-200 text-emerald-900 border border-emerald-400 font-black">
+                  VAC: Vacaciones
                 </span>
               </div>
             </div>
@@ -3056,6 +3177,30 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                                 const isPopupOpen =
                                   activeCellPopup?.rowId === row.rowId && activeCellPopup?.day === meta.dayNumber
 
+                                const cellCampusCanon = canonicalCampusName(dayCell.campusName || row.campusName)
+                                const baseCampusCanon = canonicalCampusName(row.campusName)
+                                const isRotated = cellCampusCanon !== baseCampusCanon
+
+                                const currentShiftLetter = (() => {
+                                  const tok = (dayCell.token || "").toUpperCase().trim()
+                                  if (tok === "D" || tok === "DESC" || tok === "LIBRE") return "D"
+                                  if (tok.startsWith("EV")) return "EV"
+                                  if (tok === "F") return "F"
+                                  if (tok === "VAC") return "VAC"
+                                  if (tok.startsWith("T")) return "T"
+                                  if (tok.startsWith("I")) return "I"
+                                  if (tok.startsWith("M")) return "M"
+                                  return "D"
+                                })()
+
+                                const isNearRightEdge = meta.dayNumber > matrixPreview.daysInMonth - 4
+                                const isNearLeftEdge = meta.dayNumber < 4
+                                const popupPositionClass = isNearRightEdge
+                                  ? "right-0"
+                                  : isNearLeftEdge
+                                  ? "left-0"
+                                  : "left-1/2 -translate-x-1/2"
+
                                 // Colorimetría exacta de la ficha
                                 let badgeColor = "bg-white text-slate-400 hover:bg-slate-100"
                                 if (dayCell.token === "M") {
@@ -3070,6 +3215,10 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                                   badgeColor = "bg-indigo-100 text-indigo-900 border-indigo-300 font-black"
                                 } else if (dayCell.token.includes("(A)")) {
                                   badgeColor = "bg-pink-100 text-pink-900 border-pink-300 font-black"
+                                } else if (dayCell.token.includes("(AR)")) {
+                                  badgeColor = "bg-cyan-100 text-cyan-900 border-cyan-300 font-black"
+                                } else if (/\([A-Z0-9]+\)/.test(dayCell.token)) {
+                                  badgeColor = "bg-purple-100 text-purple-900 border-purple-300 font-black"
                                 } else if (dayCell.token === "EV" || dayCell.token.startsWith("EV")) {
                                   badgeColor = "bg-violet-100 text-violet-900 border-violet-400 font-black shadow-xs ring-1 ring-violet-300"
                                 } else if (dayCell.token === "F") {
@@ -3105,52 +3254,221 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
 
                                     {/* Selector Rápido Popup */}
                                     {isPopupOpen && (
-                                      <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1 z-50 bg-white border-2 border-slate-300 rounded-xl shadow-2xl p-2 w-52 text-left animate-fade-in-up">
-                                        <div className="text-[11px] font-black text-slate-700 mb-1.5 flex items-center justify-between border-b pb-1">
-                                          <span>Día {meta.dayNumber} ({meta.dayLetter})</span>
+                                      <div
+                                        data-cell-popup="true"
+                                        onClick={(e) => e.stopPropagation()}
+                                        className={`absolute top-full ${popupPositionClass} mt-1.5 z-50 bg-white border border-slate-300 rounded-2xl shadow-2xl p-3 w-64 text-left animate-fade-in-up ring-1 ring-black/5`}
+                                      >
+                                        {/* Cabecera */}
+                                        <div className="flex items-center justify-between border-b border-slate-100 pb-2 mb-2.5">
+                                          <div>
+                                            <div className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+                                              <span>Día {meta.dayNumber} ({meta.dayLetter})</span>
+                                              {isSunday && (
+                                                <span className="text-[10px] font-bold px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded">
+                                                  Dom
+                                                </span>
+                                              )}
+                                            </div>
+                                            <p className="text-[10px] text-slate-500 truncate max-w-[170px]" title={row.name}>
+                                              {row.name}
+                                            </p>
+                                          </div>
                                           <button
                                             type="button"
                                             onClick={(e) => {
                                               e.stopPropagation()
                                               setActiveCellPopup(null)
                                             }}
-                                            className="text-slate-400 hover:text-slate-600"
+                                            className="w-6 h-6 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+                                            title="Cerrar ventana"
                                           >
-                                            <X size={12} />
+                                            <X size={14} />
                                           </button>
                                         </div>
 
-                                        <div className="grid grid-cols-3 gap-1">
-                                          {[
-                                            { t: "M", l: "Mañana" },
-                                            { t: "T", l: isSunday ? "Tarde/09h" : "Tarde" },
-                                            { t: "I", l: "Interm." },
-                                            { t: "EV", l: "EV (Evento)" },
-                                            { t: "M(N)", l: "Mañ. Norte" },
-                                            { t: "T(N)", l: "Tar. Norte" },
-                                            { t: "M(V)", l: "Mañ. Villa" },
-                                            { t: "M(A)", l: "Mañ. Ate" },
-                                            { t: "T(A)", l: "Tar. Ate" },
-                                            { t: "D", l: "Descanso" },
-                                            { t: "F", l: "Feriado" },
-                                            { t: "VAC", l: "Vacaciones" },
-                                          ].map((opt) => (
+                                        {/* Selector de Sede para este día (Rotación sin saturar) */}
+                                        <div className="mb-3">
+                                          <div className="flex items-center justify-between mb-1">
+                                            <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider flex items-center gap-1">
+                                              <MapPin size={11} className="text-blue-600" />
+                                              Sede asignada:
+                                            </label>
+                                            {isRotated && (
+                                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700">
+                                                Rotación
+                                              </span>
+                                            )}
+                                          </div>
+                                          <select
+                                            value={cellCampusCanon}
+                                            onChange={(e) => {
+                                              updateMatrixCellCampus(row.rowId, meta.dayNumber, e.target.value)
+                                            }}
+                                            className="w-full text-xs font-semibold py-1.5 px-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all cursor-pointer"
+                                          >
+                                            <option value={baseCampusCanon}>
+                                              📍 Sede habitual ({baseCampusCanon})
+                                            </option>
+                                            {availableCampusList
+                                              .filter((s) => s !== baseCampusCanon)
+                                              .map((s) => (
+                                                <option key={s} value={s}>
+                                                  🔄 Rotar a: {s}
+                                                </option>
+                                              ))}
+                                          </select>
+                                        </div>
+
+                                        {/* Turnos Básicos (Mañana, Tarde, Intermedio, Evento, Descanso) */}
+                                        <div className="mb-2.5">
+                                          <span className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block mb-1.5">
+                                            Turnos Principales:
+                                          </span>
+                                          {/* M, T, I */}
+                                          <div className="grid grid-cols-3 gap-1 mb-1.5">
+                                            {[
+                                              { key: "M", label: "Mañana", desc: "06:00" },
+                                              { key: "T", label: isSunday ? "Tarde/09h" : "Tarde", desc: isSunday ? "09:00" : "13:00" },
+                                              { key: "I", label: "Interm.", desc: "08:00" },
+                                            ].map((shiftOpt) => {
+                                              const isSelected = currentShiftLetter === shiftOpt.key
+                                              return (
+                                                <button
+                                                  key={shiftOpt.key}
+                                                  type="button"
+                                                  onClick={() => {
+                                                    updateMatrixCellShiftAndCampus(
+                                                      row.rowId,
+                                                      meta.dayNumber,
+                                                      shiftOpt.key as any,
+                                                      cellCampusCanon
+                                                    )
+                                                    setActiveCellPopup(null)
+                                                  }}
+                                                  className={`p-1.5 rounded-lg border text-center transition-all ${
+                                                    isSelected
+                                                      ? "bg-blue-600 text-white border-blue-600 shadow-sm font-black"
+                                                      : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-blue-50 hover:border-blue-300 font-bold"
+                                                  }`}
+                                                >
+                                                  <div className="text-xs font-black leading-tight">
+                                                    {shiftOpt.key}
+                                                    {isRotated ? `(${getCampusCode(cellCampusCanon)})` : ""}
+                                                  </div>
+                                                  <div className={`text-[9px] ${isSelected ? "text-blue-100" : "text-slate-400"}`}>
+                                                    {shiftOpt.label}
+                                                  </div>
+                                                </button>
+                                              )
+                                            })}
+                                          </div>
+
+                                          {/* EV (Evento) y D (Descanso) */}
+                                          <div className="grid grid-cols-2 gap-1.5">
                                             <button
-                                              key={opt.t}
                                               type="button"
                                               onClick={() => {
-                                                updateMatrixCell(row.rowId, meta.dayNumber, opt.t)
+                                                updateMatrixCellShiftAndCampus(
+                                                  row.rowId,
+                                                  meta.dayNumber,
+                                                  "EV",
+                                                  cellCampusCanon
+                                                )
                                                 setActiveCellPopup(null)
                                               }}
-                                              className={`px-1.5 py-1 text-[11px] font-bold rounded border text-center transition-colors ${
-                                                dayCell.token === opt.t
-                                                  ? "bg-blue-600 text-white border-blue-600 font-black"
-                                                  : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-200"
+                                              className={`px-2 py-1.5 rounded-lg border text-left transition-all flex items-center justify-between ${
+                                                currentShiftLetter === "EV"
+                                                  ? "bg-violet-600 text-white border-violet-600 shadow-sm font-black"
+                                                  : "bg-violet-50/70 text-violet-800 border-violet-200 hover:bg-violet-100 font-bold"
                                               }`}
                                             >
-                                              {opt.t}
+                                              <div>
+                                                <div className="text-xs font-black leading-tight">EV</div>
+                                                <div className={`text-[9px] ${currentShiftLetter === "EV" ? "text-violet-100" : "text-violet-600"}`}>
+                                                  Evento / Comisión
+                                                </div>
+                                              </div>
+                                              <span className="text-xs">✈️</span>
                                             </button>
-                                          ))}
+
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                updateMatrixCellShiftAndCampus(
+                                                  row.rowId,
+                                                  meta.dayNumber,
+                                                  "D",
+                                                  cellCampusCanon
+                                                )
+                                                setActiveCellPopup(null)
+                                              }}
+                                              className={`px-2 py-1.5 rounded-lg border text-left transition-all flex items-center justify-between ${
+                                                currentShiftLetter === "D"
+                                                  ? "bg-slate-700 text-white border-slate-700 shadow-sm font-black"
+                                                  : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 font-bold"
+                                              }`}
+                                            >
+                                              <div>
+                                                <div className="text-xs font-black leading-tight">D</div>
+                                                <div className={`text-[9px] ${currentShiftLetter === "D" ? "text-slate-200" : "text-slate-400"}`}>
+                                                  Descanso
+                                                </div>
+                                              </div>
+                                              <span className="text-xs">💤</span>
+                                            </button>
+                                          </div>
+                                        </div>
+
+                                        {/* Feriado y Vacaciones (Separados como solicitó el usuario) */}
+                                        <div className="pt-2 border-t border-slate-100">
+                                          <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                                            <span>Otros Estados:</span>
+                                            <span className="text-[9px] text-slate-400 font-normal">Feriados / Permisos</span>
+                                          </div>
+                                          <div className="grid grid-cols-2 gap-1.5">
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                updateMatrixCellShiftAndCampus(row.rowId, meta.dayNumber, "F")
+                                                setActiveCellPopup(null)
+                                              }}
+                                              className={`px-2 py-1.5 rounded-lg border text-left transition-all flex items-center justify-between ${
+                                                currentShiftLetter === "F"
+                                                  ? "bg-yellow-500 text-slate-950 border-yellow-500 shadow-sm font-black"
+                                                  : "bg-yellow-50 text-yellow-800 border-yellow-200 hover:bg-yellow-100 font-bold"
+                                              }`}
+                                            >
+                                              <div>
+                                                <div className="text-xs font-black leading-tight">F</div>
+                                                <div className={`text-[9px] ${currentShiftLetter === "F" ? "text-yellow-900" : "text-yellow-600"}`}>
+                                                  Feriado
+                                                </div>
+                                              </div>
+                                              <span className="text-xs">🚩</span>
+                                            </button>
+
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                updateMatrixCellShiftAndCampus(row.rowId, meta.dayNumber, "VAC")
+                                                setActiveCellPopup(null)
+                                              }}
+                                              className={`px-2 py-1.5 rounded-lg border text-left transition-all flex items-center justify-between ${
+                                                currentShiftLetter === "VAC"
+                                                  ? "bg-emerald-600 text-white border-emerald-600 shadow-sm font-black"
+                                                  : "bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100 font-bold"
+                                              }`}
+                                            >
+                                              <div>
+                                                <div className="text-xs font-black leading-tight">VAC</div>
+                                                <div className={`text-[9px] ${currentShiftLetter === "VAC" ? "text-emerald-100" : "text-emerald-600"}`}>
+                                                  Vacaciones
+                                                </div>
+                                              </div>
+                                              <span className="text-xs">🏖️</span>
+                                            </button>
+                                          </div>
                                         </div>
                                       </div>
                                     )}
