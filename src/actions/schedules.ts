@@ -181,6 +181,7 @@ export async function bulkUpsertTechnicianSchedulesAction(items: ScheduleItemInp
     let processed = 0
     let errors = 0
     const errorDetails: string[] = []
+    const upsertBatch: any[] = []
 
     for (const item of items) {
       if (!item.date || !/^\d{4}-\d{2}-\d{2}$/.test(item.date)) {
@@ -256,7 +257,7 @@ export async function bulkUpsertTechnicianSchedulesAction(items: ScheduleItemInp
       const grace = item.gracePeriodMinutes ?? def.grace
       const late = item.lateToleranceMinutes ?? def.late
 
-      await prisma.technicianSchedule.upsert({
+      upsertBatch.push({
         where: {
           userId_date: {
             userId: targetUser.id,
@@ -288,7 +289,14 @@ export async function bulkUpsertTechnicianSchedulesAction(items: ScheduleItemInp
           notes: item.notes || "Carga Masiva",
         },
       })
-      processed++
+    }
+
+    // Ejecución optimizada en bloques concurrentes (reducción sustancial en tiempo de respuesta)
+    const BATCH_SIZE = 25
+    for (let i = 0; i < upsertBatch.length; i += BATCH_SIZE) {
+      const chunk = upsertBatch.slice(i, i + BATCH_SIZE)
+      await Promise.all(chunk.map((op) => prisma.technicianSchedule.upsert(op)))
+      processed += chunk.length
     }
 
     revalidatePath("/dashboard")

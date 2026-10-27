@@ -3,6 +3,7 @@
 import prisma from "@/lib/prisma"
 import { Role, Shift } from "@prisma/client"
 import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
+import { revalidatePath } from "next/cache"
 
 export async function bulkUploadUsersAction(data: { name: string, dni: string, role: string, campus?: string }[]) {
   try {
@@ -10,9 +11,19 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
     let updatedCount = 0
     let errorCount = 0
 
-    // Obtenemos todas las sedes actuales para no crear duplicados
-    const campuses = await prisma.campus.findMany()
+    // Obtenemos todas las sedes y usuarios existentes en lote para evitar consultas repetitivas
+    const dnis = data.map((d) => d.dni?.toString().trim()).filter((d) => d && d.length === 8)
+    const [campuses, existingUsers] = await Promise.all([
+      prisma.campus.findMany(),
+      prisma.user.findMany({
+        where: { dni: { in: dnis } },
+        select: { id: true, dni: true },
+      }),
+    ])
+
     const campusMap = new Map(campuses.map(c => [c.name.trim().toLowerCase(), c.id]))
+    const existingDniSet = new Set(existingUsers.map((u) => u.dni))
+    const writeOperations: (() => Promise<any>)[] = []
 
     for (const item of data) {
       // Validación básica
@@ -73,21 +84,29 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
         }
       }
 
-      // Upsert: Si existe actualiza, si no, crea.
-      const existing = await prisma.user.findUnique({ where: { dni: dniStr } })
-
-      if (existing) {
-        await prisma.user.update({
-          where: { dni: dniStr },
-          data: { name: item.name.toString().trim(), role: userRole, campusId: finalCampusId }
-        })
+      // Encolar operaciones concurrentes
+      if (existingDniSet.has(dniStr)) {
+        writeOperations.push(() =>
+          prisma.user.update({
+            where: { dni: dniStr },
+            data: { name: item.name.toString().trim(), role: userRole, campusId: finalCampusId },
+          })
+        )
         updatedCount++
       } else {
-        await prisma.user.create({
-          data: { name: item.name.toString().trim(), dni: dniStr, role: userRole, campusId: finalCampusId }
-        })
+        writeOperations.push(() =>
+          prisma.user.create({
+            data: { name: item.name.toString().trim(), dni: dniStr, role: userRole, campusId: finalCampusId },
+          })
+        )
         insertedCount++
       }
+    }
+
+    // Ejecutar en lotes concurrentes para optimizar tiempos de respuesta
+    const BATCH_SIZE = 25
+    for (let i = 0; i < writeOperations.length; i += BATCH_SIZE) {
+      await Promise.all(writeOperations.slice(i, i + BATCH_SIZE).map((fn) => fn()))
     }
 
     return {
@@ -103,8 +122,6 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
 // ---------------------------------------------
 // CRUD: EDITAR USUARIO
 // ---------------------------------------------
-import { revalidatePath } from "next/cache"
-
 export async function editUserAction(
   oldDni: string,
   data: {

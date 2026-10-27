@@ -1,13 +1,31 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
-import { PrismaClient, Role, RecordType, RecordStatus } from "@prisma/client"
-
+import { Role, RecordType, RecordStatus, Shift } from "@prisma/client"
 import prisma from "@/lib/prisma"
 import { limaMinutesOfDay, limaDayOfWeek } from "@/lib/timezone"
-import { checkGeofence, detectAndValidateCampus } from "@/lib/geofence"
+import { detectAndValidateCampus } from "@/lib/geofence"
 import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
-import { Shift } from "@prisma/client"
+
+// Caché de sedes en memoria (TTL: 60s) para acelerar tiempos de respuesta de marcación
+let cachedCampuses: { data: any[]; expiresAt: number } | null = null
+
+async function getCachedCampusesList() {
+  const now = Date.now()
+  if (cachedCampuses && cachedCampuses.expiresAt > now) {
+    return cachedCampuses.data
+  }
+  try {
+    const list = await prisma.campus.findMany({
+      select: { id: true, name: true, geoEnforced: true, latitude: true, longitude: true, radiusMeters: true },
+    })
+    cachedCampuses = { data: list, expiresAt: now + 60_000 }
+    return list
+  } catch (err) {
+    console.warn("No se pudo consultar sedes desde BD para geocerca, usando catálogo oficial:", err)
+    return cachedCampuses ? cachedCampuses.data : []
+  }
+}
 
 // ------------------------------------------------------------------
 // 0. CONSULTA DE ESTADO DE ASISTENCIA HOY (para lógica ENTRADA/SALIDA)
@@ -218,15 +236,6 @@ type RegisterAttendanceData = {
 
 export async function registerAttendanceAction(data: RegisterAttendanceData) {
   try {
-    const user = await prisma.user.findUnique({
-      where: { id: data.userId },
-      include: { campus: true },
-    })
-
-    if (!user) {
-      return { success: false, message: "El usuario ya no existe en el sistema." }
-    }
-
     const recordTimestamp = data.isOfflineSync && data.clientTimestamp 
       ? new Date(data.clientTimestamp) 
       : new Date()
@@ -239,19 +248,31 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       day: "2-digit",
     }).format(recordTimestamp)
 
-    // Si es TÉCNICO, verificar si tiene turno programado para hoy en el cronograma
-    let scheduledShift: any = null
-    if (data.role === Role.TECNICO) {
-      scheduledShift = await prisma.technicianSchedule.findUnique({
-        where: {
-          userId_date: {
-            userId: data.userId,
-            date: limaDateStr,
-          },
-        },
+    // Consulta concurrente en paralelo: usuario, turno programado y sedes en 1 roundtrip
+    const [user, scheduledShift, allCampuses] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: data.userId },
         include: { campus: true },
-      })
+      }),
+      data.role === Role.TECNICO
+        ? prisma.technicianSchedule.findUnique({
+            where: {
+              userId_date: {
+                userId: data.userId,
+                date: limaDateStr,
+              },
+            },
+            include: { campus: true },
+          })
+        : Promise.resolve(null),
+      getCachedCampusesList(),
+    ])
 
+    if (!user) {
+      return { success: false, message: "El usuario ya no existe en el sistema." }
+    }
+
+    if (data.role === Role.TECNICO) {
       // Si el técnico está programado en DESCANSO para hoy
       if (scheduledShift && scheduledShift.shift === Shift.DESCANSO) {
         return {
@@ -284,15 +305,6 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
     const tentativeCampusName = (data.campusId && data.campusId.trim() !== '')
       ? data.campusId.trim()
       : (scheduledShift?.campus?.name || user.campus?.name || "Campus Villa")
-
-    let allCampuses: any[] = []
-    try {
-      allCampuses = await prisma.campus.findMany({
-        select: { name: true, geoEnforced: true, latitude: true, longitude: true, radiusMeters: true },
-      })
-    } catch (err) {
-      console.warn("No se pudo consultar sedes desde BD para geocerca, usando catálogo oficial:", err)
-    }
 
     if (!data.isOfflineSync && data.location) {
       // Validación de sede: respeta la activación/desactivación en Sedes y Cursos
@@ -330,14 +342,22 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       }
     }
 
-    // Resolver Campus ID en BD
-    let finalCampusId = null
+    // Resolver Campus ID en memoria desde el catálogo precargado (ahorra consulta repetida a la BD)
+    let finalCampusId: string | null = null
     if (resolvedCampusName) {
-      let campus = await prisma.campus.findUnique({ where: { name: resolvedCampusName } })
-      if (!campus) {
-        campus = await prisma.campus.create({ data: { name: resolvedCampusName } })
+      const match = allCampuses.find(
+        (c) => c.name.toLowerCase() === resolvedCampusName!.toLowerCase()
+      )
+      if (match?.id) {
+        finalCampusId = match.id
+      } else {
+        let campus = await prisma.campus.findUnique({ where: { name: resolvedCampusName } })
+        if (!campus) {
+          campus = await prisma.campus.create({ data: { name: resolvedCampusName } })
+          cachedCampuses = null
+        }
+        finalCampusId = campus.id
       }
-      finalCampusId = campus.id
     }
 
     // Resolver Course por nombre
@@ -645,55 +665,88 @@ export async function calculateToleranceStatus(
 // ------------------------------------------------------------------
 export async function syncOfflineRecordsAction(records: any[]) {
   try {
-    let syncedCount = 0
+    if (!records || records.length === 0) {
+      return { success: true, syncedCount: 0, errorCount: 0 }
+    }
+
+    const dnis = Array.from(new Set(records.map((r) => r.dni).filter(Boolean)))
+    const [users, campuses, rules] = await Promise.all([
+      prisma.user.findMany({ where: { dni: { in: dnis } } }),
+      prisma.campus.findMany(),
+      prisma.toleranceRule.findMany(),
+    ])
+
+    const userMap = new Map(users.map((u) => [u.dni, u]))
+    const campusMap = new Map(campuses.map((c) => [c.name.toLowerCase(), c.id]))
+    const courseMap = new Map<string, string>()
+
     let errorCount = 0
-    
+    const recordsToCreate: any[] = []
+
     for (const record of records) {
-      // Buscamos el usuario por DNI porque offline no teníamos su ID
-      const user = await prisma.user.findUnique({ where: { dni: record.dni } })
-      
+      const user = userMap.get(record.dni)
       if (!user) {
         errorCount++
         continue
       }
 
-      // Resolver Campus y Course para el sync offline
-      let finalCampusId = null
+      let finalCampusId: string | null = null
       if (record.campusId) {
-        let campus = await prisma.campus.findUnique({ where: { name: record.campusId } })
-        if (!campus) campus = await prisma.campus.create({ data: { name: record.campusId } })
-        finalCampusId = campus.id
+        const cLower = record.campusId.toLowerCase()
+        if (campusMap.has(cLower)) {
+          finalCampusId = campusMap.get(cLower)!
+        } else {
+          const newC = await prisma.campus.create({ data: { name: record.campusId } })
+          campusMap.set(cLower, newC.id)
+          cachedCampuses = null
+          finalCampusId = newC.id
+        }
       }
-      
-      let finalCourseId = null
+
+      let finalCourseId: string | null = null
       if (record.courseId) {
-        let course = await prisma.course.findUnique({ where: { name: record.courseId } })
-        if (!course) course = await prisma.course.create({ data: { name: record.courseId } })
-        finalCourseId = course.id
+        const courseName = record.courseId.trim()
+        if (courseMap.has(courseName)) {
+          finalCourseId = courseMap.get(courseName)!
+        } else {
+          let course = await prisma.course.findUnique({ where: { name: courseName } })
+          if (!course) {
+            course = await prisma.course.create({ data: { name: courseName } })
+          }
+          courseMap.set(courseName, course.id)
+          finalCourseId = course.id
+        }
       }
 
       const recDate = new Date(record.timestamp)
       let status: RecordStatus = RecordStatus.A_TIEMPO
       if (record.type === RecordType.ENTRADA) {
-        status = await calculateToleranceStatus(recDate, finalCampusId || undefined, user.role)
+        const rule = findApplicableToleranceRule(rules, finalCampusId || undefined, user.role)
+        status = rule ? calculateStatusFromRule(recDate, rule) : RecordStatus.A_TIEMPO
       }
 
-      await prisma.attendanceRecord.create({
-        data: {
-          userId: user.id,
-          type: record.type,
-          campusId: finalCampusId,
-          courseId: finalCourseId,
-          timestamp: recDate,
-          status: status,
-          isOfflineSync: true,
-        }
+      recordsToCreate.push({
+        userId: user.id,
+        type: record.type,
+        campusId: finalCampusId,
+        courseId: finalCourseId,
+        timestamp: recDate,
+        status: status,
+        isOfflineSync: true,
       })
-      syncedCount++
     }
 
-    revalidatePath("/dashboard")
-    return { success: true, syncedCount, errorCount }
+    if (recordsToCreate.length > 0) {
+      await prisma.attendanceRecord.createMany({
+        data: recordsToCreate,
+      })
+    }
+
+    try {
+      revalidatePath("/dashboard")
+    } catch {}
+
+    return { success: true, syncedCount: recordsToCreate.length, errorCount }
   } catch (error) {
     console.error("[syncOfflineRecordsAction]", error)
     return { success: false, message: "Error al sincronizar lotes offline." }

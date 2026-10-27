@@ -19,7 +19,6 @@ import { toast } from "sonner"
 import { Role, RecordType, RecordStatus, Shift } from "@prisma/client"
 import { fetchFilteredRecordsAction, type ReportFilterParams } from "@/actions/reports"
 import { formatLimaDate, formatLimaTime, limaDayKey, addDaysToKey } from "@/lib/timezone"
-import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
 import {
   DEFAULT_OVERTIME_SETTINGS,
   type OvertimeSettings,
