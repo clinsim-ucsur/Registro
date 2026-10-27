@@ -822,6 +822,17 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       }
     }
 
+    // Comisión de servicio / Evento especial en provincia
+    if (upper === "EV" || upper.startsWith("EV") || upper.includes("EVENTO") || upper.includes("COMISION")) {
+      return {
+        token: "EV",
+        shift: Shift.COMISION,
+        campusName: canonicalCampusName(defaultCampusName),
+        entryTime: "00:00",
+        notes: "Comisión de Servicio / Evento Especial en Provincia",
+      }
+    }
+
     // Vacaciones
     if (upper.startsWith("VAC")) {
       return {
@@ -1143,9 +1154,10 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
           else if (existing.shift === Shift.INTERMEDIO) token = "I"
           else if (existing.shift === Shift.NOCHE) token = "N"
           else if (existing.shift === Shift.DESCANSO) token = "D"
+          else if (existing.shift === Shift.COMISION) token = "EV"
 
           const schedCampus = existing.campus?.name ? canonicalCampusName(existing.campus.name) : techCampus
-          if (schedCampus !== techCampus) {
+          if (existing.shift !== Shift.COMISION && schedCampus !== techCampus) {
             let code = "V"
             if (schedCampus.includes("Norte")) code = "N"
             else if (schedCampus.includes("Ate")) code = "A"
@@ -1366,7 +1378,9 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
 
           let shiftVal: Shift = Shift.MANANA
           const sText = getVal(["turno", "shift", "horario"]).toUpperCase()
-          if (sText.includes("DESC") || sText.includes("LIBRE") || sText === "D" || sText === "L") {
+          if (sText.includes("EV") || sText.includes("EVENTO") || sText.includes("COMISION")) {
+            shiftVal = Shift.COMISION
+          } else if (sText.includes("DESC") || sText.includes("LIBRE") || sText === "D" || sText === "L") {
             shiftVal = Shift.DESCANSO
           } else if (sText.includes("TARDE") || sText === "T") {
             shiftVal = isSunday ? Shift.INTERMEDIO : Shift.TARDE
@@ -1378,14 +1392,16 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
 
           let entryTime = getVal(["entrada", "hora", "ingreso", "hora_entrada"])
           if (!entryTime) {
-            if (shiftVal === Shift.DESCANSO) entryTime = "00:00"
+            if (shiftVal === Shift.DESCANSO || shiftVal === Shift.COMISION) entryTime = "00:00"
             else if (isSunday && shiftVal === Shift.INTERMEDIO) entryTime = "09:00"
             else entryTime = DEFAULT_SHIFT_TIMES[shiftVal]?.entry || "06:00"
           }
 
           let notes = getVal(["notas", "observacion", "observaciones", "notes"])
           if (!notes) {
-            if (shiftVal === Shift.DESCANSO) {
+            if (shiftVal === Shift.COMISION) {
+              notes = "Comisión de Servicio / Evento Especial en Provincia"
+            } else if (shiftVal === Shift.DESCANSO) {
               notes = isSunday ? "Descanso dominical" : "Descanso compensatorio semanal"
             } else if (isSunday) {
               notes = `Guardia dominical (${shiftVal})`
@@ -1512,8 +1528,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
       // Buscar si la línea corresponde a un técnico
       const matchedTech = matchTechFromText(line)
       if (matchedTech) {
-        // Extraer los turnos y rotaciones en la línea (ej: M, T, I, N, M(N), T(N), M(V), D, L)
-        const tokens = line.match(/([MTIN]\s*\([NVA]\)|[MTINDL])/gi) || []
+        // Extraer los turnos y rotaciones en la línea (ej: EV, M, T, I, N, M(N), T(N), M(V), D, L)
+        const tokens = line.match(/(EV\b|EV\s*\([^)]*\)|[MTIN]\s*\([NVA]\)|[MTINDL]|VAC|FER)/gi) || []
         const rowDays: Record<number, MatrixCell> = {}
 
         for (let d = 1; d <= daysInMonth; d++) {
@@ -1754,7 +1770,9 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                       </TableCell>
                       <TableCell>
                         <span className={`px-2.5 py-1 rounded-md text-[11px] font-black uppercase tracking-wider ${
-                          s.shift === Shift.DESCANSO
+                          s.shift === Shift.COMISION
+                            ? "bg-violet-100 text-violet-900 border border-violet-400"
+                            : s.shift === Shift.DESCANSO
                             ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                             : s.shift === Shift.MANANA 
                             ? "bg-amber-50 text-amber-700 border border-amber-200"
@@ -1762,18 +1780,20 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                             ? "bg-cyan-50 text-cyan-700 border border-cyan-200"
                             : "bg-purple-50 text-purple-700 border border-purple-200"
                         }`}>
-                          {s.shift === Shift.DESCANSO ? "🏖️ DESCANSO" : s.shift}
+                          {s.shift === Shift.COMISION ? "✈️ EV (EVENTO)" : s.shift === Shift.DESCANSO ? "🏖️ DESCANSO" : s.shift}
                         </span>
                       </TableCell>
                       <TableCell className="font-black text-slate-800 text-sm">
-                        {s.shift === Shift.DESCANSO ? (
+                        {s.shift === Shift.COMISION ? (
+                          <span className="text-violet-700 text-xs font-bold">Comisión / Evento</span>
+                        ) : s.shift === Shift.DESCANSO ? (
                           <span className="text-emerald-600 text-xs font-bold">Día Libre</span>
                         ) : (
                           `⏰ ${s.expectedEntryTime}`
                         )}
                       </TableCell>
                       <TableCell className="text-xs text-slate-500 font-medium">
-                        {s.shift === Shift.DESCANSO ? (
+                        {s.shift === Shift.COMISION || s.shift === Shift.DESCANSO ? (
                           <span className="text-slate-400 italic">No requiere asistencia</span>
                         ) : (
                           `Anticipo: ${s.earlyEntryToleranceMinutes}m | Gracia: ${s.gracePeriodMinutes}m | Tard: ${s.lateToleranceMinutes}m`
@@ -1882,12 +1902,13 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider block mb-1.5">
               Turno
             </label>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
               {[
                 { key: Shift.MANANA, label: "Mañana (06:00)", color: "border-amber-400 bg-amber-50" },
                 { key: Shift.INTERMEDIO, label: "Intermedio (09:00)", color: "border-cyan-400 bg-cyan-50" },
                 { key: Shift.TARDE, label: "Tarde (13:00)", color: "border-purple-400 bg-purple-50" },
                 { key: Shift.DESCANSO, label: "🏖️ Descanso (Libre)", color: "border-emerald-400 bg-emerald-50 text-emerald-800" },
+                { key: Shift.COMISION, label: "✈️ EV (Comisión/Evento)", color: "border-violet-400 bg-violet-50 text-violet-900" },
               ].map((s) => (
                 <button
                   type="button"
@@ -2188,6 +2209,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                             <option value={Shift.INTERMEDIO}>INTERMEDIO</option>
                             <option value={Shift.TARDE}>TARDE</option>
                             <option value={Shift.DESCANSO}>DESCANSO</option>
+                            <option value={Shift.COMISION}>EV (COMISIÓN / EVENTO)</option>
                           </select>
                         </td>
                         <td className="p-2 text-center">
@@ -2859,6 +2881,9 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                 <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-900 border border-blue-300">
                   I: Intermedio (08:00)
                 </span>
+                <span className="px-2 py-0.5 rounded bg-violet-100 text-violet-900 border border-violet-400 font-black">
+                  EV: Evento / Comisión
+                </span>
                 <span className="px-2 py-0.5 rounded bg-purple-100 text-purple-900 border border-purple-300">
                   M(N)/T(N): Rot. Norte
                 </span>
@@ -3045,6 +3070,8 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                                   badgeColor = "bg-indigo-100 text-indigo-900 border-indigo-300 font-black"
                                 } else if (dayCell.token.includes("(A)")) {
                                   badgeColor = "bg-pink-100 text-pink-900 border-pink-300 font-black"
+                                } else if (dayCell.token === "EV" || dayCell.token.startsWith("EV")) {
+                                  badgeColor = "bg-violet-100 text-violet-900 border-violet-400 font-black shadow-xs ring-1 ring-violet-300"
                                 } else if (dayCell.token === "F") {
                                   badgeColor = "bg-yellow-200 text-yellow-900 border-yellow-400 font-black"
                                 } else if (dayCell.token === "VAC") {
@@ -3098,6 +3125,7 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
                                             { t: "M", l: "Mañana" },
                                             { t: "T", l: isSunday ? "Tarde/09h" : "Tarde" },
                                             { t: "I", l: "Interm." },
+                                            { t: "EV", l: "EV (Evento)" },
                                             { t: "M(N)", l: "Mañ. Norte" },
                                             { t: "T(N)", l: "Tar. Norte" },
                                             { t: "M(V)", l: "Mañ. Villa" },

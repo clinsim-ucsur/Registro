@@ -256,6 +256,11 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                               🌙 Noche
                             </span>
                           )}
+                          {user.defaultShift === "COMISION" && (
+                            <span className="px-2.5 py-1 rounded-md bg-violet-100 text-violet-900 border border-violet-400 uppercase tracking-wider text-[10px] font-black">
+                              ✈️ EV (Comisión)
+                            </span>
+                          )}
                           {!user.defaultShift && (
                             <span className="text-slate-400 font-normal">—</span>
                           )}
@@ -386,6 +391,7 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                 <option value="MANANA">Mañana (6:00 AM — 3:00 PM)</option>
                 <option value="INTERMEDIO">Intermedio (9:00 AM — 6:00 PM / Sáb 8 AM / Dom 10 AM)</option>
                 <option value="TARDE">Tarde (1:00 PM — 10:00 PM)</option>
+                <option value="COMISION">✈️ EV (Comisión / Evento Especial en Provincia)</option>
               </select>
             </div>
           )}
@@ -477,6 +483,7 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                 <option value="MANANA">Mañana (6:00 AM — 3:00 PM)</option>
                 <option value="INTERMEDIO">Intermedio (9:00 AM — 6:00 PM / Sáb 8 AM / Dom 10 AM)</option>
                 <option value="TARDE">Tarde (1:00 PM — 10:00 PM)</option>
+                <option value="COMISION">✈️ EV (Comisión / Evento Especial en Provincia)</option>
               </select>
             </div>
           )}

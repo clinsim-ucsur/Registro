@@ -93,6 +93,7 @@ const SHIFT_LABELS: Record<Shift, { label: string; icon: any; color: string }> =
   TARDE: { label: "Tarde (13:00 / 14:00)", icon: Sunset, color: "text-orange-600 bg-orange-50 border-orange-200" },
   NOCHE: { label: "Noche (19:00 / 21:00)", icon: Moon, color: "text-indigo-600 bg-indigo-50 border-indigo-200" },
   DESCANSO: { label: "Descanso / Libre", icon: Coffee, color: "text-slate-500 bg-slate-50 border-slate-200" },
+  COMISION: { label: "EV (Evento / Comisión)", icon: Sparkles, color: "text-violet-600 bg-violet-50 border-violet-200" },
 }
 
 export function DashboardReports({
@@ -913,6 +914,9 @@ export function DashboardReports({
               <option value="MANANA">Mañana (06:00 / 08:00)</option>
               <option value="INTERMEDIO">Intermedio (09:00 / 11:00)</option>
               <option value="TARDE">Tarde (13:00 / 14:00)</option>
+              <option value="NOCHE">Noche (19:00 / 21:00)</option>
+              <option value="DESCANSO">Descanso / Libre</option>
+              <option value="COMISION">EV (Evento / Comisión)</option>
             </select>
           </div>
 

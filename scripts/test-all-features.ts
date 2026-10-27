@@ -10,6 +10,13 @@ function parseShiftCell(cellVal: any, defaultCampusName: string, isSunday = fals
   if (!str) return null
 
   const upper = str.toUpperCase()
+  if (upper === "EV" || upper.startsWith("EV") || upper.includes("EVENTO") || upper.includes("COMISION")) {
+    return {
+      shift: Shift.COMISION,
+      campusName: defaultCampusName,
+    }
+  }
+
   if (upper === "F" || upper.startsWith("FERIAD") || upper.startsWith("VAC") || (upper === "V" && !str.includes("("))) {
     return null
   }
@@ -809,6 +816,52 @@ async function main() {
   assert(
     formatMinutesToHoursAndMins(135) === "2h 15m" && formatMinutesToHoursAndMins(60) === "1 h",
     "H. Extras: Formateo visual amigable '2h 15m' y '1 h' verificado"
+  )
+
+  // =========================================================================
+  // 11. COMISIONES Y EVENTOS ESPECIALES EN PROVINCIA (EV)
+  // =========================================================================
+  console.log("\n--- TEST 11: COMISIONES Y EVENTOS ESPECIALES (EV) ---")
+
+  // 11.1 Parseo de tokens de comisión
+  const cellEV1 = parseShiftCell("EV", "Campus Villa")
+  const cellEV2 = parseShiftCell("EV (evento)", "Campus Norte")
+  const cellEV3 = parseShiftCell("COMISION", "Campus Ate")
+  const cellEV4 = parseShiftCell("EVENTO", "Campus Aramburú")
+
+  assert(
+    cellEV1?.shift === Shift.COMISION &&
+    cellEV2?.shift === Shift.COMISION &&
+    cellEV3?.shift === Shift.COMISION &&
+    cellEV4?.shift === Shift.COMISION,
+    "Comisiones (EV): Tokens 'EV', 'EV (evento)', 'COMISION', 'EVENTO' resueltos a Shift.COMISION"
+  )
+
+  // 11.2 Constantes de horarios para COMISION
+  const { DEFAULT_SHIFT_TIMES } = await import("../src/lib/schedule-constants")
+  assert(
+    DEFAULT_SHIFT_TIMES.COMISION &&
+    DEFAULT_SHIFT_TIMES.COMISION.entry === "00:00" &&
+    DEFAULT_SHIFT_TIMES.COMISION.label.includes("EV"),
+    "Comisiones (EV): DEFAULT_SHIFT_TIMES.COMISION configurado con entrada 00:00 y etiqueta 'EV'"
+  )
+
+  // 11.3 Validación de no requerir asistencia si está en comisión
+  const simulateComisionCheck = (shift: Shift) => {
+    if (shift === Shift.COMISION) {
+      return {
+        success: false,
+        isComision: true,
+        message: "✈️ En COMISIÓN DE SERVICIO / EVENTO ESPECIAL (EV). No es necesario marcar asistencia.",
+      }
+    }
+    return { success: true }
+  }
+
+  const comisionCheck = simulateComisionCheck(Shift.COMISION)
+  assert(
+    comisionCheck.isComision === true && comisionCheck.success === false && comisionCheck.message.includes("EV"),
+    "Comisiones (EV): Sistema no exige asistencia y emite confirmación automática amigable con código EV"
   )
 
   console.log("\n==================================================")

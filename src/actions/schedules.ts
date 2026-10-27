@@ -234,7 +234,9 @@ export async function bulkUpsertTechnicianSchedulesAction(items: ScheduleItemInp
       // Normalizar turno
       let shiftKey: Shift = Shift.MANANA
       const rawShift = String(item.shift || "").toUpperCase().trim()
-      if (rawShift.includes("DESC") || rawShift.includes("LIBRE") || rawShift === "D" || rawShift === "L") {
+      if (rawShift.includes("EV") || rawShift.includes("EVENTO") || rawShift.includes("COMISION")) {
+        shiftKey = Shift.COMISION
+      } else if (rawShift.includes("DESC") || rawShift.includes("LIBRE") || rawShift === "D" || rawShift === "L") {
         shiftKey = Shift.DESCANSO
       } else if (rawShift.includes("TARDE") || rawShift === "T") {
         shiftKey = Shift.TARDE

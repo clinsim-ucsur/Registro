@@ -30,6 +30,7 @@ export const DEFAULT_SHIFT_TIMES: Record<Shift, { entry: string; early: number; 
   TARDE: { entry: "13:00", early: 15, grace: 10, late: 30, label: "Tarde", timeRange: "1:00 PM — 10:00 PM" },
   NOCHE: { entry: "21:00", early: 15, grace: 10, late: 30, label: "Noche / Guardia", timeRange: "9:00 PM — 6:00 AM" },
   DESCANSO: { entry: "00:00", early: 0, grace: 0, late: 0, label: "Descanso / Libre", timeRange: "Día libre programado" },
+  COMISION: { entry: "00:00", early: 0, grace: 0, late: 0, label: "EV (Evento / Comisión)", timeRange: "Comisión / Evento Especial en Provincia (Sin marcación)" },
 }
 
 export type ShiftPreset = {

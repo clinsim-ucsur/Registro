@@ -261,7 +261,11 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         setTodayLastRecord(null)
         setTechnicianAssignment(null)
         setSelectedShift(null)
-        toast.error(res.message || "Usuario no encontrado")
+        if (res.isComision) {
+          toast.info(res.message, { duration: 9000, icon: "✈️" })
+        } else {
+          toast.error(res.message || "Usuario no encontrado")
+        }
       }
     } catch (error) {
       console.error("Error al validar DNI:", error)

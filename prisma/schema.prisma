@@ -42,6 +42,7 @@ enum Shift {
   TARDE       // ~13:00 / 14:00
   NOCHE       // ~19:00 / 20:00 / 21:00
   DESCANSO    // Día libre programado / descanso semanal
+  COMISION    // Comisión de servicio / Evento especial en provincia ("EV")
 }
 
 // ------------------------------------------------------

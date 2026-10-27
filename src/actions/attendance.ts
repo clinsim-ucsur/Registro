@@ -116,6 +116,14 @@ export async function validateUserAction(dni: string, role: Role) {
       }
     }
 
+    if (role === Role.TECNICO && (todaySched?.shift === Shift.COMISION || (!todaySched && user.defaultShift === Shift.COMISION))) {
+      return {
+        success: false,
+        isComision: true,
+        message: `✈️ Hola ${user.name}, hoy estás en COMISIÓN DE SERVICIO / EVENTO ESPECIAL (EV) en provincia según el cronograma oficial. No es necesario marcar asistencia.`,
+      }
+    }
+
     let technicianAssignment: {
       campusName: string | null
       shift: string
@@ -249,6 +257,23 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         return {
           success: false,
           message: `Hoy tienes asignado tu DÍA DE DESCANSO programado. ¡Que tengas un buen descanso!`,
+        }
+      }
+
+      // Si el técnico está asignado a COMISIÓN / EVENTO ESPECIAL (EV)
+      if (scheduledShift && scheduledShift.shift === Shift.COMISION) {
+        return {
+          success: false,
+          isComision: true,
+          message: `✈️ Hola ${user.name}, hoy estás en COMISIÓN DE SERVICIO / EVENTO ESPECIAL (EV) en provincia según el cronograma oficial. No es necesario marcar asistencia.`,
+        }
+      }
+
+      if (!scheduledShift && user.defaultShift === Shift.COMISION) {
+        return {
+          success: false,
+          isComision: true,
+          message: `✈️ Hola ${user.name}, te encuentras asignado a COMISIÓN DE SERVICIO / EVENTO ESPECIAL (EV) en provincia. No es necesario marcar asistencia.`,
         }
       }
     }
