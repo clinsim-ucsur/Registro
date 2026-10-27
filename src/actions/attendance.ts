@@ -125,19 +125,51 @@ export async function validateUserAction(dni: string, role: Role) {
 
     if (role === Role.TECNICO) {
       if (todaySched) {
+        let expectedTime = todaySched.expectedEntryTime
+        const def = DEFAULT_SHIFT_TIMES[todaySched.shift] || DEFAULT_SHIFT_TIMES.MANANA
+        // Corregir contradicciones si el turno fue cambiado pero quedó el horario anterior
+        if (todaySched.shift === Shift.INTERMEDIO && expectedTime === "13:00") {
+          expectedTime = def.entry
+        } else if (todaySched.shift === Shift.MANANA && expectedTime === "13:00") {
+          expectedTime = def.entry
+        } else if (todaySched.shift === Shift.TARDE && ["06:00", "07:00", "08:00", "09:00", "10:00"].includes(expectedTime)) {
+          expectedTime = "13:00"
+        }
+
         technicianAssignment = {
           campusName: todaySched.campus?.name || user.campus?.name || null,
           shift: todaySched.shift,
-          expectedEntryTime: todaySched.expectedEntryTime,
+          expectedEntryTime: expectedTime,
           source: "SCHEDULE",
         }
       } else {
         const defaultShift = user.defaultShift || Shift.MANANA
-        const preset = DEFAULT_SHIFT_TIMES[defaultShift] || DEFAULT_SHIFT_TIMES.MANANA
+        const def = DEFAULT_SHIFT_TIMES[defaultShift] || DEFAULT_SHIFT_TIMES.MANANA
+        const matchingRule = await prisma.toleranceRule.findFirst({
+          where: {
+            role: Role.TECNICO,
+            AND: [
+              {
+                OR: [
+                  { shift: defaultShift },
+                  { shift: null },
+                ],
+              },
+              {
+                OR: [
+                  ...(user.campusId ? [{ campusId: user.campusId }] : []),
+                  { campusId: null },
+                ],
+              },
+            ],
+          },
+          orderBy: [{ campusId: "desc" }],
+        })
+
         technicianAssignment = {
           campusName: user.campus?.name || null,
           shift: defaultShift,
-          expectedEntryTime: preset.entry,
+          expectedEntryTime: matchingRule?.expectedEntryTime || def.entry,
           source: "DEFAULT_PROFILE",
         }
       }
@@ -295,7 +327,7 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
 
     let status: RecordStatus = RecordStatus.A_TIEMPO
     
-        if (data.type === RecordType.ENTRADA) {
+    if (data.type === RecordType.ENTRADA) {
       // Para TÉCNICOS: resolver turno de hoy por cronograma o por turno predeterminado del perfil
       if (data.role === Role.TECNICO) {
         let techRule: {
@@ -308,87 +340,105 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           enableLateTolerance?: boolean
         } | null = null
 
+        const currentDayOfWeek = limaDayOfWeek(recordTimestamp)
+        let userShift = (data.shift || scheduledShift?.shift || user.defaultShift || Shift.MANANA) as Shift
+
+        // En domingos (currentDayOfWeek === 0):
+        // Los técnicos de la tarde rotan comúnmente a turno Intermedio si no tienen programación específica
+        if (!data.shift && !scheduledShift && currentDayOfWeek === 0 && userShift === Shift.TARDE) {
+          userShift = Shift.INTERMEDIO
+        }
+
+        const defShift = DEFAULT_SHIFT_TIMES[userShift] || DEFAULT_SHIFT_TIMES.MANANA
+
+        // Consultar reglas activas en la BD para este rol y sede
+        const shiftRules = await prisma.toleranceRule.findMany({
+          where: {
+            role: Role.TECNICO,
+            OR: [
+              { campusId: finalCampusId },
+              { campusId: null },
+            ],
+          },
+          orderBy: [{ campusId: 'desc' }],
+        })
+
+        // Filtrar reglas que correspondan a su turno
+        // Si es domingo y el técnico es de Mañana, permitir también evaluar reglas de Intermedio si llega cerca de las 9/10 AM
+        const matchingShiftRules = shiftRules.filter(r => {
+          if (r.shift) {
+            if (r.shift === userShift) return true
+            if (currentDayOfWeek === 0 && userShift === Shift.MANANA && r.shift === Shift.INTERMEDIO) return true
+            return false
+          }
+          if (userShift === Shift.INTERMEDIO) return ["08:00", "09:00", "10:00"].includes(r.expectedEntryTime)
+          if (userShift === Shift.MANANA) return ["06:00", ...(currentDayOfWeek === 0 ? ["09:00", "10:00"] : [])].includes(r.expectedEntryTime)
+          if (userShift === Shift.TARDE) return r.expectedEntryTime === "13:00"
+          if (userShift === Shift.NOCHE) return r.expectedEntryTime === "21:00"
+          return r.expectedEntryTime === defShift.entry
+        })
+
+        // Filtrar por día de la semana según daysOfWeek
+        const rulesForToday = matchingShiftRules.filter(r => {
+          if (!r.daysOfWeek || r.daysOfWeek.trim() === "" || r.daysOfWeek === "ALL") return true
+          const days = r.daysOfWeek.split(",").map(d => Number(d.trim()))
+          return days.includes(currentDayOfWeek)
+        })
+
+        // Si hay varias reglas para hoy (ej: Domingo 9 AM y 10 AM en Turno Intermedio),
+        // seleccionar la regla más cercana a la hora de marcación del técnico
+        let matchedShiftRule = null
+        const candidateRules = rulesForToday.length > 0 ? rulesForToday : matchingShiftRules
+
+        if (candidateRules.length > 0) {
+          candidateRules.sort((a, b) => {
+            const diffA = Math.abs(getShiftDiffInMinutes(recordTimestamp, a.expectedEntryTime).diffInMinutes)
+            const diffB = Math.abs(getShiftDiffInMinutes(recordTimestamp, b.expectedEntryTime).diffInMinutes)
+            return diffA - diffB
+          })
+          matchedShiftRule = candidateRules[0]
+        }
+
+        // Determinar hora esperada de ingreso
+        let resolvedEntryTime = matchedShiftRule?.expectedEntryTime ?? defShift.entry
         if (scheduledShift) {
-          techRule = {
-            expectedEntryTime: scheduledShift.expectedEntryTime,
-            earlyEntryToleranceMinutes: scheduledShift.earlyEntryToleranceMinutes ?? 15,
-            gracePeriodMinutes: scheduledShift.gracePeriodMinutes ?? 10,
-            lateToleranceMinutes: scheduledShift.lateToleranceMinutes ?? 30,
-            shiftName: scheduledShift.shift,
-            enableEarlyTolerance: scheduledShift.enableEarlyTolerance ?? true,
-            enableLateTolerance: scheduledShift.enableLateTolerance ?? true,
+          let sTime = scheduledShift.expectedEntryTime
+          // Auto-corrección si el turno fue cambiado pero quedó la hora anterior
+          if (userShift === Shift.INTERMEDIO && sTime === "13:00") {
+            sTime = resolvedEntryTime || defShift.entry
+          } else if (userShift === Shift.MANANA && sTime === "13:00") {
+            sTime = defShift.entry
+          } else if (userShift === Shift.TARDE && ["06:00", "07:00", "08:00", "09:00", "10:00"].includes(sTime)) {
+            sTime = "13:00"
           }
-        } else {
-          // Si no tiene cronograma hoy, buscar regla específica para su turno base en su sede y día de la semana
-          const currentDayOfWeek = limaDayOfWeek(recordTimestamp)
-          let userShift = (data.shift || user.defaultShift || Shift.MANANA) as Shift
+          resolvedEntryTime = sTime
+        }
 
-          // En domingos (currentDayOfWeek === 0):
-          // Los técnicos de la tarde rotan comúnmente a turno Intermedio si no tienen programación específica
-          if (!data.shift && currentDayOfWeek === 0 && userShift === Shift.TARDE) {
-            userShift = Shift.INTERMEDIO
-          }
+        // Comprobar si la marcación anticipada o tardanza están desactivadas
+        // (sea a nivel general de reglas de técnico, de la regla específica de su turno o del cronograma)
+        const allTechRulesDisabledEarly = shiftRules.length > 0 && shiftRules.every(r => r.enableEarlyTolerance === false)
+        const isEarlyToleranceDisabled = allTechRulesDisabledEarly
+          || (matchedShiftRule != null && matchedShiftRule.enableEarlyTolerance === false)
+          || scheduledShift?.enableEarlyTolerance === false
 
-          const defShift = DEFAULT_SHIFT_TIMES[userShift] || DEFAULT_SHIFT_TIMES.MANANA
-          
-          const shiftRules = await prisma.toleranceRule.findMany({
-            where: {
-              role: Role.TECNICO,
-              OR: [
-                { campusId: finalCampusId },
-                { campusId: null },
-              ],
-            },
-            orderBy: [{ campusId: 'desc' }],
-          })
+        const allTechRulesDisabledLate = shiftRules.length > 0 && shiftRules.every(r => r.enableLateTolerance === false)
+        const isLateToleranceDisabled = allTechRulesDisabledLate
+          || (matchedShiftRule != null && matchedShiftRule.enableLateTolerance === false)
+          || scheduledShift?.enableLateTolerance === false
 
-          // Filtrar reglas que correspondan a su turno
-          // Si es domingo y el técnico es de Mañana, permitir también evaluar reglas de Intermedio si llega cerca de las 9/10 AM
-          const matchingShiftRules = shiftRules.filter(r => {
-            if (r.shift) {
-              if (r.shift === userShift) return true
-              if (currentDayOfWeek === 0 && userShift === Shift.MANANA && r.shift === Shift.INTERMEDIO) return true
-              return false
-            }
-            if (userShift === Shift.INTERMEDIO) return ["08:00", "09:00", "10:00"].includes(r.expectedEntryTime)
-            if (userShift === Shift.MANANA) return ["06:00", ...(currentDayOfWeek === 0 ? ["09:00", "10:00"] : [])].includes(r.expectedEntryTime)
-            if (userShift === Shift.TARDE) return r.expectedEntryTime === "13:00"
-            if (userShift === Shift.NOCHE) return r.expectedEntryTime === "21:00"
-            return r.expectedEntryTime === defShift.entry
-          })
+        // Tolerancias: priorizar la regla configurada por el administrador en ToleranceRule, luego scheduledShift, luego default
+        const earlyMins = matchedShiftRule?.earlyEntryToleranceMinutes ?? scheduledShift?.earlyEntryToleranceMinutes ?? defShift.early
+        const graceMins = matchedShiftRule?.gracePeriodMinutes ?? scheduledShift?.gracePeriodMinutes ?? defShift.grace
+        const lateMins = matchedShiftRule?.lateToleranceMinutes ?? scheduledShift?.lateToleranceMinutes ?? defShift.late
 
-          // Filtrar por día de la semana según daysOfWeek
-          const rulesForToday = matchingShiftRules.filter(r => {
-            if (!r.daysOfWeek || r.daysOfWeek.trim() === "" || r.daysOfWeek === "ALL") return true
-            const days = r.daysOfWeek.split(",").map(d => Number(d.trim()))
-            return days.includes(currentDayOfWeek)
-          })
-
-          // Si hay varias reglas para hoy (ej: Domingo 9 AM y 10 AM en Turno Intermedio),
-          // seleccionar la regla más cercana a la hora de marcación del técnico
-          let matchedShiftRule = null
-          const candidateRules = rulesForToday.length > 0 ? rulesForToday : matchingShiftRules
-
-          if (candidateRules.length > 0) {
-            candidateRules.sort((a, b) => {
-              const diffA = Math.abs(getShiftDiffInMinutes(recordTimestamp, a.expectedEntryTime).diffInMinutes)
-              const diffB = Math.abs(getShiftDiffInMinutes(recordTimestamp, b.expectedEntryTime).diffInMinutes)
-              return diffA - diffB
-            })
-            matchedShiftRule = candidateRules[0]
-          }
-
-          const entryTime = matchedShiftRule?.expectedEntryTime ?? defShift.entry
-
-          techRule = {
-            expectedEntryTime: entryTime,
-            earlyEntryToleranceMinutes: matchedShiftRule?.earlyEntryToleranceMinutes ?? defShift.early,
-            gracePeriodMinutes: matchedShiftRule?.gracePeriodMinutes ?? defShift.grace,
-            lateToleranceMinutes: matchedShiftRule?.lateToleranceMinutes ?? defShift.late,
-            shiftName: userShift,
-            enableEarlyTolerance: matchedShiftRule?.enableEarlyTolerance ?? true,
-            enableLateTolerance: matchedShiftRule?.enableLateTolerance ?? true,
-          }
+        techRule = {
+          expectedEntryTime: resolvedEntryTime,
+          earlyEntryToleranceMinutes: earlyMins,
+          gracePeriodMinutes: graceMins,
+          lateToleranceMinutes: lateMins,
+          shiftName: userShift,
+          enableEarlyTolerance: !isEarlyToleranceDisabled,
+          enableLateTolerance: !isLateToleranceDisabled,
         }
 
         const earlyCheck = validateEarlyEntry(recordTimestamp, techRule)

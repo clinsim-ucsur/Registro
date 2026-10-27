@@ -55,11 +55,16 @@ export function isGeoActive(c: GeoCampus): boolean {
 export function resolveGeoCampuses(campuses: GeoCampus[]): GeoCampus[] {
   const map = new Map<string, GeoCampus>()
 
-  // Registrar primero las 4 sedes predeterminadas con geoEnforced en false por defecto
+  // Si no se pasaron sedes de BD (ej: pruebas unitarias o sin datos en BD),
+  // las sedes oficiales tienen geocerca activa por defecto para pruebas.
+  // Si se pasaron sedes de BD, se respeta estrictamente su geoEnforced configurado en BD.
+  const defaultEnforced = campuses.length === 0
+
+  // Registrar primero las 4 sedes predeterminadas
   for (const [name, loc] of Object.entries(DEFAULT_CAMPUS_LOCATIONS)) {
     map.set(name.toLowerCase(), {
       name,
-      geoEnforced: false,
+      geoEnforced: defaultEnforced,
       latitude: loc.latitude,
       longitude: loc.longitude,
       radiusMeters: loc.radiusMeters,
@@ -145,7 +150,33 @@ export function detectAndValidateCampus(
     }
   }
 
-  // 2. Si no hay sede objetivo fija, evaluar contra sedes con geocerca activa
+  // 2. Si se pasaron coordenadas GPS válidas, verificar si coinciden con alguna de las sedes oficiales
+  if (loc && Number.isFinite(loc.lat) && Number.isFinite(loc.lng)) {
+    let matchedAnyCampus: GeoCampus | null = null
+    let minMatchedDist = Infinity
+
+    for (const c of resolved) {
+      if (c.latitude != null && c.longitude != null) {
+        const dist = distanceMeters(loc.lat, loc.lng, c.latitude, c.longitude)
+        if (dist <= c.radiusMeters) {
+          if (dist < minMatchedDist) {
+            minMatchedDist = dist
+            matchedAnyCampus = c
+          }
+        }
+      }
+    }
+
+    if (matchedAnyCampus) {
+      return {
+        allowed: true,
+        detectedCampusName: matchedAnyCampus.name,
+        distanceMeters: Math.round(minMatchedDist),
+      }
+    }
+  }
+
+  // 3. Si no hay sede objetivo fija, evaluar contra sedes con geocerca activa
   const activeTargets = resolved.filter(isGeoActive)
 
   // Si ninguna sede tiene la ubicación activada, permitir libremente

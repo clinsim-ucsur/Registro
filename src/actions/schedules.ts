@@ -341,13 +341,23 @@ export async function getTodayTechnicianAssignmentAction(userId: string) {
     })
 
     if (schedule) {
+      let expectedEntryTime = schedule.expectedEntryTime
+      const def = DEFAULT_SHIFT_TIMES[schedule.shift] || DEFAULT_SHIFT_TIMES.MANANA
+      if (schedule.shift === Shift.INTERMEDIO && expectedEntryTime === "13:00") {
+        expectedEntryTime = def.entry
+      } else if (schedule.shift === Shift.MANANA && expectedEntryTime === "13:00") {
+        expectedEntryTime = def.entry
+      } else if (schedule.shift === Shift.TARDE && ["06:00", "07:00", "08:00", "09:00", "10:00"].includes(expectedEntryTime)) {
+        expectedEntryTime = "13:00"
+      }
+
       return {
         assignedToday: true,
         source: "SCHEDULE" as const,
         date: schedule.date,
         campus: schedule.campus,
         shift: schedule.shift,
-        expectedEntryTime: schedule.expectedEntryTime,
+        expectedEntryTime,
         earlyEntryToleranceMinutes: schedule.earlyEntryToleranceMinutes,
         gracePeriodMinutes: schedule.gracePeriodMinutes,
         lateToleranceMinutes: schedule.lateToleranceMinutes,

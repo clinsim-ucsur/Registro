@@ -20,6 +20,15 @@ export type ToleranceRuleInput = {
   enableLateTolerance?: boolean
 }
 
+function safeRevalidate() {
+  try {
+    revalidatePath("/dashboard")
+    revalidatePath("/")
+  } catch (err) {
+    // Ignore static generation store missing error outside request context
+  }
+}
+
 /**
  * Guarda o actualiza una regla de tolerancia en la base de datos.
  */
@@ -73,7 +82,22 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
           enableLateTolerance: enableLate,
         },
       })
+      // Sincronizar tolerancias en cronogramas del mismo turno si aplica
+      if (cleanShift) {
+        await prisma.technicianSchedule.updateMany({
+          where: { shift: cleanShift },
+          data: {
+            earlyEntryToleranceMinutes: early,
+            gracePeriodMinutes: grace,
+            lateToleranceMinutes: late,
+            enableEarlyTolerance: enableEarly,
+            enableLateTolerance: enableLate,
+          },
+        })
+      }
+
       revalidatePath("/dashboard")
+      revalidatePath("/")
       return { success: true, message: "Regla de horario actualizada con éxito." }
     }
 
@@ -101,7 +125,21 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
           enableLateTolerance: enableLate,
         },
       })
-      revalidatePath("/dashboard")
+
+      if (cleanShift ?? existing.shift) {
+        await prisma.technicianSchedule.updateMany({
+          where: { shift: (cleanShift ?? existing.shift)! },
+          data: {
+            earlyEntryToleranceMinutes: early,
+            gracePeriodMinutes: grace,
+            lateToleranceMinutes: late,
+            enableEarlyTolerance: enableEarly,
+            enableLateTolerance: enableLate,
+          },
+        })
+      }
+
+      safeRevalidate()
       return { success: true, message: "Se actualizó la regla existente para este horario y alcance." }
     }
 
@@ -121,7 +159,20 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
       },
     })
 
-    revalidatePath("/dashboard")
+    if (cleanShift) {
+      await prisma.technicianSchedule.updateMany({
+        where: { shift: cleanShift },
+        data: {
+          earlyEntryToleranceMinutes: early,
+          gracePeriodMinutes: grace,
+          lateToleranceMinutes: late,
+          enableEarlyTolerance: enableEarly,
+          enableLateTolerance: enableLate,
+        },
+      })
+    }
+
+    safeRevalidate()
     return { success: true, message: "Nueva regla de tolerancia creada exitosamente." }
   } catch (error: any) {
     console.error("[upsertToleranceRuleAction]", error)
@@ -135,11 +186,20 @@ export async function upsertToleranceRuleAction(data: ToleranceRuleInput) {
 export async function toggleRuleEarlyToleranceAction(id: string, enable: boolean) {
   try {
     await requireAdmin()
-    await prisma.toleranceRule.update({
+    const rule = await prisma.toleranceRule.update({
       where: { id },
       data: { enableEarlyTolerance: enable },
     })
-    revalidatePath("/dashboard")
+
+    // Sincronizar en los cronogramas asignados a este turno para efecto en tiempo real
+    if (rule.shift) {
+      await prisma.technicianSchedule.updateMany({
+        where: { shift: rule.shift },
+        data: { enableEarlyTolerance: enable },
+      })
+    }
+
+    safeRevalidate()
     return {
       success: true,
       message: enable
@@ -158,11 +218,20 @@ export async function toggleRuleEarlyToleranceAction(id: string, enable: boolean
 export async function toggleRuleLateToleranceAction(id: string, enable: boolean) {
   try {
     await requireAdmin()
-    await prisma.toleranceRule.update({
+    const rule = await prisma.toleranceRule.update({
       where: { id },
       data: { enableLateTolerance: enable },
     })
-    revalidatePath("/dashboard")
+
+    // Sincronizar en los cronogramas asignados a este turno
+    if (rule.shift) {
+      await prisma.technicianSchedule.updateMany({
+        where: { shift: rule.shift },
+        data: { enableLateTolerance: enable },
+      })
+    }
+
+    safeRevalidate()
     return {
       success: true,
       message: enable
@@ -184,7 +253,13 @@ export async function toggleAllToleranceRulesEarlyAction(enable: boolean) {
     await prisma.toleranceRule.updateMany({
       data: { enableEarlyTolerance: enable },
     })
-    revalidatePath("/dashboard")
+
+    // Sincronizar inmediatamente en todos los cronogramas de técnicos para efecto en tiempo real
+    await prisma.technicianSchedule.updateMany({
+      data: { enableEarlyTolerance: enable },
+    })
+
+    safeRevalidate()
     return {
       success: true,
       message: enable
@@ -206,7 +281,13 @@ export async function toggleAllToleranceRulesLateAction(enable: boolean) {
     await prisma.toleranceRule.updateMany({
       data: { enableLateTolerance: enable },
     })
-    revalidatePath("/dashboard")
+
+    // Sincronizar inmediatamente en todos los cronogramas de técnicos para efecto en tiempo real
+    await prisma.technicianSchedule.updateMany({
+      data: { enableLateTolerance: enable },
+    })
+
+    safeRevalidate()
     return {
       success: true,
       message: enable
@@ -230,7 +311,7 @@ export async function deleteToleranceRuleAction(id: string) {
       where: { id },
     })
 
-    revalidatePath("/dashboard")
+    safeRevalidate()
     return { success: true, message: "Regla de tolerancia eliminada correctamente." }
   } catch (error: any) {
     console.error("[deleteToleranceRuleAction]", error)
@@ -264,7 +345,7 @@ export async function seedDefaultToleranceRuleAction() {
       },
     })
 
-    revalidatePath("/dashboard")
+    safeRevalidate()
     return { success: true, message: "Regla global creada: Entrada 08:00 AM (Anticipación: 15 min, Gracia: 10 min, Tardanza hasta 30 min)." }
   } catch (error: any) {
     console.error("[seedDefaultToleranceRuleAction]", error)

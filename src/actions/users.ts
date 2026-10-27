@@ -1,7 +1,8 @@
 "use server"
 
 import prisma from "@/lib/prisma"
-import { Role } from "@prisma/client"
+import { Role, Shift } from "@prisma/client"
+import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
 
 export async function bulkUploadUsersAction(data: { name: string, dni: string, role: string, campus?: string }[]) {
   try {
@@ -115,7 +116,7 @@ export async function editUserAction(
   }
 ) {
   try {
-    await prisma.user.update({
+    const updatedUser = await prisma.user.update({
       where: { dni: oldDni },
       data: {
         name: data.name,
@@ -125,7 +126,72 @@ export async function editUserAction(
         defaultShift: data.defaultShift !== undefined ? (data.defaultShift || null) : undefined,
       }
     })
-    revalidatePath("/dashboard")
+
+    // Si el usuario es TÉCNICO y se modificó su turno o sede,
+    // sincronizar inmediatamente su asignación de HOY en TechnicianSchedule para efecto instantáneo en la marcación
+    if ((updatedUser.role === Role.TECNICO || data.role === Role.TECNICO) && (data.defaultShift || data.campusId !== undefined)) {
+      const now = new Date()
+      const limaDateStr = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Lima",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(now)
+
+      const targetShift = (data.defaultShift || updatedUser.defaultShift || Shift.MANANA) as Shift
+      const def = DEFAULT_SHIFT_TIMES[targetShift] || DEFAULT_SHIFT_TIMES.MANANA
+
+      // Buscar si existe regla específica en ToleranceRule para este turno
+      const matchingRule = await prisma.toleranceRule.findFirst({
+        where: {
+          role: Role.TECNICO,
+          OR: [
+            { shift: targetShift },
+            { shift: null },
+          ],
+        },
+        orderBy: [{ campusId: "desc" }],
+      })
+
+      const entryTime = matchingRule?.expectedEntryTime || def.entry
+      const early = matchingRule?.earlyEntryToleranceMinutes ?? def.early
+      const grace = matchingRule?.gracePeriodMinutes ?? def.grace
+      const late = matchingRule?.lateToleranceMinutes ?? def.late
+      const enableEarly = matchingRule?.enableEarlyTolerance ?? true
+      const enableLate = matchingRule?.enableLateTolerance ?? true
+
+      const todaySched = await prisma.technicianSchedule.findUnique({
+        where: {
+          userId_date: {
+            userId: updatedUser.id,
+            date: limaDateStr,
+          },
+        },
+      })
+
+      if (todaySched) {
+        await prisma.technicianSchedule.update({
+          where: { id: todaySched.id },
+          data: {
+            shift: targetShift,
+            expectedEntryTime: entryTime,
+            earlyEntryToleranceMinutes: early,
+            gracePeriodMinutes: grace,
+            lateToleranceMinutes: late,
+            enableEarlyTolerance: enableEarly,
+            enableLateTolerance: enableLate,
+            campusId: updatedUser.campusId || todaySched.campusId,
+          },
+        })
+      }
+    }
+
+    try {
+      revalidatePath("/dashboard")
+      revalidatePath("/")
+    } catch (err) {
+      // Ignore static generation store missing error outside request context
+    }
     return { success: true, message: "Usuario actualizado correctamente." }
   } catch (error) {
     console.error(error)
