@@ -16,16 +16,27 @@ const pct = (part: number, total: number) => (total > 0 ? Math.round((part / tot
 
 /**
  * Calcula todas las métricas del panel de analítica para un rango de días
- * (contados hacia atrás desde hoy, en hora de Lima) y opcionalmente una sede.
+ * (contados hacia atrás desde hoy, en hora de Lima) y opcionalmente una sede o rol operativo.
  */
-export async function computeAnalytics({ days, campusId }: { days: number; campusId?: string | null }): Promise<AnalyticsData> {
+export async function computeAnalytics({
+  days,
+  campusId,
+  roleFilter,
+}: {
+  days: number
+  campusId?: string | null
+  roleFilter?: "PACIENTE_SIMULADO" | null
+}): Promise<AnalyticsData> {
   const todayKey = limaDayKey(new Date())
   const fromKey = addDaysToKey(todayKey, -(days - 1))
   const from = startOfLimaDay(fromKey)
   const to = startOfLimaDay(addDaysToKey(todayKey, 1))
   const prevFrom = startOfLimaDay(addDaysToKey(fromKey, -days))
 
-  const campusFilter: Prisma.AttendanceRecordWhereInput = campusId ? { campusId } : {}
+  const campusFilter: Prisma.AttendanceRecordWhereInput = {
+    ...(campusId ? { campusId } : {}),
+    ...(roleFilter ? { user: { role: roleFilter } } : {}),
+  }
 
   const [records, prevGroups, campuses, allStaffCounts, rawSettings, techSchedules] = await Promise.all([
     prisma.attendanceRecord.findMany({
@@ -50,7 +61,7 @@ export async function computeAnalytics({ days, campusId }: { days: number; campu
     prisma.user.groupBy({
       by: ["role"],
       where: {
-        role: { in: ["DOCENTE", "TECNICO", "PACIENTE_SIMULADO"] },
+        role: roleFilter ? roleFilter : { in: ["DOCENTE", "TECNICO", "PACIENTE_SIMULADO"] },
         ...(campusId ? { campusId } : {}),
       },
       _count: { _all: true },

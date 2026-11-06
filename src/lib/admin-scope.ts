@@ -1,7 +1,11 @@
 // Utilidades para separar la Sede Operativa (campusId como Técnico/Docente/Paciente)
 // de la Sede de Visualización Administrativa (adminCampusId) y el Nivel de Administrador (AdminTier).
 
-export type AdminTier = "SUPER_ADMIN" | "ADMIN_GLOBAL" | "ADMIN_SEDE"
+export type AdminTier =
+  | "SUPER_ADMIN"
+  | "ADMIN_GLOBAL"
+  | "ADMIN_SEDE"
+  | "COORDINADOR_PACIENTES"
 
 export const SCOPE_PREFIX = "scope:"
 export const SCOPE_ALL = "scope:ALL"
@@ -56,6 +60,7 @@ export function extractAdminCampusId(
  * - `SUPER_ADMIN`: Acceso total sin restricciones (incluye Informe de Logs y designar Super Admins)
  * - `ADMIN_GLOBAL`: Ve todas las sedes, sin poder crear Super Admins ni ver Informe de Logs
  * - `ADMIN_SEDE`: Ve únicamente la información de su sede administrativa asignada
+ * - `COORDINADOR_PACIENTES`: Gestiona, monitorea y exporta exclusivamente Pacientes Simulados (en todas las sedes o en una sede asignada)
  */
 export function extractAdminTier(
   rawPermissions: string[] | null | undefined,
@@ -69,13 +74,31 @@ export function extractAdminTier(
     const tierToken = rawPermissions.find((p) => p.startsWith(TIER_PREFIX))
     if (tierToken) {
       const t = tierToken.slice(TIER_PREFIX.length) as AdminTier
-      if (t === "SUPER_ADMIN" || t === "ADMIN_GLOBAL" || t === "ADMIN_SEDE") {
+      if (
+        t === "SUPER_ADMIN" ||
+        t === "ADMIN_GLOBAL" ||
+        t === "ADMIN_SEDE" ||
+        t === "COORDINADOR_PACIENTES"
+      ) {
         return t
       }
     }
   }
   const adminCampusId = extractAdminCampusId(rawPermissions, effectiveRole, fallbackCampusId)
   return adminCampusId ? "ADMIN_SEDE" : "ADMIN_GLOBAL"
+}
+
+/**
+ * Si el administrador tiene un rol especializado en un grupo operativo (ej. Coordinador de Pacientes Simulados),
+ * retorna el rol operativo al que está restringido (`"PACIENTE_SIMULADO"`), o `null` si supervisa todos los roles.
+ */
+export function extractScopedOperationalRole(
+  tier: AdminTier
+): "PACIENTE_SIMULADO" | null {
+  if (tier === "COORDINADOR_PACIENTES") {
+    return "PACIENTE_SIMULADO"
+  }
+  return null
 }
 
 /**
@@ -89,7 +112,9 @@ export function buildStoredPermissions(params: {
 }): string[] {
   const cleanModules = Array.from(new Set(extractModulePermissions(params.modulePermissions)))
   const scopeToken =
-    params.adminTier === "SUPER_ADMIN" || !params.adminCampusId
+    params.adminTier === "SUPER_ADMIN" ||
+    params.adminTier === "ADMIN_GLOBAL" ||
+    !params.adminCampusId
       ? SCOPE_ALL
       : `${SCOPE_CAMPUS_PREFIX}${params.adminCampusId}`
   const tierToken = `${TIER_PREFIX}${params.adminTier}`

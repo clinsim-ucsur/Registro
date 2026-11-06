@@ -4,6 +4,7 @@ import {
   extractAdminCampusId,
   extractAdminTier,
   extractModulePermissions,
+  extractScopedOperationalRole,
   type AdminTier,
 } from "@/lib/admin-scope"
 
@@ -13,6 +14,7 @@ export type AdminSession = {
   dni: string
   role: "SUPER_ADMIN" | "ADMIN_SECUNDARIO"
   adminTier: AdminTier
+  scopedRole: "PACIENTE_SIMULADO" | null
   campusId: string | null
   campusName: string | null
   operationalCampusId: string | null
@@ -38,6 +40,7 @@ export async function getAdminSession(): Promise<AdminSession | null> {
       dni: "admin.clinsim",
       role: "SUPER_ADMIN",
       adminTier: "SUPER_ADMIN",
+      scopedRole: null,
       campusId: null,
       campusName: null,
       operationalCampusId: null,
@@ -71,6 +74,7 @@ export async function getAdminSession(): Promise<AdminSession | null> {
 
   const adminTier = extractAdminTier(user.permissions, effectiveAdminRole, user.campusId)
   const adminCampusId = extractAdminCampusId(user.permissions, effectiveAdminRole, user.campusId)
+  const scopedRole = extractScopedOperationalRole(adminTier)
 
   let adminCampusName: string | null = null
   if (adminCampusId) {
@@ -93,6 +97,7 @@ export async function getAdminSession(): Promise<AdminSession | null> {
     dni: user.dni,
     role: effectiveAdminRole,
     adminTier,
+    scopedRole,
     campusId: adminCampusId,
     campusName: adminCampusName,
     operationalCampusId: user.campusId,

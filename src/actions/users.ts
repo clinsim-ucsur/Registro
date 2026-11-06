@@ -18,6 +18,9 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
     let updatedCount = 0
     let errorCount = 0
 
+    const session = await getAdminSession().catch(() => null)
+    const lockedRole = session?.scopedRole
+
     // Obtenemos todas las sedes y usuarios existentes en lote para evitar consultas repetitivas
     const dnis = data.map((d) => d.dni?.toString().trim()).filter((d) => d && d.length === 8)
     const [campuses, existingUsers] = await Promise.all([
@@ -45,10 +48,12 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
         continue
       }
 
-      // Mapeo seguro de Rol
+      // Mapeo seguro de Rol (Si es Coordinador de Pacientes Simulados, fuerza PACIENTE_SIMULADO)
       const roleRaw = item.role ? item.role.toString().toUpperCase().trim().replace(' ', '_') : 'DOCENTE'
       let userRole: Role = Role.DOCENTE
-      if (roleRaw === 'TECNICO' || roleRaw === 'TÉCNICO') userRole = Role.TECNICO
+      if (lockedRole === "PACIENTE_SIMULADO") {
+        userRole = Role.PACIENTE_SIMULADO
+      } else if (roleRaw === 'TECNICO' || roleRaw === 'TÉCNICO') userRole = Role.TECNICO
       else if (roleRaw === 'PACIENTE_SIMULADO' || roleRaw === 'PACIENTE') userRole = Role.PACIENTE_SIMULADO
       else if (roleRaw === 'COORDINADOR' || roleRaw === 'ADMIN_SECUNDARIO') userRole = Role.ADMIN_SECUNDARIO
       else if (roleRaw === 'SUPER_ADMIN') userRole = Role.SUPER_ADMIN
@@ -116,7 +121,6 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
       await Promise.all(writeOperations.slice(i, i + BATCH_SIZE).map((fn) => fn()))
     }
 
-    const session = await getAdminSession().catch(() => null)
     await recordAuditLog({
       actorName: session?.name || "Administrador",
       actorDni: session?.dni || "—",
@@ -150,12 +154,15 @@ export async function editUserAction(
   }
 ) {
   try {
+    const session = await getAdminSession().catch(() => null)
+    const effectiveRole = session?.scopedRole === "PACIENTE_SIMULADO" ? Role.PACIENTE_SIMULADO : data.role
+
     const updatedUser = await prisma.user.update({
       where: { dni: oldDni },
       data: {
         name: data.name,
         dni: data.dni,
-        role: data.role,
+        role: effectiveRole,
         campusId: data.campusId !== undefined ? (data.campusId || null) : undefined,
         defaultShift: data.defaultShift !== undefined ? (data.defaultShift || null) : undefined,
       }
@@ -163,7 +170,7 @@ export async function editUserAction(
 
     // Si el usuario es TÉCNICO y se modificó su turno o sede,
     // sincronizar inmediatamente su asignación de HOY en TechnicianSchedule para efecto instantáneo en la marcación
-    if ((updatedUser.role === Role.TECNICO || data.role === Role.TECNICO) && (data.defaultShift || data.campusId !== undefined)) {
+    if ((updatedUser.role === Role.TECNICO || effectiveRole === Role.TECNICO) && (data.defaultShift || data.campusId !== undefined)) {
       const now = new Date()
       const limaDateStr = new Intl.DateTimeFormat("en-CA", {
         timeZone: "America/Lima",
@@ -220,7 +227,6 @@ export async function editUserAction(
       }
     }
 
-    const session = await getAdminSession().catch(() => null)
     await recordAuditLog({
       actorName: session?.name || "Administrador",
       actorDni: session?.dni || "—",
@@ -228,7 +234,7 @@ export async function editUserAction(
       category: "USERS",
       action: "Edición de Personal Operativo",
       target: `${data.name} (${data.dni})`,
-      details: `Rol operativo: ${data.role}${data.defaultShift ? ` | Turno: ${data.defaultShift}` : ""}`,
+      details: `Rol operativo: ${effectiveRole}${data.defaultShift ? ` | Turno: ${data.defaultShift}` : ""}`,
     })
 
     try {
@@ -255,6 +261,9 @@ export async function createUserAction(data: {
   defaultShift?: "MANANA" | "INTERMEDIO" | "TARDE" | "NOCHE" | null
 }) {
   try {
+    const session = await getAdminSession().catch(() => null)
+    const effectiveRole = session?.scopedRole === "PACIENTE_SIMULADO" ? Role.PACIENTE_SIMULADO : data.role
+
     const existing = await prisma.user.findUnique({ where: { dni: data.dni } })
     if (existing) return { success: false, message: "El DNI ya se encuentra registrado." }
 
@@ -262,13 +271,12 @@ export async function createUserAction(data: {
       data: {
         name: data.name,
         dni: data.dni,
-        role: data.role,
+        role: effectiveRole,
         campusId: data.campusId || null,
         defaultShift: data.defaultShift || null,
       }
     })
 
-    const session = await getAdminSession().catch(() => null)
     await recordAuditLog({
       actorName: session?.name || "Administrador",
       actorDni: session?.dni || "—",
@@ -276,7 +284,7 @@ export async function createUserAction(data: {
       category: "USERS",
       action: "Registro de Nuevo Personal Operativo",
       target: `${data.name} (${data.dni})`,
-      details: `Alta manual con rol operativo: ${data.role}.`,
+      details: `Alta manual con rol operativo: ${effectiveRole}.`,
     })
 
     revalidatePath("/dashboard")
@@ -425,10 +433,19 @@ export async function createAdminAction(data: {
         details: `Nivel asignado: ${requestedTier} | Alcance Admin: ${targetAdminCampusId ? "Sede específica" : "Todas las sedes"} (Sede operativa ${existing.role} preservada).`,
       })
 
+      const tierFriendlyName =
+        requestedTier === "SUPER_ADMIN"
+          ? "Super Admin"
+          : requestedTier === "ADMIN_GLOBAL"
+          ? "Admin General"
+          : requestedTier === "COORDINADOR_PACIENTES"
+          ? "Coordinador de Pacientes Simulados"
+          : "Admin por Sede"
+
       revalidatePath("/dashboard")
       return {
         success: true,
-        message: `¡Usuario ${existing.name} promovido a ${requestedTier === "SUPER_ADMIN" ? "Super Admin" : requestedTier === "ADMIN_GLOBAL" ? "Admin General" : "Admin por Sede"} sin alterar su perfil operativo!`,
+        message: `¡Usuario ${existing.name} promovido a ${tierFriendlyName} sin alterar su perfil operativo!`,
       }
     }
 

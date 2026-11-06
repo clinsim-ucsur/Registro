@@ -960,6 +960,7 @@ async function main() {
     extractAdminCampusId,
     extractAdminTier,
     extractModulePermissions,
+    extractScopedOperationalRole,
   } = await import("../src/lib/admin-scope")
 
   // 14.1 Separación de sede operativa vs sede de visualización administrativa
@@ -985,6 +986,20 @@ async function main() {
     extractAdminCampusId(sedeAdminPerms, "ADMIN_SECUNDARIO", "campus_villa_id") === "campus_norte_id" &&
       extractAdminTier(sedeAdminPerms, "ADMIN_SECUNDARIO", "campus_villa_id") === "ADMIN_SEDE",
     "Admin por Sede: Restringe su vista exclusivamente a la sede administrativa asignada"
+  )
+
+  // 14.3 Coordinador de Pacientes Simulados restringido al rol PACIENTE_SIMULADO
+  const coordPacientesPerms = buildStoredPermissions({
+    modulePermissions: ["overview", "analytics", "reports", "users"],
+    adminCampusId: null,
+    adminTier: "COORDINADOR_PACIENTES",
+  })
+  const extractedTier = extractAdminTier(coordPacientesPerms, "ADMIN_SECUNDARIO", null)
+  assert(
+    extractedTier === "COORDINADOR_PACIENTES" &&
+      extractScopedOperationalRole(extractedTier) === "PACIENTE_SIMULADO" &&
+      extractAdminCampusId(coordPacientesPerms, "ADMIN_SECUNDARIO", null) === null,
+    "Coordinador de Pacientes Simulados: Filtra exclusivamente PACIENTE_SIMULADO (Global o por Sede)"
   )
 
   // 14.3 Verificación en BD: Jean Pieer es el único SUPER_ADMIN y conserva su rol TECNICO en Campus Villa,

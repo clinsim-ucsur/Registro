@@ -21,7 +21,11 @@ export async function getAnalyticsAction(
       ? campusId
       : null
 
-    const data = await computeAnalytics({ days: safeDays, campusId: safeCampus })
+    const data = await computeAnalytics({
+      days: safeDays,
+      campusId: safeCampus,
+      roleFilter: session.scopedRole,
+    })
     return { success: true, data }
   } catch (error) {
     console.error("[getAnalyticsAction]", error)

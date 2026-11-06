@@ -41,8 +41,10 @@ export async function fetchFilteredRecordsAction(filters: ReportFilterParams) {
       where.campusId = filters.campusId
     }
 
-    // Filtro por Rol
-    if (filters.role && filters.role !== "ALL") {
+    // Filtro por Rol (Si el usuario es Coordinador de Pacientes Simulados, forzar siempre PACIENTE_SIMULADO)
+    if (session.scopedRole) {
+      where.user = { ...(where.user || {}), role: session.scopedRole }
+    } else if (filters.role && filters.role !== "ALL") {
       where.user = { ...(where.user || {}), role: filters.role }
     }
 

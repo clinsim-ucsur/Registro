@@ -99,10 +99,12 @@ export function DashboardReports({
   initialRecords,
   campuses,
   initialOvertimeSettings,
+  lockedOperationalRole = null,
 }: {
   initialRecords: any[]
   campuses: { id: string; name: string }[]
   initialOvertimeSettings?: OvertimeSettings
+  lockedOperationalRole?: "PACIENTE_SIMULADO" | null
 }) {
   const [records, setRecords] = useState<AttendanceItem[]>(initialRecords)
   const [isPending, startTransition] = useTransition()
@@ -146,7 +148,7 @@ export function DashboardReports({
   const [startDate, setStartDate] = useState(thirtyDaysAgoKey)
   const [endDate, setEndDate] = useState(todayKey)
   const [campusId, setCampusId] = useState("")
-  const [role, setRole] = useState<Role | "ALL">("ALL")
+  const [role, setRole] = useState<Role | "ALL">(lockedOperationalRole || "ALL")
   const [shift, setShift] = useState<Shift | "ALL">("ALL")
   const [type, setType] = useState<RecordType | "ALL">("ALL")
   const [status, setStatus] = useState<RecordStatus | "ALL">("ALL")
@@ -200,7 +202,7 @@ export function DashboardReports({
     setStartDate(thirtyDaysAgoKey)
     setEndDate(todayKey)
     setCampusId("")
-    setRole("ALL")
+    setRole(lockedOperationalRole || "ALL")
     setShift("ALL")
     setType("ALL")
     setStatus("ALL")
@@ -209,6 +211,7 @@ export function DashboardReports({
       const res = await fetchFilteredRecordsAction({
         startDate: thirtyDaysAgoKey,
         endDate: todayKey,
+        role: lockedOperationalRole || undefined,
       })
       if (res.success && res.records) {
         setRecords(res.records as AttendanceItem[])
@@ -887,16 +890,22 @@ export function DashboardReports({
             <label className="text-[11px] font-black uppercase tracking-wider text-slate-600 mb-1 flex items-center gap-1.5">
               <Users size={13} className="text-[#1967D2]" /> Rol Operativo
             </label>
-            <select
-              value={role}
-              onChange={(e) => setRole(e.target.value as any)}
-              className="w-full h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-[#1967D2]"
-            >
-              <option value="ALL">Todos los roles</option>
-              <option value="DOCENTE">Docentes</option>
-              <option value="TECNICO">Técnicos</option>
-              <option value="PACIENTE_SIMULADO">Pacientes Simulados</option>
-            </select>
+            {lockedOperationalRole === "PACIENTE_SIMULADO" ? (
+              <div className="w-full h-11 rounded-xl border border-purple-200 bg-purple-50 px-3 flex items-center text-xs font-bold text-purple-800">
+                👩‍⚕️ Solo Pacientes Simulados
+              </div>
+            ) : (
+              <select
+                value={role}
+                onChange={(e) => setRole(e.target.value as any)}
+                className="w-full h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-[#1967D2]"
+              >
+                <option value="ALL">Todos los roles</option>
+                <option value="DOCENTE">Docentes</option>
+                <option value="TECNICO">Técnicos</option>
+                <option value="PACIENTE_SIMULADO">Pacientes Simulados</option>
+              </select>
+            )}
           </div>
 
           {/* Turno Base */}

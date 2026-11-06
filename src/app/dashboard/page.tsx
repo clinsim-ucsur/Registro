@@ -39,7 +39,8 @@ export default async function DashboardPage() {
   
   const currentUserRole = session.role
   const adminTier = session.adminTier
-  const scopedCampusId = session.campusId // null para SUPER_ADMIN y ADMIN_GLOBAL; ID de sede para ADMIN_SEDE
+  const scopedRole = session.scopedRole // "PACIENTE_SIMULADO" para Coordinador de Pacientes Simulados, null para el resto
+  const scopedCampusId = session.campusId // null para Todas las Sedes; ID de sede si está restringido a 1 sede
   const permissions = session.permissions || []
 
   // Helper de permiso: Si es SUPER_ADMIN o tiene el permiso explícito en su cuenta
@@ -67,7 +68,10 @@ export default async function DashboardPage() {
     kioskCodes,
   ] = await Promise.all([
     prisma.attendanceRecord.findMany({
-      where: scopedCampusId ? { campusId: scopedCampusId } : undefined,
+      where: {
+        ...(scopedCampusId ? { campusId: scopedCampusId } : {}),
+        ...(scopedRole ? { user: { role: scopedRole } } : {}),
+      },
       orderBy: { timestamp: 'desc' },
       take: 1000,
       include: {
@@ -76,11 +80,11 @@ export default async function DashboardPage() {
         course: { select: { id: true, name: true } },
       }
     }),
-    // Personal Operativo: SOLO usuarios con rol operativo real (DOCENTE, TECNICO, PACIENTE_SIMULADO).
-    // Los administrativos netos (role = SUPER_ADMIN / ADMIN_SECUNDARIO) NO aparecen como Pacientes ni Personal Operativo.
+    // Personal Operativo: Si es Coordinador de Pacientes Simulados, solo obtiene PACIENTE_SIMULADO.
+    // Los administrativos netos (role = SUPER_ADMIN / ADMIN_SECUNDARIO) NUNCA aparecen aquí.
     prisma.user.findMany({
       where: {
-        role: { in: ['DOCENTE', 'TECNICO', 'PACIENTE_SIMULADO'] },
+        role: scopedRole ? scopedRole : { in: ['DOCENTE', 'TECNICO', 'PACIENTE_SIMULADO'] },
         ...(scopedCampusId ? { campusId: scopedCampusId } : {}),
       },
       include: { campus: { select: { id: true, name: true } } },
@@ -97,8 +101,8 @@ export default async function DashboardPage() {
       include: { campus: { select: { id: true, name: true } } },
       orderBy: { name: 'asc' },
     }),
-    computeAnalytics({ days: 7, campusId: scopedCampusId }),
-    computeAnalytics({ days: 30, campusId: scopedCampusId }),
+    computeAnalytics({ days: 7, campusId: scopedCampusId, roleFilter: scopedRole }),
+    computeAnalytics({ days: 30, campusId: scopedCampusId, roleFilter: scopedRole }),
     prisma.toleranceRule.findMany({
       where: scopedCampusId ? { OR: [{ campusId: scopedCampusId }, { campusId: null }] } : undefined,
       include: { campus: { select: { id: true, name: true } } },
@@ -156,6 +160,8 @@ export default async function DashboardPage() {
   const tierLabel =
     adminTier === "SUPER_ADMIN"
       ? "Super Admin"
+      : adminTier === "COORDINADOR_PACIENTES"
+      ? "Coord. Pacientes Simulados"
       : adminTier === "ADMIN_SEDE"
       ? `Admin por Sede`
       : "Admin General"
@@ -177,6 +183,11 @@ export default async function DashboardPage() {
           ) : (
             <div className="mt-3 px-3 py-1.5 rounded-xl bg-white/10 border border-white/10 text-xs font-bold text-blue-200 flex items-center gap-1.5">
               <Globe size={13} /> Vista: Todas las Sedes
+            </div>
+          )}
+          {scopedRole === "PACIENTE_SIMULADO" && (
+            <div className="mt-2 px-3 py-1.5 rounded-xl bg-purple-500/20 border border-purple-400/30 text-xs font-bold text-purple-200">
+              👩‍⚕️ Solo Pacientes Simulados
             </div>
           )}
         </div>
@@ -229,7 +240,7 @@ export default async function DashboardPage() {
               </TabsTrigger>
             )}
 
-            {(hasAccess("rules") || hasAccess("users")) && (
+            {(hasAccess("rules") || hasAccess("users")) && !scopedRole && (
               <TabsTrigger 
                 value="schedules" 
                 className="w-full justify-start gap-4 px-5 py-3.5 text-sm md:text-base font-bold rounded-2xl text-slate-300 data-[state=active]:bg-[#1967D2] data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-blue-900/50 hover:bg-white/5 transition-all outline-none"
@@ -245,7 +256,7 @@ export default async function DashboardPage() {
                 value="users" 
                 className="w-full justify-start gap-4 px-5 py-3.5 text-sm md:text-base font-bold rounded-2xl text-slate-300 data-[state=active]:bg-[#1967D2] data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-blue-900/50 hover:bg-white/5 transition-all outline-none"
               >
-                <Users size={20}/> Personal Operativo
+                <Users size={20}/> {scopedRole === "PACIENTE_SIMULADO" ? "Pacientes Simulados" : "Personal Operativo"}
               </TabsTrigger>
             )}
 
@@ -298,6 +309,7 @@ export default async function DashboardPage() {
             <h1 className="text-2xl font-extrabold text-slate-800">Centro de Control</h1>
             <p className="text-sm font-medium text-slate-500">
               Gestión y Monitoreo en Tiempo Real — {session.campusName ? `Sede: ${session.campusName}` : "Todas las Sedes"}
+              {scopedRole === "PACIENTE_SIMULADO" ? " • Pacientes Simulados" : ""}
             </p>
           </div>
           
@@ -309,7 +321,7 @@ export default async function DashboardPage() {
                   {tierLabel} {session.campusName ? `(${session.campusName})` : ""}
                 </p>
              </div>
-             <div className={`w-10 h-10 text-white font-black flex items-center justify-center rounded-full shadow-sm ${currentUserRole === 'SUPER_ADMIN' ? 'bg-indigo-600 shadow-indigo-500/30' : 'bg-[#1967D2] shadow-blue-500/30'}`}>
+             <div className={`w-10 h-10 text-white font-black flex items-center justify-center rounded-full shadow-sm ${currentUserRole === 'SUPER_ADMIN' ? 'bg-indigo-600 shadow-indigo-500/30' : adminTier === 'COORDINADOR_PACIENTES' ? 'bg-purple-600 shadow-purple-500/30' : 'bg-[#1967D2] shadow-blue-500/30'}`}>
                 {session.name ? session.name.slice(0, 2).toUpperCase() : (currentUserRole === 'SUPER_ADMIN' ? 'SA' : 'AD')}
              </div>
           </div>
@@ -341,6 +353,7 @@ export default async function DashboardPage() {
                   initialRecords={records}
                   campuses={visibleCampuses}
                   initialOvertimeSettings={overtimeSettings}
+                  lockedOperationalRole={scopedRole}
                 />
               </TabsContent>
             )}
@@ -355,7 +368,7 @@ export default async function DashboardPage() {
               </TabsContent>
             )}
 
-            {(hasAccess("rules") || hasAccess("users")) && (
+            {(hasAccess("rules") || hasAccess("users")) && !scopedRole && (
               <TabsContent value="schedules" className="m-0 p-0 outline-none">
                 <DashboardSchedules
                   initialSchedules={technicianSchedules as any}
@@ -371,6 +384,7 @@ export default async function DashboardPage() {
                   users={users}
                   campuses={visibleCampuses}
                   currentUserRole={currentUserRole}
+                  lockedOperationalRole={scopedRole}
                 />
               </TabsContent>
             )}
