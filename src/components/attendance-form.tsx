@@ -500,10 +500,10 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
         setKioskAdminPass("")
         toast.success(res.message, { duration: 6000 })
       } else {
-        toast.error(res.message || "No se pudo autorizar el Kiosco")
+        toast.error(res.message || "No se pudo autorizar la Estación Fija")
       }
     } catch {
-      toast.error("Error de conexión al autorizar Kiosco")
+      toast.error("Error de conexión al autorizar la Estación Fija")
     } finally {
       setIsAuthorizingKiosk(false)
     }
@@ -515,7 +515,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     setRememberDniOnDevice(true)
     setShowKioskModal(false)
     await revokeKioskDeviceAction()
-    toast.info("Modo Kiosco desactivado en este navegador. Ahora opera en Modo Celular con GPS.")
+    toast.info("Estación Fija desactivada en este equipo. Ahora opera en Modo Móvil con GPS.")
   }
 
   const getLocation = () =>
@@ -748,66 +748,66 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const roleMeta = validatedUser ? ROLE_UI_META[validatedUser.role] || ROLE_UI_META[Role.DOCENTE] : null
 
   return (
-    <div className="bg-white rounded-[2rem] p-8 md:p-10 shadow-[0_45px_75px_-15px_rgba(0,0,0,0.6)] w-full relative overflow-hidden transition-all duration-500">
-      <div className="absolute top-0 left-0 w-full h-2.5 bg-gradient-to-r from-blue-400 to-[#1967D2]"></div>
+    <div className="bg-white rounded-2xl sm:rounded-3xl md:rounded-[2rem] p-4 sm:p-6 md:p-10 shadow-[0_30px_60px_-15px_rgba(0,0,0,0.55)] w-full relative overflow-hidden transition-all duration-500">
+      <div className="absolute top-0 left-0 w-full h-2 sm:h-2.5 bg-gradient-to-r from-blue-400 to-[#1967D2]"></div>
 
-      {/* Barra Superior: Estado de Red + Modo Híbrido (Kiosco PC vs Celular GPS) */}
-      <div className="flex flex-wrap items-center justify-between gap-2 mb-6 p-2.5 rounded-2xl bg-slate-50 border border-slate-200/80 text-xs">
-        <div className="flex flex-wrap items-center gap-2">
+      {/* Barra Superior: Estado de Red + Modo Híbrido (Estación Fija vs Celular GPS) */}
+      <div className="flex flex-wrap items-center justify-between gap-1.5 sm:gap-2 mb-4 sm:mb-6 p-2 sm:p-2.5 rounded-xl sm:rounded-2xl bg-slate-50 border border-slate-200/80 text-[11px] sm:text-xs">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
           {isOffline ? (
-            <span className="flex items-center gap-1.5 font-black text-rose-600 bg-rose-50 px-3 py-1 rounded-full border border-rose-200">
-              <WifiOff size={14} /> Sin Conexión (Offline)
+            <span className="flex items-center gap-1 sm:gap-1.5 font-black text-rose-600 bg-rose-50 px-2.5 py-1 rounded-full border border-rose-200">
+              <WifiOff size={13} /> Sin Conexión
             </span>
           ) : isContingencyMode ? (
-            <span className="flex items-center gap-1.5 font-black text-amber-700 bg-amber-50 px-3 py-1 rounded-full border border-amber-200">
-              <ShieldCheck size={14} className="text-amber-600" /> Contingencia Local
+            <span className="flex items-center gap-1 sm:gap-1.5 font-black text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200">
+              <ShieldCheck size={13} className="text-amber-600" /> Contingencia Local
             </span>
           ) : (
-            <span className="flex items-center gap-1.5 font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-              <Wifi size={14} className="text-emerald-600" /> En Línea
+            <span className="flex items-center gap-1 sm:gap-1.5 font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+              <Wifi size={13} className="text-emerald-600" /> En Línea
             </span>
           )}
 
           {/* Indicador del Modo Híbrido actual */}
           {kioskConfig ? (
-            <span className="flex items-center gap-1.5 font-black text-indigo-700 bg-indigo-50 px-3 py-1 rounded-full border border-indigo-200">
-              <MonitorCheck size={14} className="text-indigo-600" /> PC Kiosco: {kioskConfig.campusName} (Sin GPS)
+            <span className="flex items-center gap-1 sm:gap-1.5 font-black text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-full border border-indigo-200">
+              <MonitorCheck size={13} className="text-indigo-600" /> Estación Oficial: {kioskConfig.campusName}
             </span>
           ) : (
             <>
               {gpsStatus === "inside" && (
-                <span className="flex items-center gap-1.5 font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200">
-                  <Navigation size={13} className="text-emerald-600" /> GPS en {gpsCampusDetected || "Campus"}
+                <span className="flex items-center gap-1 sm:gap-1.5 font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+                  <Navigation size={12} className="text-emerald-600" /> En {gpsCampusDetected || "Campus"}
                 </span>
               )}
               {gpsStatus === "locating" && (
-                <span className="flex items-center gap-1.5 font-semibold text-blue-700 bg-blue-50 px-3 py-1 rounded-full border border-blue-200">
-                  <Loader2 size={13} className="animate-spin text-[#1967D2]" /> Verificando GPS del celular...
+                <span className="flex items-center gap-1 sm:gap-1.5 font-semibold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-200">
+                  <Loader2 size={12} className="animate-spin text-[#1967D2]" /> Verificando ubicación...
                 </span>
               )}
               {gpsStatus === "outside" && (
-                <span className="flex items-center gap-1.5 font-bold text-amber-700 bg-amber-50 px-3 py-1 rounded-full border border-amber-200">
-                  <MapPin size={13} className="text-amber-600" /> Fuera del perímetro del campus
+                <span className="flex items-center gap-1 sm:gap-1.5 font-bold text-amber-700 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200">
+                  <MapPin size={12} className="text-amber-600" /> Fuera del campus
                 </span>
               )}
               {gpsStatus === "denied" && (
-                <span className="flex items-center gap-1.5 font-bold text-rose-700 bg-rose-50 px-3 py-1 rounded-full border border-rose-200">
-                  <MapPin size={13} className="text-rose-600" /> Active el GPS para marcar en celular
+                <span className="flex items-center gap-1 sm:gap-1.5 font-bold text-rose-700 bg-rose-50 px-2.5 py-1 rounded-full border border-rose-200">
+                  <MapPin size={12} className="text-rose-600" /> Active el GPS
                 </span>
               )}
             </>
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 ml-auto sm:ml-0">
           {pendingOfflineCount > 0 && (
             <button
               type="button"
               onClick={syncOfflineRecords}
-              className="flex items-center gap-1.5 font-black text-[#1967D2] hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded-full border border-blue-200 transition-colors cursor-pointer"
+              className="flex items-center gap-1 font-black text-[#1967D2] hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-full border border-blue-200 transition-colors cursor-pointer"
               title="Sincronizar registros guardados en la memoria del dispositivo con la base de datos"
             >
-              <RefreshCw size={12} className="animate-spin" />
+              <RefreshCw size={11} className="animate-spin" />
               {pendingOfflineCount} pend.
             </button>
           )}
@@ -816,30 +816,30 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
             type="button"
             onClick={() => setShowKioskModal((prev) => !prev)}
             className="flex items-center gap-1 font-bold text-slate-500 hover:text-slate-800 bg-white hover:bg-slate-100 px-2.5 py-1 rounded-full border border-slate-200 transition-colors cursor-pointer"
-            title="Configurar Modo Kiosco para la PC fija de la oficina (sin GPS)"
+            title="Vincular equipo fijo de la sede (no requiere GPS)"
           >
-            <Lock size={12} />
-            {kioskConfig ? "Kiosco Activo" : "Kiosco PC"}
+            <Lock size={11} />
+            <span>{kioskConfig ? "Estación Activa" : "Estación Fija"}</span>
           </button>
         </div>
       </div>
 
-      {/* Panel desplegable de Autorización de PC Kiosco (Solo Administradores) */}
+      {/* Panel desplegable de Autorización de Estación Fija (Solo Administradores) */}
       {showKioskModal && (
-        <div className="mb-6 p-4 rounded-2xl bg-slate-50 border-2 border-indigo-200 space-y-3 animate-fade-in-up">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <MonitorCheck size={18} className="text-indigo-600" />
-              <h3 className="text-sm font-black text-slate-800">
+        <div className="mb-4 sm:mb-6 p-3.5 sm:p-4 rounded-xl sm:rounded-2xl bg-slate-50 border-2 border-indigo-200 space-y-3 animate-fade-in-up">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <MonitorCheck size={17} className="text-indigo-600 shrink-0" />
+              <h3 className="text-xs sm:text-sm font-black text-slate-800 truncate">
                 {kioskConfig
-                  ? `PC Kiosco Autorizada (${kioskConfig.campusName})`
-                  : "Autorizar esta PC como Kiosco Oficial (Sin GPS)"}
+                  ? `Estación Fija Autorizada (${kioskConfig.campusName})`
+                  : "Vincular como Estación Fija de Sede"}
               </h3>
             </div>
             <button
               type="button"
               onClick={() => setShowKioskModal(false)}
-              className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              className="text-slate-400 hover:text-slate-600 cursor-pointer shrink-0 p-1"
             >
               <X size={16} />
             </button>
@@ -848,41 +848,41 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
           {kioskConfig ? (
             <div className="space-y-3 text-xs text-slate-600">
               <p>
-                Esta computadora está autorizada como <strong>Kiosco Fijo en {kioskConfig.campusName}</strong>. No requiere permisos de ubicación GPS y limpia el DNI automáticamente tras cada marcación.
+                Este equipo está vinculado como <strong>Estación Fija Oficial en {kioskConfig.campusName}</strong>. No requiere permisos de GPS y limpia el DNI automáticamente tras cada registro.
               </p>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={handleDeactivateKiosk}
-                className="h-9 rounded-xl font-bold text-rose-600 border-rose-200 hover:bg-rose-50 cursor-pointer"
+                className="h-9 rounded-xl font-bold text-rose-600 border-rose-200 hover:bg-rose-50 cursor-pointer w-full sm:w-auto"
               >
-                Desactivar Modo Kiosco en este navegador
+                Desvincular Estación Fija en este equipo
               </Button>
             </div>
           ) : (
             <div className="space-y-3">
               <p className="text-xs text-slate-600">
-                Active esta opción <strong>únicamente en la computadora fija de la oficina/clínica</strong> donde TI tiene bloqueada la ubicación. Los celulares seguirán validando ubicación GPS dentro del campus.
+                Active esta opción <strong>únicamente en la computadora fija de la clínica/oficina</strong> donde la ubicación esté restringida por TI. Los teléfonos móviles seguirán validando ubicación GPS dentro del campus.
               </p>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <Input
                   placeholder="Usuario o DNI Admin"
                   value={kioskAdminUser}
                   onChange={(e) => setKioskAdminUser(e.target.value)}
-                  className="h-10 text-sm bg-white"
+                  className="h-9 sm:h-10 text-xs sm:text-sm bg-white"
                 />
                 <Input
                   type="password"
                   placeholder="Contraseña Admin"
                   value={kioskAdminPass}
                   onChange={(e) => setKioskAdminPass(e.target.value)}
-                  className="h-10 text-sm bg-white"
+                  className="h-9 sm:h-10 text-xs sm:text-sm bg-white"
                 />
                 <select
                   value={kioskCampusSelect}
                   onChange={(e) => setKioskCampusSelect(e.target.value)}
-                  className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800"
+                  className="h-9 sm:h-10 rounded-md border border-slate-200 bg-white px-3 text-xs sm:text-sm font-semibold text-slate-800"
                 >
                   <option value="Campus Villa">Campus Villa</option>
                   <option value="Campus Norte">Campus Norte</option>
@@ -896,14 +896,14 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                   size="sm"
                   disabled={isAuthorizingKiosk}
                   onClick={handleAuthorizeKiosk}
-                  className="h-9 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs cursor-pointer"
+                  className="h-9 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs cursor-pointer w-full sm:w-auto"
                 >
                   {isAuthorizingKiosk ? (
                     <Loader2 size={14} className="animate-spin mr-1.5" />
                   ) : (
                     <MonitorCheck size={14} className="mr-1.5" />
                   )}
-                  Autorizar esta PC sin GPS
+                  Vincular Estación Fija
                 </Button>
               </div>
             </div>
@@ -911,31 +911,31 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
         </div>
       )}
 
-      <div className="text-center mb-7">
-        <h2 className="text-2xl md:text-3xl font-black text-slate-800 tracking-wide">
+      <div className="text-center mb-4 sm:mb-6">
+        <h2 className="text-xl sm:text-2xl md:text-3xl font-black text-slate-800 tracking-wide">
           Registro de Asistencia
         </h2>
-        <p className="text-slate-500 text-xs md:text-sm font-medium mt-1">
-          Ingrese su número de DNI para identificar automáticamente su rol, sede y programación del día
+        <p className="text-slate-500 text-[11px] sm:text-xs md:text-sm font-medium mt-0.5 sm:mt-1 px-1">
+          Ingrese su DNI para identificar su rol, sede, horario y ambiente asignado
         </p>
       </div>
 
       <Form {...form}>
-        <form className="space-y-6" onSubmit={(e) => e.preventDefault()}>
+        <form className="space-y-4 sm:space-y-6" onSubmit={(e) => e.preventDefault()}>
           <FormField
             control={form.control}
             name="dni"
             render={({ field }) => (
               <FormItem>
-                <div className="flex items-center justify-between">
-                  <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2">
+                  <FormLabel className="text-slate-500 text-[11px] sm:text-xs font-bold uppercase tracking-widest">
                     Número de DNI
                   </FormLabel>
 
                   {/* En celulares personales: mostrar si el DNI está recordado y opción de cambiarlo */}
                   {!kioskConfig && (
-                    <div className="flex items-center gap-3">
-                      <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 cursor-pointer select-none">
+                    <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 sm:gap-3">
+                      <label className="flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-slate-500 cursor-pointer select-none">
                         <input
                           type="checkbox"
                           checked={rememberDniOnDevice}
@@ -950,20 +950,20 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                               setHasRememberedDni(true)
                             }
                           }}
-                          className="rounded border-slate-300 text-[#1967D2] focus:ring-[#1967D2]"
+                          className="rounded border-slate-300 text-[#1967D2] focus:ring-[#1967D2] w-3.5 h-3.5"
                         />
-                        <Smartphone size={13} className="text-[#1967D2]" />
-                        Recordar mi DNI en este celular
+                        <Smartphone size={12} className="text-[#1967D2] shrink-0" />
+                        <span>Recordar mi DNI</span>
                       </label>
 
                       {hasRememberedDni && watchDni?.length > 0 && (
                         <button
                           type="button"
                           onClick={() => clearOrResetForm(true)}
-                          className="flex items-center gap-1 text-xs font-bold text-[#1967D2] hover:text-blue-800 cursor-pointer"
+                          className="flex items-center gap-1 text-[11px] sm:text-xs font-bold text-[#1967D2] hover:text-blue-800 cursor-pointer"
                           title="Borrar DNI guardado para ingresar otro"
                         >
-                          <UserX size={13} /> Cambiar DNI
+                          <UserX size={12} /> Cambiar DNI
                         </button>
                       )}
                     </div>
@@ -972,12 +972,15 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
 
                 <FormControl>
                   <div className="relative">
-                    <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-400" size={24} />
+                    <Search className="absolute left-3.5 sm:left-5 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
                     <Input
                       placeholder="Ingrese sus 8 dígitos"
                       maxLength={8}
-                      autoFocus
-                      className="h-20 pl-14 pr-14 bg-slate-50 border-2 border-slate-200 text-slate-900 text-2xl font-black tracking-[0.4em] rounded-xl focus-visible:ring-[#1967D2] focus-visible:border-[#1967D2] transition-all placeholder:text-slate-300 placeholder:tracking-normal placeholder:font-medium"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      enterKeyHint="done"
+                      autoComplete="off"
+                      className="h-14 sm:h-16 md:h-20 pl-10 sm:pl-14 pr-10 sm:pr-14 bg-slate-50 border-2 border-slate-200 text-slate-900 text-xl sm:text-2xl font-black tracking-[0.22em] sm:tracking-[0.4em] rounded-xl focus-visible:ring-[#1967D2] focus-visible:border-[#1967D2] transition-all placeholder:text-slate-300 placeholder:tracking-normal placeholder:font-medium placeholder:text-sm sm:placeholder:text-lg"
                       {...field}
                       onChange={(e) => {
                         const val = e.target.value.replace(/\D/g, "")
@@ -985,24 +988,24 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                       }}
                     />
                     {isValidating && (
-                      <Loader2 className="absolute right-5 top-1/2 -translate-y-1/2 text-[#1967D2] animate-spin" size={26} />
+                      <Loader2 className="absolute right-3.5 sm:right-5 top-1/2 -translate-y-1/2 text-[#1967D2] animate-spin" size={22} />
                     )}
                     {validatedUser && !isValidating && (
-                      <UserCheck className="absolute right-5 top-1/2 -translate-y-1/2 text-emerald-500" size={28} />
+                      <UserCheck className="absolute right-3.5 sm:right-5 top-1/2 -translate-y-1/2 text-emerald-500" size={24} />
                     )}
                   </div>
                 </FormControl>
 
                 {/* Pantalla de carga mientras el sistema analiza el DNI y su programación */}
                 {isValidating && (
-                  <div className="mt-4 rounded-2xl border border-blue-200 bg-gradient-to-r from-blue-50/90 to-indigo-50/70 p-6 flex flex-col items-center justify-center gap-3 text-center animate-fade-in-up">
-                    <Loader2 size={32} className="text-[#1967D2] animate-spin" />
+                  <div className="mt-3 sm:mt-4 rounded-xl sm:rounded-2xl border border-blue-200 bg-gradient-to-r from-blue-50/90 to-indigo-50/70 p-4 sm:p-6 flex flex-col items-center justify-center gap-2 sm:gap-3 text-center animate-fade-in-up">
+                    <Loader2 size={26} className="text-[#1967D2] animate-spin" />
                     <div className="space-y-0.5">
-                      <p className="text-sm font-black text-slate-800">
+                      <p className="text-xs sm:text-sm font-black text-slate-800">
                         Analizando DNI y programación del día...
                       </p>
-                      <p className="text-xs font-medium text-slate-500">
-                        Verificando rol, horario de entrada/salida, sede y ambiente asignado
+                      <p className="text-[11px] sm:text-xs font-medium text-slate-500">
+                        Verificando rol, horario, sede y ambiente asignado
                       </p>
                     </div>
                   </div>
@@ -1010,13 +1013,13 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
 
                 {/* Alerta de error de conexión con opción de Modo Contingencia Local */}
                 {connectionError && !isValidating && (
-                  <div className="rounded-2xl border border-amber-300 bg-amber-50/90 p-4 text-xs space-y-2.5 mt-3 animate-fade-in-up shadow-xs">
+                  <div className="rounded-xl sm:rounded-2xl border border-amber-300 bg-amber-50/90 p-3 sm:p-4 text-xs space-y-2 mt-3 animate-fade-in-up shadow-xs">
                     <div className="flex items-center gap-2 font-black text-amber-900">
-                      <WifiOff size={16} className="text-amber-700" />
+                      <WifiOff size={15} className="text-amber-700 shrink-0" />
                       <span>Problema de conexión con el servidor en esta red</span>
                     </div>
-                    <p className="text-amber-800 leading-relaxed font-medium">
-                      Ocurrió un problema de enlace o lentitud en la red Wi-Fi de esta sede. Para no retrasar su marcación ni perder su hora oficial de ingreso/salida, puede activar el <strong>Modo Local</strong> o reintentar la conexión.
+                    <p className="text-amber-800 leading-relaxed font-medium text-[11px] sm:text-xs">
+                      Ocurrió un problema de enlace o lentitud en la red. Para no retrasar su marcación ni perder su hora oficial, puede activar el <strong>Modo Local</strong> o reintentar.
                     </p>
                     <div className="flex flex-wrap items-center gap-2 pt-1">
                       <Button
@@ -1024,9 +1027,9 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                         size="sm"
                         onClick={() => validateDni(watchDni, 2)}
                         disabled={isValidating}
-                        className="h-9 px-4 rounded-xl font-black bg-amber-600 hover:bg-amber-700 text-white shadow-xs"
+                        className="h-8 sm:h-9 px-3 sm:px-4 rounded-xl font-black bg-amber-600 hover:bg-amber-700 text-white shadow-xs text-xs"
                       >
-                        <RefreshCw size={14} className={`mr-1.5 ${isValidating ? "animate-spin" : ""}`} /> Reintentar Conexión
+                        <RefreshCw size={13} className={`mr-1.5 ${isValidating ? "animate-spin" : ""}`} /> Reintentar
                       </Button>
                       <Button
                         type="button"
@@ -1043,9 +1046,9 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                           setConnectionError(false)
                           toast.info("Modo contingencia activado: Su marcación se guardará de inmediato en el dispositivo.")
                         }}
-                        className="h-9 px-4 rounded-xl font-black border-amber-400 bg-white text-amber-900 hover:bg-amber-100 shadow-xs"
+                        className="h-8 sm:h-9 px-3 sm:px-4 rounded-xl font-black border-amber-400 bg-white text-amber-900 hover:bg-amber-100 shadow-xs text-xs"
                       >
-                        <ShieldCheck size={14} className="mr-1.5 text-emerald-600" /> Marcar en Modo Local
+                        <ShieldCheck size={13} className="mr-1.5 text-emerald-600" /> Marcar en Modo Local
                       </Button>
                     </div>
                   </div>
@@ -1054,25 +1057,25 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                 {/* Resumen de Información al validar el DNI */}
                 {validatedUser && !isValidating && roleMeta && (
                   <div
-                    className={`mt-4 rounded-2xl border-2 ${roleMeta.borderClass} bg-gradient-to-br ${roleMeta.accentBg} p-5 space-y-4 animate-fade-in-up shadow-xs`}
+                    className={`mt-3 sm:mt-4 rounded-xl sm:rounded-2xl border-2 ${roleMeta.borderClass} bg-gradient-to-br ${roleMeta.accentBg} p-3 sm:p-5 space-y-2.5 sm:space-y-4 animate-fade-in-up shadow-xs`}
                   >
                     {/* Cabecera: Quién está marcando + Rol detectado */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200/80">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className="w-9 h-9 rounded-xl bg-white shadow-xs border border-slate-200/80 flex items-center justify-center shrink-0">
-                          <BadgeCheck size={20} className="text-emerald-600" />
+                    <div className="flex items-center justify-between gap-2 pb-2 sm:pb-3 border-b border-slate-200/80">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg sm:rounded-xl bg-white shadow-xs border border-slate-200/80 flex items-center justify-center shrink-0">
+                          <BadgeCheck size={18} className="text-emerald-600" />
                         </div>
                         <div className="min-w-0">
-                          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                          <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
                             Colaborador Identificado
                           </p>
-                          <p className="text-base md:text-lg font-black text-slate-900 truncate">
+                          <p className="text-sm sm:text-base md:text-lg font-black text-slate-900 truncate">
                             {validatedUser.name}
                           </p>
                         </div>
                       </div>
                       <span
-                        className={`text-xs font-black uppercase tracking-widest px-3.5 py-1.5 rounded-full shadow-xs ${roleMeta.badgeClass}`}
+                        className={`text-[10px] sm:text-xs font-black uppercase tracking-wider sm:tracking-widest px-2.5 sm:px-3.5 py-1 sm:py-1.5 rounded-full shadow-xs shrink-0 ${roleMeta.badgeClass}`}
                       >
                         {roleMeta.label}
                       </span>
@@ -1080,18 +1083,18 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
 
                     {/* CASO 1: Resumen para TÉCNICOS (Quién marca, Hora que marca / turno y Sede) */}
                     {validatedUser.role === Role.TECNICO && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
-                          <Clock size={18} className="text-indigo-600 mt-0.5 shrink-0" />
-                          <div>
-                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+                        <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
+                          <Clock size={16} className="text-indigo-600 mt-0.5 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
                               Hora de Marcación y Turno
                             </p>
-                            <p className="text-sm font-black text-slate-800">
+                            <p className="text-xs sm:text-sm font-black text-slate-800">
                               Marcando: <span className="text-indigo-700">{markingTimeStr}</span>
                             </p>
                             {technicianAssignment && (
-                              <p className="text-xs font-semibold text-slate-600 mt-0.5">
+                              <p className="text-[11px] sm:text-xs font-semibold text-slate-600 mt-0.5">
                                 Turno {SHIFT_LABELS[technicianAssignment.shift] || technicianAssignment.shift}:{" "}
                                 <span className="font-bold text-slate-800">
                                   {technicianAssignment.expectedEntryTime} — {technicianAssignment.expectedExitTime || "15:00"}
@@ -1101,16 +1104,16 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                           </div>
                         </div>
 
-                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
-                          <MapPin size={18} className="text-indigo-600 mt-0.5 shrink-0" />
-                          <div>
-                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                        <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
+                          <MapPin size={16} className="text-indigo-600 mt-0.5 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
                               Sede Asignada
                             </p>
-                            <p className="text-sm font-black text-slate-800">
+                            <p className="text-xs sm:text-sm font-black text-slate-800">
                               {technicianAssignment?.campusName || validatedUser.campusName || "Campus Villa"}
                             </p>
-                            <p className="text-xs font-medium text-slate-500 mt-0.5">
+                            <p className="text-[11px] sm:text-xs font-medium text-slate-500 mt-0.5">
                               {technicianAssignment?.source === "SCHEDULE" ? "Según cronograma del día" : "Sede base asignada"}
                             </p>
                           </div>
@@ -1120,60 +1123,60 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
 
                     {/* CASO 2: Resumen para DOCENTES y PACIENTES SIMULADOS */}
                     {(validatedUser.role === Role.DOCENTE || validatedUser.role === Role.PACIENTE_SIMULADO) && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
                         {/* Hora de marcación y Horario (1er ingreso -> última salida del día) */}
-                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
-                          <Clock size={18} className="text-[#1967D2] mt-0.5 shrink-0" />
-                          <div>
-                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                              Hora de Marcación y Horario
+                        <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
+                          <Clock size={16} className="text-[#1967D2] mt-0.5 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                              Hora y Turno de Hoy
                             </p>
-                            <p className="text-sm font-black text-slate-800">
+                            <p className="text-xs sm:text-sm font-black text-slate-800">
                               Marcando: <span className="text-[#1967D2]">{markingTimeStr}</span>
                             </p>
                             {dailyProgram?.found ? (
-                              <p className="text-xs font-semibold text-slate-600 mt-0.5">
-                                Turno hoy:{" "}
+                              <p className="text-[11px] sm:text-xs font-semibold text-slate-600 mt-0.5">
+                                Turno:{" "}
                                 <span className="font-black text-slate-900">
-                                  Ingreso {dailyProgram.entryTime} — Salida {dailyProgram.exitTime}
+                                  {dailyProgram.entryTime} a {dailyProgram.exitTime}
                                 </span>
                               </p>
                             ) : (
-                              <p className="text-xs font-medium text-amber-700 mt-0.5">
-                                Sin horario programado en lista de hoy
+                              <p className="text-[11px] sm:text-xs font-medium text-amber-700 mt-0.5">
+                                Sin horario en lista de hoy
                               </p>
                             )}
                           </div>
                         </div>
 
                         {/* Sede */}
-                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
-                          <MapPin size={18} className="text-[#1967D2] mt-0.5 shrink-0" />
-                          <div>
-                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                        <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
+                          <MapPin size={16} className="text-[#1967D2] mt-0.5 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
                               Sede Asignada
                             </p>
-                            <p className="text-sm font-black text-slate-800">
+                            <p className="text-xs sm:text-sm font-black text-slate-800">
                               {dailyProgram?.found
                                 ? dailyProgram.campusName
                                 : validatedUser.campusName || "Campus Villa"}
                             </p>
                             {dailyProgram?.found && dailyProgram.piso && (
-                              <p className="text-xs font-medium text-slate-500 mt-0.5">
-                                Ubicación: {dailyProgram.piso}
+                              <p className="text-[11px] sm:text-xs font-medium text-slate-500 mt-0.5 truncate">
+                                {dailyProgram.piso}
                               </p>
                             )}
                           </div>
                         </div>
 
                         {/* Ambiente donde ingresa (solo nombre después de ':') */}
-                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
-                          <DoorOpen size={18} className="text-emerald-600 mt-0.5 shrink-0" />
+                        <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
+                          <DoorOpen size={16} className="text-emerald-600 mt-0.5 shrink-0" />
                           <div className="min-w-0">
-                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                            <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
                               Ambiente Asignado
                             </p>
-                            <p className="text-sm font-black text-slate-800 break-words">
+                            <p className="text-xs sm:text-sm font-black text-slate-800 break-words leading-snug">
                               {dailyProgram?.found
                                 ? dailyProgram.ambiente.replace(/^[^:]+:\s*/, "")
                                 : "Por asignar en sede"}
@@ -1182,17 +1185,17 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                         </div>
 
                         {/* Curso / Sesión donde ingresa */}
-                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
-                          <BookOpen size={18} className="text-emerald-600 mt-0.5 shrink-0" />
+                        <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
+                          <BookOpen size={16} className="text-emerald-600 mt-0.5 shrink-0" />
                           <div className="min-w-0">
-                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                            <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
                               Curso / Sesión de Ingreso
                             </p>
-                            <p className="text-sm font-black text-slate-800 break-words">
+                            <p className="text-xs sm:text-sm font-black text-slate-800 break-words leading-snug">
                               {dailyProgram?.found ? dailyProgram.courseName : "General"}
                             </p>
                             {dailyProgram?.found && dailyProgram.sesion && (
-                              <p className="text-xs font-medium text-slate-500 mt-0.5 truncate" title={dailyProgram.sesion}>
+                              <p className="text-[11px] sm:text-xs font-medium text-slate-500 mt-0.5 truncate" title={dailyProgram.sesion}>
                                 {dailyProgram.sesion}
                               </p>
                             )}
@@ -1203,7 +1206,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                   </div>
                 )}
 
-                <FormMessage className="text-sm font-medium" />
+                <FormMessage className="text-xs sm:text-sm font-medium" />
               </FormItem>
             )}
           />
@@ -1219,20 +1222,20 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
               (!validatedUser && !isOffline && !isContingencyMode) || isSubmitting !== null || isLoadingState
 
             return (
-              <div className="grid grid-cols-1 gap-4 pt-2">
+              <div className="grid grid-cols-1 gap-3 sm:gap-4 pt-1 sm:pt-2">
                 {showEntrada && (
                   <Button
                     type="button"
                     disabled={isButtonDisabled}
                     onClick={form.handleSubmit((d) => onSubmit(d, RecordType.ENTRADA))}
-                    className="h-20 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(25,103,210,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(25,103,210,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none cursor-pointer"
+                    className="h-14 sm:h-16 md:h-20 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-base sm:text-lg md:text-xl shadow-[0_10px_20px_-5px_rgba(25,103,210,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(25,103,210,0.7)] transition-all hover:-translate-y-0.5 active:scale-[0.99] disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none cursor-pointer"
                   >
                     {isLoadingState ? (
-                      <Loader2 size={24} className="animate-spin mr-2" />
+                      <Loader2 size={22} className="animate-spin mr-2" />
                     ) : isSubmitting === RecordType.ENTRADA ? (
-                      <Loader2 size={24} className="animate-spin mr-2" />
+                      <Loader2 size={22} className="animate-spin mr-2" />
                     ) : (
-                      <LogIn size={24} className="mr-2" />
+                      <LogIn size={22} className="mr-2" />
                     )}
                     {isLoadingState ? "ANALIZANDO..." : "MARCAR ENTRADA"}
                   </Button>
@@ -1243,12 +1246,12 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                     type="button"
                     disabled={isButtonDisabled}
                     onClick={form.handleSubmit((d) => onSubmit(d, RecordType.SALIDA))}
-                    className="h-20 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(15,23,42,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(15,23,42,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none cursor-pointer"
+                    className="h-14 sm:h-16 md:h-20 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-black text-base sm:text-lg md:text-xl shadow-[0_10px_20px_-5px_rgba(15,23,42,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(15,23,42,0.7)] transition-all hover:-translate-y-0.5 active:scale-[0.99] disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none cursor-pointer"
                   >
                     {isSubmitting === RecordType.SALIDA ? (
-                      <Loader2 size={24} className="animate-spin mr-2" />
+                      <Loader2 size={22} className="animate-spin mr-2" />
                     ) : (
-                      <LogOut size={24} className="mr-2" />
+                      <LogOut size={22} className="mr-2" />
                     )}
                     MARCAR SALIDA
                   </Button>

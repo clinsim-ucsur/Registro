@@ -509,7 +509,7 @@ export async function authorizeKioskDeviceAction(params: {
       success: true,
       kioskToken: token,
       campusName: targetCampus,
-      message: `🖥️ Esta PC quedó autorizada como Kiosco Oficial (${targetCampus}) libre de GPS.`,
+      message: `🖥️ Equipo vinculado como Estación Fija Oficial (${targetCampus}) libre de GPS.`,
     }
   } catch (error) {
     console.error("[authorizeKioskDeviceAction] Error:", error)
