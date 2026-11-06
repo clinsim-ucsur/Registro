@@ -20,11 +20,18 @@ import {
   Check,
   Sliders,
   Building2,
-  Lock
+  Lock,
+  Globe,
 } from "lucide-react"
 import { toast } from "sonner"
-import { editAdminAction, deleteUserAction, createAdminAction, revokeAdminAction } from "@/actions/users"
+import { editAdminAction, createAdminAction, revokeAdminAction } from "@/actions/users"
 import { Role } from "@prisma/client"
+import {
+  extractAdminCampusId,
+  extractAdminTier,
+  extractModulePermissions,
+  type AdminTier,
+} from "@/lib/admin-scope"
 
 export const AVAILABLE_MODULES = [
   { id: "overview", name: "Resumen General", desc: "Métricas del día, flujo de entradas y salidas en vivo." },
@@ -38,14 +45,20 @@ export const AVAILABLE_MODULES = [
 ] as const
 
 const DEFAULT_SUPER_ADMIN_PERMS = ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins", "kiosk"]
-const DEFAULT_ADMIN_PERMS = ["overview", "reports", "users"]
+const DEFAULT_ADMIN_GLOBAL_PERMS = ["overview", "analytics", "reports", "rules", "users", "catalogs"]
+const DEFAULT_ADMIN_SEDE_PERMS = ["overview", "analytics", "reports", "users"]
 
 interface DashboardAdminsProps {
   admins: any[]
   campuses: { id: string; name: string }[]
+  currentUserRole?: "SUPER_ADMIN" | "ADMIN_SECUNDARIO"
 }
 
-export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
+export function DashboardAdmins({
+  admins,
+  campuses,
+  currentUserRole = "SUPER_ADMIN",
+}: DashboardAdminsProps) {
   const [searchTerm, setSearchTerm] = useState("")
 
   const [editingAdmin, setEditingAdmin] = useState<any | null>(null)
@@ -57,10 +70,16 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
 
   const [isProcessing, setIsProcessing] = useState(false)
 
-  const filteredAdmins = admins.filter(a =>
-    a.dni.includes(searchTerm) ||
-    a.name.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredAdmins = admins.filter(
+    (a) =>
+      a.dni.includes(searchTerm) ||
+      a.name.toLowerCase().includes(searchTerm.toLowerCase())
   )
+
+  const getCampusNameById = (id: string | null | undefined) => {
+    if (!id) return null
+    return campuses.find((c) => c.id === id)?.name || null
+  }
 
   const handleDelete = async () => {
     if (!deletingAdmin) return
@@ -78,14 +97,20 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
   const handleEdit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!editingAdmin) return
+    const tier: AdminTier = editingAdmin.adminTier || "ADMIN_GLOBAL"
+    if (tier === "ADMIN_SEDE" && !editingAdmin.adminCampusId) {
+      toast.error("Seleccione la sede asignada para el Admin por Sede.")
+      return
+    }
     setIsProcessing(true)
     const res = await editAdminAction(editingAdmin.oldDni, {
       name: editingAdmin.name,
       dni: editingAdmin.dni,
-      role: editingAdmin.role as Role,
+      role: (tier === "SUPER_ADMIN" ? "SUPER_ADMIN" : "ADMIN_SECUNDARIO") as Role,
+      adminTier: tier,
       password: editingAdmin.password,
-      campusId: editingAdmin.campusId || null,
-      permissions: editingAdmin.permissions || []
+      campusId: tier === "ADMIN_SEDE" ? editingAdmin.adminCampusId : null,
+      permissions: editingAdmin.permissions || [],
     })
 
     if (res.success) {
@@ -100,14 +125,20 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!addingAdmin) return
+    const tier: AdminTier = addingAdmin.adminTier || "ADMIN_SEDE"
+    if (tier === "ADMIN_SEDE" && !addingAdmin.adminCampusId) {
+      toast.error("Seleccione la sede asignada para el Admin por Sede.")
+      return
+    }
     setIsProcessing(true)
     const res = await createAdminAction({
       name: addingAdmin.name,
       dni: addingAdmin.dni,
-      role: addingAdmin.role as Role,
+      role: (tier === "SUPER_ADMIN" ? "SUPER_ADMIN" : "ADMIN_SECUNDARIO") as Role,
+      adminTier: tier,
       password: addingAdmin.password,
-      campusId: addingAdmin.campusId || null,
-      permissions: addingAdmin.permissions || []
+      campusId: tier === "ADMIN_SEDE" ? addingAdmin.adminCampusId : null,
+      permissions: addingAdmin.permissions || [],
     })
 
     if (res.success) {
@@ -122,17 +153,41 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
   const togglePermission = (targetObj: any, setTargetObj: (val: any) => void, permId: string) => {
     const currentPerms: string[] = targetObj.permissions || []
     if (currentPerms.includes(permId)) {
-      setTargetObj({ ...targetObj, permissions: currentPerms.filter(p => p !== permId) })
+      setTargetObj({ ...targetObj, permissions: currentPerms.filter((p) => p !== permId) })
     } else {
       setTargetObj({ ...targetObj, permissions: [...currentPerms, permId] })
     }
   }
 
-  const applyTemplate = (targetObj: any, setTargetObj: (val: any) => void, templateType: "super" | "admin" | "custom") => {
-    if (templateType === "super") {
-      setTargetObj({ ...targetObj, role: "SUPER_ADMIN", permissions: [...DEFAULT_SUPER_ADMIN_PERMS] })
-    } else if (templateType === "admin") {
-      setTargetObj({ ...targetObj, role: "ADMIN_SECUNDARIO", permissions: [...DEFAULT_ADMIN_PERMS] })
+  const applyTierTemplate = (
+    targetObj: any,
+    setTargetObj: (val: any) => void,
+    tier: AdminTier
+  ) => {
+    if (tier === "SUPER_ADMIN") {
+      setTargetObj({
+        ...targetObj,
+        role: "SUPER_ADMIN",
+        adminTier: "SUPER_ADMIN",
+        adminCampusId: "",
+        permissions: [...DEFAULT_SUPER_ADMIN_PERMS],
+      })
+    } else if (tier === "ADMIN_GLOBAL") {
+      setTargetObj({
+        ...targetObj,
+        role: "ADMIN_SECUNDARIO",
+        adminTier: "ADMIN_GLOBAL",
+        adminCampusId: "",
+        permissions: [...DEFAULT_ADMIN_GLOBAL_PERMS],
+      })
+    } else {
+      setTargetObj({
+        ...targetObj,
+        role: "ADMIN_SECUNDARIO",
+        adminTier: "ADMIN_SEDE",
+        adminCampusId: targetObj.adminCampusId || campuses[0]?.id || "",
+        permissions: [...DEFAULT_ADMIN_SEDE_PERMS],
+      })
     }
   }
 
@@ -143,13 +198,13 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
           <CardHeader className="border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 py-6 px-8">
             <div>
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-600 text-xs font-bold uppercase tracking-wider mb-2">
-                <Shield size={13} /> Seguridad & Privilegios
+                <Shield size={13} /> Jerarquía de Roles & Alcance por Sede
               </div>
               <CardTitle className="text-2xl font-black text-slate-800 flex items-center gap-2">
                 Control de Acceso y Permisos Granulares
               </CardTitle>
               <CardDescription className="text-sm font-medium mt-1 text-slate-500">
-                Asigna privilegios módulo por módulo de forma personalizada a cada administrador o mediante plantillas predeterminadas.
+                Configura qué sede visualiza cada administrador de forma independiente a su sede base operativa (Técnico, Docente o Paciente).
               </CardDescription>
             </div>
             <div className="flex flex-col md:flex-row gap-3 w-full md:w-auto">
@@ -159,19 +214,22 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                   placeholder="Buscar administrador..."
                   className="pl-12 h-12 bg-slate-50 border-slate-200 rounded-xl w-full font-medium focus-visible:ring-indigo-600"
                   value={searchTerm}
-                  onChange={e => setSearchTerm(e.target.value)}
+                  onChange={(e) => setSearchTerm(e.target.value)}
                 />
               </div>
               <Button
-                onClick={() => setAddingAdmin({
-                  name: '',
-                  dni: '',
-                  role: 'ADMIN_SECUNDARIO',
-                  password: '',
-                  campusId: '',
-                  permissions: [...DEFAULT_ADMIN_PERMS]
-                })}
-                className="h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold px-6 shadow-md shadow-indigo-600/20"
+                onClick={() =>
+                  setAddingAdmin({
+                    name: "",
+                    dni: "",
+                    role: "ADMIN_SECUNDARIO",
+                    adminTier: "ADMIN_SEDE",
+                    password: "",
+                    adminCampusId: campuses[0]?.id || "",
+                    permissions: [...DEFAULT_ADMIN_SEDE_PERMS],
+                  })
+                }
+                className="h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold px-6 shadow-md shadow-indigo-600/20 cursor-pointer"
               >
                 <UserPlus className="mr-2" size={18} /> Añadir Administrador
               </Button>
@@ -185,8 +243,8 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                   <TableRow className="border-slate-100">
                     <TableHead className="px-6 font-bold text-slate-600 py-4">Administrador</TableHead>
                     <TableHead className="font-bold text-slate-600">DNI (Usuario)</TableHead>
-                    <TableHead className="font-bold text-slate-600">Sede Asignada</TableHead>
-                    <TableHead className="font-bold text-slate-600">Rol & Privilegios</TableHead>
+                    <TableHead className="font-bold text-slate-600">Vista de Sede (Admin)</TableHead>
+                    <TableHead className="font-bold text-slate-600">Nivel de Rol</TableHead>
                     <TableHead className="font-bold text-slate-600">Módulos Permitidos</TableHead>
                     <TableHead className="text-right px-8 font-bold text-slate-600">Acciones</TableHead>
                   </TableRow>
@@ -200,47 +258,96 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                     </TableRow>
                   ) : (
                     filteredAdmins.map((admin) => {
-                      const effRole = admin.adminRole || admin.role
-                      const adminPerms: string[] = admin.permissions && admin.permissions.length > 0
-                        ? admin.permissions
-                        : (effRole === "SUPER_ADMIN" ? DEFAULT_SUPER_ADMIN_PERMS : DEFAULT_ADMIN_PERMS)
+                      const effRole = (admin.adminRole || admin.role) as "SUPER_ADMIN" | "ADMIN_SECUNDARIO"
+                      const adminTier = extractAdminTier(admin.permissions, effRole, admin.campusId)
+                      const adminCampusId = extractAdminCampusId(admin.permissions, effRole, admin.campusId)
+                      const adminCampusName = getCampusNameById(adminCampusId)
+                      const cleanPerms = extractModulePermissions(admin.permissions)
+                      const adminPerms =
+                        cleanPerms.length > 0
+                          ? cleanPerms
+                          : effRole === "SUPER_ADMIN"
+                          ? DEFAULT_SUPER_ADMIN_PERMS
+                          : DEFAULT_ADMIN_GLOBAL_PERMS
+
+                      const isOperationalAlso =
+                        admin.role === "TECNICO" ||
+                        admin.role === "DOCENTE" ||
+                        admin.role === "PACIENTE_SIMULADO"
 
                       return (
                         <TableRow key={admin.id} className="border-slate-100 hover:bg-slate-50/80 transition-colors">
                           <TableCell className="px-6 py-4">
                             <div className="flex items-center gap-3">
-                              <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-black text-sm text-white ${effRole === "SUPER_ADMIN" ? "bg-indigo-600" : "bg-[#1967D2]"}`}>
+                              <div
+                                className={`w-9 h-9 rounded-xl flex items-center justify-center font-black text-sm text-white shrink-0 ${
+                                  adminTier === "SUPER_ADMIN"
+                                    ? "bg-indigo-600"
+                                    : adminTier === "ADMIN_GLOBAL"
+                                    ? "bg-[#1967D2]"
+                                    : "bg-emerald-600"
+                                }`}
+                              >
                                 {admin.name.slice(0, 2).toUpperCase()}
                               </div>
-                              <p className="font-bold text-slate-800">{admin.name}</p>
+                              <div>
+                                <p className="font-bold text-slate-800">{admin.name}</p>
+                                {isOperationalAlso ? (
+                                  <p className="text-[11px] font-semibold text-slate-400">
+                                    Rol Operativo: <span className="text-slate-600 font-bold">{admin.role}</span>{" "}
+                                    ({admin.campus?.name || "Sin sede fija"})
+                                  </p>
+                                ) : (
+                                  <p className="text-[11px] font-semibold text-indigo-500">
+                                    Administrativo Neto
+                                  </p>
+                                )}
+                              </div>
                             </div>
                           </TableCell>
-                          <TableCell className="font-bold text-slate-600 font-mono text-sm">{admin.dni}</TableCell>
+                          <TableCell className="font-bold text-slate-600 font-mono text-sm">
+                            {admin.dni}
+                          </TableCell>
                           <TableCell>
-                            {admin.campus ? (
-                              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                                <Building2 size={13} /> {admin.campus.name}
+                            {adminCampusName ? (
+                              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <Building2 size={13} /> Solo {adminCampusName}
                               </span>
                             ) : (
-                              <span className="text-xs font-semibold text-slate-400">Todas las sedes</span>
+                              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                                <Globe size={13} /> Todas las Sedes
+                              </span>
                             )}
                           </TableCell>
                           <TableCell>
-                            <span className={`px-3 py-1 rounded-lg text-[10px] font-black tracking-widest uppercase ${effRole === 'SUPER_ADMIN' ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-slate-100 text-slate-600'}`}>
-                              {effRole === 'SUPER_ADMIN' ? 'Super Admin' : 'Admin'}
-                            </span>
+                            {adminTier === "SUPER_ADMIN" ? (
+                              <span className="px-3 py-1 rounded-lg text-[10px] font-black tracking-widest uppercase bg-indigo-100 text-indigo-700 border border-indigo-200">
+                                Super Admin
+                              </span>
+                            ) : adminTier === "ADMIN_GLOBAL" ? (
+                              <span className="px-3 py-1 rounded-lg text-[10px] font-black tracking-widest uppercase bg-blue-100 text-blue-700 border border-blue-200">
+                                Admin General
+                              </span>
+                            ) : (
+                              <span className="px-3 py-1 rounded-lg text-[10px] font-black tracking-widest uppercase bg-emerald-100 text-emerald-700 border border-emerald-200">
+                                Admin por Sede
+                              </span>
+                            )}
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-wrap gap-1 max-w-xs">
-                              {effRole === 'SUPER_ADMIN' ? (
+                              {adminTier === "SUPER_ADMIN" ? (
                                 <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded-md border border-indigo-100">
-                                  <Lock size={11} /> Control Total ({AVAILABLE_MODULES.length})
+                                  <Lock size={11} /> Acceso Total + Logs ({AVAILABLE_MODULES.length + 1})
                                 </span>
                               ) : (
                                 adminPerms.map((pid: string) => {
-                                  const mod = AVAILABLE_MODULES.find(m => m.id === pid)
+                                  const mod = AVAILABLE_MODULES.find((m) => m.id === pid)
                                   return (
-                                    <span key={pid} className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md">
+                                    <span
+                                      key={pid}
+                                      className="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md"
+                                    >
                                       {mod?.name.split(" ")[0] || pid}
                                     </span>
                                   )
@@ -252,24 +359,29 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                             <Button
                               variant="outline"
                               size="icon"
-                              onClick={() => setEditingAdmin({
-                                ...admin,
-                                role: effRole,
-                                oldDni: admin.dni,
-                                password: '',
-                                permissions: adminPerms,
-                                campusId: admin.campusId || ''
-                              })}
-                              className="h-9 w-9 text-blue-600 border-blue-200 hover:bg-blue-50 rounded-xl transition-colors shadow-sm"
-                              title="Configurar permisos y acceso"
+                              disabled={adminTier === "SUPER_ADMIN" && currentUserRole !== "SUPER_ADMIN"}
+                              onClick={() =>
+                                setEditingAdmin({
+                                  ...admin,
+                                  role: effRole,
+                                  adminTier,
+                                  adminCampusId: adminCampusId || "",
+                                  oldDni: admin.dni,
+                                  password: "",
+                                  permissions: adminPerms,
+                                })
+                              }
+                              className="h-9 w-9 text-blue-600 border-blue-200 hover:bg-blue-50 rounded-xl transition-colors shadow-sm cursor-pointer"
+                              title="Configurar nivel, sede de visualización y permisos"
                             >
                               <Edit size={16} />
                             </Button>
                             <Button
                               variant="outline"
                               size="icon"
+                              disabled={adminTier === "SUPER_ADMIN" && currentUserRole !== "SUPER_ADMIN"}
                               onClick={() => setDeletingAdmin(admin)}
-                              className="h-9 w-9 text-rose-600 border-rose-200 hover:bg-rose-50 rounded-xl transition-colors shadow-sm"
+                              className="h-9 w-9 text-rose-600 border-rose-200 hover:bg-rose-50 rounded-xl transition-colors shadow-sm cursor-pointer"
                               title="Revocar acceso"
                             >
                               <Trash2 size={16} />
@@ -287,382 +399,518 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
       </div>
 
       {/* MODAL CREAR ADMIN (PORTAL) */}
-      {typeof document !== "undefined" && !!addingAdmin && createPortal(
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
-          <div className="bg-white w-full max-w-2xl max-h-[90vh] overflow-y-auto no-scrollbar rounded-[2rem] shadow-2xl p-6 md:p-8 relative">
-            <button
-              onClick={() => !isProcessing && setAddingAdmin(null)}
-              className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full w-8 h-8 flex items-center justify-center transition-colors"
-            >
-              ✕
-            </button>
+      {typeof document !== "undefined" &&
+        !!addingAdmin &&
+        createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
+            <div className="bg-white w-full max-w-2xl max-h-[90vh] overflow-y-auto no-scrollbar rounded-[2rem] shadow-2xl p-6 md:p-8 relative">
+              <button
+                onClick={() => !isProcessing && setAddingAdmin(null)}
+                className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full w-8 h-8 flex items-center justify-center transition-colors"
+              >
+                ✕
+              </button>
 
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
-                <UserPlus size={24} />
-              </div>
-              <div>
-                <h3 className="text-2xl font-black text-[#0B1B3D]">Nuevo Administrador</h3>
-                <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Crea una cuenta y define sus accesos</p>
-              </div>
-            </div>
-
-            <form onSubmit={handleCreate} className="space-y-6">
-              {/* DATOS BÁSICOS */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Nombre Completo</label>
-                  <Input
-                    value={addingAdmin?.name || ""}
-                    onChange={e => setAddingAdmin({ ...addingAdmin, name: e.target.value })}
-                    className="h-12 bg-slate-50 border-slate-200 font-semibold focus-visible:ring-indigo-600 rounded-xl"
-                    placeholder="Ej. Ing. Carlos Mendoza"
-                    required
-                  />
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+                  <UserPlus size={24} />
                 </div>
                 <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">DNI (Usuario)</label>
-                  <Input
-                    value={addingAdmin?.dni || ""}
-                    onChange={e => setAddingAdmin({ ...addingAdmin, dni: e.target.value.replace(/\D/g, '') })}
-                    className="h-12 bg-slate-50 border-slate-200 font-black tracking-widest focus-visible:ring-indigo-600 rounded-xl"
-                    maxLength={8}
-                    placeholder="8 dígitos"
-                    required
-                  />
+                  <h3 className="text-2xl font-black text-[#0B1B3D]">Nuevo Administrador</h3>
+                  <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">
+                    Define su nivel de rol, qué sede(s) visualiza y sus permisos
+                  </p>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Contraseña de Acceso</label>
-                  <div className="relative">
-                    <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <form onSubmit={handleCreate} className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">
+                      Nombre Completo
+                    </label>
                     <Input
-                      type={showCreatePass ? "text" : "password"}
-                      value={addingAdmin?.password || ""}
-                      onChange={e => setAddingAdmin({ ...addingAdmin, password: e.target.value })}
-                      className="pl-12 pr-12 h-12 bg-slate-50 border-slate-200 font-medium focus-visible:ring-indigo-600 rounded-xl"
-                      placeholder="Mínimo 6 caracteres"
+                      value={addingAdmin?.name || ""}
+                      onChange={(e) => setAddingAdmin({ ...addingAdmin, name: e.target.value })}
+                      className="h-12 bg-slate-50 border-slate-200 font-semibold focus-visible:ring-indigo-600 rounded-xl"
+                      placeholder="Ej. Ing. Carlos Mendoza"
                       required
                     />
-                    <button
-                      type="button"
-                      onClick={() => setShowCreatePass(!showCreatePass)}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 outline-none"
-                    >
-                      {showCreatePass ? <EyeOff size={18} /> : <Eye size={18} />}
-                    </button>
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">
+                      DNI (Usuario)
+                    </label>
+                    <Input
+                      value={addingAdmin?.dni || ""}
+                      onChange={(e) =>
+                        setAddingAdmin({ ...addingAdmin, dni: e.target.value.replace(/\D/g, "") })
+                      }
+                      className="h-12 bg-slate-50 border-slate-200 font-black tracking-widest focus-visible:ring-indigo-600 rounded-xl"
+                      maxLength={8}
+                      placeholder="8 dígitos"
+                      required
+                    />
                   </div>
                 </div>
 
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Sede Asignada (Opcional)</label>
-                  <select
-                    value={addingAdmin?.campusId || ""}
-                    onChange={e => setAddingAdmin({ ...addingAdmin, campusId: e.target.value })}
-                    className="w-full h-12 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-600"
-                  >
-                    <option value="">Todas las Sedes (Global)</option>
-                    {campuses.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* PLANTILLAS PREDETERMINADAS */}
-              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80">
-                <div className="flex items-center justify-between mb-3">
+                {/* SELECCIÓN DE LOS 3 NIVELES ADMINISTRATIVOS */}
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-3">
                   <span className="text-xs font-black uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
-                    <Sliders size={14} className="text-indigo-600" /> Plantilla de Acceso Rápido
+                    <Sliders size={14} className="text-indigo-600" /> Nivel de Rol Administrativo
                   </span>
-                  <div className="flex gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <button
                       type="button"
-                      onClick={() => applyTemplate(addingAdmin, setAddingAdmin, "admin")}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${addingAdmin?.role === "ADMIN_SECUNDARIO"
-                          ? "bg-indigo-600 text-white border-indigo-600"
-                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                        }`}
+                      onClick={() => applyTierTemplate(addingAdmin, setAddingAdmin, "ADMIN_SEDE")}
+                      className={`p-3 rounded-xl text-left border transition-all cursor-pointer ${
+                        addingAdmin?.adminTier === "ADMIN_SEDE"
+                          ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
+                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"
+                      }`}
                     >
-                      Plantilla Estándar (Admin)
+                      <div className="font-black text-xs">1. Admin por Sede</div>
+                      <div
+                        className={`text-[11px] mt-0.5 ${
+                          addingAdmin?.adminTier === "ADMIN_SEDE" ? "text-emerald-100" : "text-slate-400"
+                        }`}
+                      >
+                        Ve únicamente la info de su sede asignada
+                      </div>
                     </button>
+
                     <button
                       type="button"
-                      onClick={() => applyTemplate(addingAdmin, setAddingAdmin, "super")}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${addingAdmin?.role === "SUPER_ADMIN"
-                          ? "bg-indigo-600 text-white border-indigo-600"
-                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                        }`}
+                      onClick={() => applyTierTemplate(addingAdmin, setAddingAdmin, "ADMIN_GLOBAL")}
+                      className={`p-3 rounded-xl text-left border transition-all cursor-pointer ${
+                        addingAdmin?.adminTier === "ADMIN_GLOBAL"
+                          ? "bg-[#1967D2] text-white border-[#1967D2] shadow-sm"
+                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"
+                      }`}
                     >
-                      Super Admin (Todo)
+                      <div className="font-black text-xs">2. Admin General</div>
+                      <div
+                        className={`text-[11px] mt-0.5 ${
+                          addingAdmin?.adminTier === "ADMIN_GLOBAL" ? "text-blue-100" : "text-slate-400"
+                        }`}
+                      >
+                        Ve todas las sedes (sin Logs ni crear Super Admin)
+                      </div>
                     </button>
+
+                    {currentUserRole === "SUPER_ADMIN" && (
+                      <button
+                        type="button"
+                        onClick={() => applyTierTemplate(addingAdmin, setAddingAdmin, "SUPER_ADMIN")}
+                        className={`p-3 rounded-xl text-left border transition-all cursor-pointer ${
+                          addingAdmin?.adminTier === "SUPER_ADMIN"
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"
+                        }`}
+                      >
+                        <div className="font-black text-xs">3. Super Admin</div>
+                        <div
+                          className={`text-[11px] mt-0.5 ${
+                            addingAdmin?.adminTier === "SUPER_ADMIN" ? "text-indigo-100" : "text-slate-400"
+                          }`}
+                        >
+                          Acceso total sin restricciones + Logs
+                        </div>
+                      </button>
+                    )}
                   </div>
                 </div>
-                <p className="text-xs text-slate-500">
-                  {addingAdmin?.role === "SUPER_ADMIN"
-                    ? "El Super Administrador tiene acceso total a todos los módulos y la gestión de administradores."
-                    : "La plantilla estándar asigna Resumen, Exportación de Reportes y Personal Operativo. Puedes personalizar cada permiso abajo."}
-                </p>
-              </div>
 
-              {/* CONTROL MANUAL DE ACCESOS */}
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 block">
-                  Permisos y Módulos Permitidos (Control Manual)
-                </label>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                  {AVAILABLE_MODULES.map((mod) => {
-                    const isChecked = addingAdmin?.permissions?.includes(mod.id)
-                    return (
-                      <div
-                        key={mod.id}
-                        onClick={() => togglePermission(addingAdmin, setAddingAdmin, mod.id)}
-                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${isChecked
-                            ? "bg-indigo-50/70 border-indigo-300 text-indigo-900"
-                            : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
-                          }`}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">
+                      Contraseña de Acceso
+                    </label>
+                    <div className="relative">
+                      <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                      <Input
+                        type={showCreatePass ? "text" : "password"}
+                        value={addingAdmin?.password || ""}
+                        onChange={(e) => setAddingAdmin({ ...addingAdmin, password: e.target.value })}
+                        className="pl-12 pr-12 h-12 bg-slate-50 border-slate-200 font-medium focus-visible:ring-indigo-600 rounded-xl"
+                        placeholder="Mínimo 6 caracteres"
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowCreatePass(!showCreatePass)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 outline-none"
                       >
-                        <div className={`w-5 h-5 rounded-md mt-0.5 flex items-center justify-center shrink-0 border transition-colors ${isChecked ? "bg-indigo-600 border-indigo-600 text-white" : "border-slate-300 bg-white"
-                          }`}>
-                          {isChecked && <Check size={14} strokeWidth={3} />}
-                        </div>
-                        <div className="space-y-0.5">
-                          <p className="font-bold text-xs">{mod.name}</p>
-                          <p className="text-[11px] text-slate-400 line-clamp-1">{mod.desc}</p>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
+                        {showCreatePass ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
+                    </div>
+                  </div>
 
-              <div className="flex gap-4 pt-4 border-t border-slate-100">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="flex-1 h-12 rounded-xl font-bold border-slate-200 hover:bg-slate-50 text-slate-600"
-                  onClick={() => setAddingAdmin(null)}
-                  disabled={isProcessing}
-                >
-                  Cancelar
-                </Button>
-                <Button
-                  type="submit"
-                  className="flex-1 h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-md shadow-indigo-600/20"
-                  disabled={isProcessing}
-                >
-                  {isProcessing ? <Loader2 className="animate-spin" size={18} /> : "Crear Administrador"}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </div>,
-        document.body
-      )}
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">
+                      Sede que Visualizará como Admin
+                    </label>
+                    {addingAdmin?.adminTier === "ADMIN_SEDE" ? (
+                      <select
+                        value={addingAdmin?.adminCampusId || ""}
+                        onChange={(e) =>
+                          setAddingAdmin({ ...addingAdmin, adminCampusId: e.target.value })
+                        }
+                        className="w-full h-12 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-600"
+                        required
+                      >
+                        <option value="">Seleccione sede asignada...</option>
+                        {campuses.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            Solo {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="h-12 rounded-xl bg-blue-50/70 border border-blue-200 px-4 flex items-center gap-2 text-xs font-bold text-blue-800">
+                        <Globe size={15} className="text-blue-600 shrink-0" />
+                        Visualiza todas las sedes (Global)
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* CONTROL MANUAL DE ACCESOS */}
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 block">
+                    Permisos y Módulos Permitidos (Control Manual)
+                  </label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                    {AVAILABLE_MODULES.map((mod) => {
+                      const isChecked = addingAdmin?.permissions?.includes(mod.id)
+                      return (
+                        <div
+                          key={mod.id}
+                          onClick={() => togglePermission(addingAdmin, setAddingAdmin, mod.id)}
+                          className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                            isChecked
+                              ? "bg-indigo-50/70 border-indigo-300 text-indigo-900"
+                              : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                          }`}
+                        >
+                          <div
+                            className={`w-5 h-5 rounded-md mt-0.5 flex items-center justify-center shrink-0 border transition-colors ${
+                              isChecked
+                                ? "bg-indigo-600 border-indigo-600 text-white"
+                                : "border-slate-300 bg-white"
+                            }`}
+                          >
+                            {isChecked && <Check size={14} strokeWidth={3} />}
+                          </div>
+                          <div className="space-y-0.5">
+                            <p className="font-bold text-xs">{mod.name}</p>
+                            <p className="text-[11px] text-slate-400 line-clamp-1">{mod.desc}</p>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex gap-4 pt-4 border-t border-slate-100">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1 h-12 rounded-xl font-bold border-slate-200 hover:bg-slate-50 text-slate-600"
+                    onClick={() => setAddingAdmin(null)}
+                    disabled={isProcessing}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    type="submit"
+                    className="flex-1 h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-md shadow-indigo-600/20"
+                    disabled={isProcessing}
+                  >
+                    {isProcessing ? <Loader2 className="animate-spin" size={18} /> : "Crear Administrador"}
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
 
       {/* MODAL EDITAR ADMIN (PORTAL) */}
-      {typeof document !== "undefined" && !!editingAdmin && createPortal(
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
-          <div className="bg-white w-full max-w-2xl max-h-[90vh] overflow-y-auto no-scrollbar rounded-[2rem] shadow-2xl p-6 md:p-8 relative">
-            <button
-              onClick={() => !isProcessing && setEditingAdmin(null)}
-              className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full w-8 h-8 flex items-center justify-center transition-colors"
-            >
-              ✕
-            </button>
+      {typeof document !== "undefined" &&
+        !!editingAdmin &&
+        createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
+            <div className="bg-white w-full max-w-2xl max-h-[90vh] overflow-y-auto no-scrollbar rounded-[2rem] shadow-2xl p-6 md:p-8 relative">
+              <button
+                onClick={() => !isProcessing && setEditingAdmin(null)}
+                className="absolute top-6 right-6 text-slate-400 hover:text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-full w-8 h-8 flex items-center justify-center transition-colors"
+              >
+                ✕
+              </button>
 
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
-                <Edit size={24} />
-              </div>
-              <div>
-                <h3 className="text-2xl font-black text-[#0B1B3D]">Editar Administrador</h3>
-                <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Modifica credenciales y permisos granulares</p>
-              </div>
-            </div>
-
-            <form onSubmit={handleEdit} className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Nombre Completo</label>
-                  <Input
-                    value={editingAdmin?.name || ""}
-                    onChange={e => setEditingAdmin({ ...editingAdmin, name: e.target.value })}
-                    className="h-12 bg-slate-50 border-slate-200 font-semibold focus-visible:ring-indigo-600 rounded-xl"
-                    required
-                  />
+              <div className="flex items-center gap-3 mb-6">
+                <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
+                  <Edit size={24} />
                 </div>
                 <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">DNI (Usuario)</label>
-                  <Input
-                    value={editingAdmin?.dni || ""}
-                    onChange={e => setEditingAdmin({ ...editingAdmin, dni: e.target.value.replace(/\D/g, '') })}
-                    className="h-12 bg-slate-50 border-slate-200 font-black tracking-widest focus-visible:ring-indigo-600 rounded-xl"
-                    maxLength={8}
-                    required
-                  />
+                  <h3 className="text-2xl font-black text-[#0B1B3D]">Editar Administrador</h3>
+                  <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">
+                    Su sede de visualización como Admin es independiente de su sede operativa
+                  </p>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">
-                    Nueva Contraseña (Opcional)
-                  </label>
-                  <div className="relative">
-                    <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <form onSubmit={handleEdit} className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">
+                      Nombre Completo
+                    </label>
                     <Input
-                      type={showEditPass ? "text" : "password"}
-                      value={editingAdmin?.password || ""}
-                      onChange={e => setEditingAdmin({ ...editingAdmin, password: e.target.value })}
-                      className="pl-12 pr-12 h-12 bg-slate-50 border-slate-200 font-medium focus-visible:ring-indigo-600 rounded-xl"
-                      placeholder="Dejar en blanco para no cambiar"
+                      value={editingAdmin?.name || ""}
+                      onChange={(e) => setEditingAdmin({ ...editingAdmin, name: e.target.value })}
+                      className="h-12 bg-slate-50 border-slate-200 font-semibold focus-visible:ring-indigo-600 rounded-xl"
+                      required
                     />
-                    <button
-                      type="button"
-                      onClick={() => setShowEditPass(!showEditPass)}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 outline-none"
-                    >
-                      {showEditPass ? <EyeOff size={18} /> : <Eye size={18} />}
-                    </button>
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">
+                      DNI (Usuario)
+                    </label>
+                    <Input
+                      value={editingAdmin?.dni || ""}
+                      onChange={(e) =>
+                        setEditingAdmin({
+                          ...editingAdmin,
+                          dni: e.target.value.replace(/\D/g, ""),
+                        })
+                      }
+                      className="h-12 bg-slate-50 border-slate-200 font-black tracking-widest focus-visible:ring-indigo-600 rounded-xl"
+                      maxLength={8}
+                      required
+                    />
                   </div>
                 </div>
 
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Sede Asignada</label>
-                  <select
-                    value={editingAdmin?.campusId || ""}
-                    onChange={e => setEditingAdmin({ ...editingAdmin, campusId: e.target.value })}
-                    className="w-full h-12 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-600"
-                  >
-                    <option value="">Todas las Sedes (Global)</option>
-                    {campuses.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* PLANTILLAS */}
-              <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80">
-                <div className="flex items-center justify-between mb-2">
+                {/* NIVELES DE ROL EN EDICIÓN */}
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200/80 space-y-3">
                   <span className="text-xs font-black uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
-                    <Sliders size={14} className="text-indigo-600" /> Plantillas de Rol
+                    <Sliders size={14} className="text-indigo-600" /> Nivel de Rol Administrativo
                   </span>
-                  <div className="flex gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <button
                       type="button"
-                      onClick={() => applyTemplate(editingAdmin, setEditingAdmin, "admin")}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${editingAdmin?.role === "ADMIN_SECUNDARIO"
-                          ? "bg-indigo-600 text-white border-indigo-600"
-                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                        }`}
+                      onClick={() => applyTierTemplate(editingAdmin, setEditingAdmin, "ADMIN_SEDE")}
+                      className={`p-3 rounded-xl text-left border transition-all cursor-pointer ${
+                        editingAdmin?.adminTier === "ADMIN_SEDE"
+                          ? "bg-emerald-600 text-white border-emerald-600 shadow-sm"
+                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"
+                      }`}
                     >
-                      Admin Estándar
+                      <div className="font-black text-xs">1. Admin por Sede</div>
+                      <div
+                        className={`text-[11px] mt-0.5 ${
+                          editingAdmin?.adminTier === "ADMIN_SEDE" ? "text-emerald-100" : "text-slate-400"
+                        }`}
+                      >
+                        Solo ve su sede asignada
+                      </div>
                     </button>
+
                     <button
                       type="button"
-                      onClick={() => applyTemplate(editingAdmin, setEditingAdmin, "super")}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold border transition-colors ${editingAdmin?.role === "SUPER_ADMIN"
-                          ? "bg-indigo-600 text-white border-indigo-600"
-                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100"
-                        }`}
+                      onClick={() => applyTierTemplate(editingAdmin, setEditingAdmin, "ADMIN_GLOBAL")}
+                      className={`p-3 rounded-xl text-left border transition-all cursor-pointer ${
+                        editingAdmin?.adminTier === "ADMIN_GLOBAL"
+                          ? "bg-[#1967D2] text-white border-[#1967D2] shadow-sm"
+                          : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"
+                      }`}
                     >
-                      Super Admin (Todo)
+                      <div className="font-black text-xs">2. Admin General</div>
+                      <div
+                        className={`text-[11px] mt-0.5 ${
+                          editingAdmin?.adminTier === "ADMIN_GLOBAL" ? "text-blue-100" : "text-slate-400"
+                        }`}
+                      >
+                        Ve todas las sedes (sin Logs ni crear Super Admin)
+                      </div>
                     </button>
+
+                    {currentUserRole === "SUPER_ADMIN" && (
+                      <button
+                        type="button"
+                        onClick={() => applyTierTemplate(editingAdmin, setEditingAdmin, "SUPER_ADMIN")}
+                        className={`p-3 rounded-xl text-left border transition-all cursor-pointer ${
+                          editingAdmin?.adminTier === "SUPER_ADMIN"
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                            : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"
+                        }`}
+                      >
+                        <div className="font-black text-xs">3. Super Admin</div>
+                        <div
+                          className={`text-[11px] mt-0.5 ${
+                            editingAdmin?.adminTier === "SUPER_ADMIN" ? "text-indigo-100" : "text-slate-400"
+                          }`}
+                        >
+                          Acceso total + Informe de Logs
+                        </div>
+                      </button>
+                    )}
                   </div>
                 </div>
-              </div>
 
-              {/* PERMISOS GRANULARES */}
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 block">
-                  Permisos Activos (Control Manual por Módulo)
-                </label>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                  {AVAILABLE_MODULES.map((mod) => {
-                    const isChecked = editingAdmin?.permissions?.includes(mod.id)
-                    return (
-                      <div
-                        key={mod.id}
-                        onClick={() => togglePermission(editingAdmin, setEditingAdmin, mod.id)}
-                        className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${isChecked
-                            ? "bg-indigo-50/70 border-indigo-300 text-indigo-900"
-                            : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
-                          }`}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">
+                      Nueva Contraseña (Opcional)
+                    </label>
+                    <div className="relative">
+                      <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                      <Input
+                        type={showEditPass ? "text" : "password"}
+                        value={editingAdmin?.password || ""}
+                        onChange={(e) =>
+                          setEditingAdmin({ ...editingAdmin, password: e.target.value })
+                        }
+                        className="pl-12 pr-12 h-12 bg-slate-50 border-slate-200 font-medium focus-visible:ring-indigo-600 rounded-xl"
+                        placeholder="Dejar en blanco para no cambiar"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowEditPass(!showEditPass)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 outline-none"
                       >
-                        <div className={`w-5 h-5 rounded-md mt-0.5 flex items-center justify-center shrink-0 border transition-colors ${isChecked ? "bg-indigo-600 border-indigo-600 text-white" : "border-slate-300 bg-white"
-                          }`}>
-                          {isChecked && <Check size={14} strokeWidth={3} />}
-                        </div>
-                        <div className="space-y-0.5">
-                          <p className="font-bold text-xs">{mod.name}</p>
-                          <p className="text-[11px] text-slate-400 line-clamp-1">{mod.desc}</p>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
+                        {showEditPass ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
+                    </div>
+                  </div>
 
-              <div className="flex gap-4 pt-4 border-t border-slate-100">
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">
+                      Sede que Visualiza como Admin
+                    </label>
+                    {editingAdmin?.adminTier === "ADMIN_SEDE" ? (
+                      <select
+                        value={editingAdmin?.adminCampusId || ""}
+                        onChange={(e) =>
+                          setEditingAdmin({ ...editingAdmin, adminCampusId: e.target.value })
+                        }
+                        className="w-full h-12 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-600"
+                        required
+                      >
+                        <option value="">Seleccione sede asignada...</option>
+                        {campuses.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            Solo {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <div className="h-12 rounded-xl bg-blue-50/70 border border-blue-200 px-4 flex items-center gap-2 text-xs font-bold text-blue-800">
+                        <Globe size={15} className="text-blue-600 shrink-0" />
+                        Visualiza todas las sedes (No altera su sede operativa)
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* PERMISOS GRANULARES */}
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3 block">
+                    Permisos Activos (Control Manual por Módulo)
+                  </label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                    {AVAILABLE_MODULES.map((mod) => {
+                      const isChecked = editingAdmin?.permissions?.includes(mod.id)
+                      return (
+                        <div
+                          key={mod.id}
+                          onClick={() => togglePermission(editingAdmin, setEditingAdmin, mod.id)}
+                          className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                            isChecked
+                              ? "bg-indigo-50/70 border-indigo-300 text-indigo-900"
+                              : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50"
+                          }`}
+                        >
+                          <div
+                            className={`w-5 h-5 rounded-md mt-0.5 flex items-center justify-center shrink-0 border transition-colors ${
+                              isChecked
+                                ? "bg-indigo-600 border-indigo-600 text-white"
+                                : "border-slate-300 bg-white"
+                            }`}
+                          >
+                            {isChecked && <Check size={14} strokeWidth={3} />}
+                          </div>
+                          <div className="space-y-0.5">
+                            <p className="font-bold text-xs">{mod.name}</p>
+                            <p className="text-[11px] text-slate-400 line-clamp-1">{mod.desc}</p>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex gap-4 pt-4 border-t border-slate-100">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1 h-12 rounded-xl font-bold border-slate-200 hover:bg-slate-50 text-slate-600"
+                    onClick={() => setEditingAdmin(null)}
+                    disabled={isProcessing}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    type="submit"
+                    className="flex-1 h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-md shadow-indigo-600/20"
+                    disabled={isProcessing}
+                  >
+                    {isProcessing ? <Loader2 className="animate-spin" size={18} /> : "Guardar Cambios"}
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {/* MODAL ELIMINAR (PORTAL) */}
+      {typeof document !== "undefined" &&
+        !!deletingAdmin &&
+        createPortal(
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
+            <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-6 md:p-8 relative text-center">
+              <div className="w-16 h-16 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center border border-rose-100 mx-auto mb-4">
+                <AlertTriangle size={32} />
+              </div>
+              <h3 className="text-2xl font-black text-slate-800 mb-2">Revocar Acceso</h3>
+              <p className="text-slate-600 font-medium mb-6">
+                ¿Estás seguro que deseas revocar el acceso administrativo de{" "}
+                <strong>{deletingAdmin?.name}</strong>?
+              </p>
+              <div className="flex gap-3 w-full">
                 <Button
-                  type="button"
                   variant="outline"
                   className="flex-1 h-12 rounded-xl font-bold border-slate-200 hover:bg-slate-50 text-slate-600"
-                  onClick={() => setEditingAdmin(null)}
+                  onClick={() => setDeletingAdmin(null)}
                   disabled={isProcessing}
                 >
                   Cancelar
                 </Button>
                 <Button
-                  type="submit"
-                  className="flex-1 h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold shadow-md shadow-indigo-600/20"
+                  className="flex-1 h-12 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold shadow-md shadow-rose-600/20"
+                  onClick={handleDelete}
                   disabled={isProcessing}
                 >
-                  {isProcessing ? <Loader2 className="animate-spin" size={18} /> : "Guardar Cambios"}
+                  {isProcessing ? <Loader2 className="animate-spin" size={18} /> : "Sí, Revocar"}
                 </Button>
               </div>
-            </form>
-          </div>
-        </div>,
-        document.body
-      )}
-
-      {/* MODAL ELIMINAR (PORTAL) */}
-      {typeof document !== "undefined" && !!deletingAdmin && createPortal(
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in-up">
-          <div className="bg-white w-full max-w-md rounded-[2rem] shadow-2xl p-6 md:p-8 relative text-center">
-            <div className="w-16 h-16 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center border border-rose-100 mx-auto mb-4">
-              <AlertTriangle size={32} />
             </div>
-            <h3 className="text-2xl font-black text-slate-800 mb-2">Revocar Acceso</h3>
-            <p className="text-slate-600 font-medium mb-6">
-              ¿Estás seguro que deseas eliminar la cuenta de administrador de <strong>{deletingAdmin?.name}</strong>?
-            </p>
-            <div className="flex gap-3 w-full">
-              <Button
-                variant="outline"
-                className="flex-1 h-12 rounded-xl font-bold border-slate-200 hover:bg-slate-50 text-slate-600"
-                onClick={() => setDeletingAdmin(null)}
-                disabled={isProcessing}
-              >
-                Cancelar
-              </Button>
-              <Button
-                className="flex-1 h-12 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold shadow-md shadow-rose-600/20"
-                onClick={handleDelete}
-                disabled={isProcessing}
-              >
-                {isProcessing ? <Loader2 className="animate-spin" size={18} /> : "Sí, Revocar"}
-              </Button>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
+          </div>,
+          document.body
+        )}
     </>
   )
 }

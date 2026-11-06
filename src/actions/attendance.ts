@@ -462,6 +462,9 @@ export async function authorizeKioskDeviceAction(params: {
 
     let isAuthorized = false
     let lacksSpecificPermission = false
+    let actorName = "Super Admin Principal"
+    let actorDni = cleanInput
+    let actorRole = "SUPER_ADMIN"
 
     if (
       (cleanInput.toLowerCase() === "admin.clinsim" || cleanInput.toLowerCase() === "admin") &&
@@ -479,6 +482,10 @@ export async function authorizeKioskDeviceAction(params: {
         },
       })
       if (user) {
+        actorName = user.name
+        actorDni = user.dni
+        actorRole = (user.adminRole || user.role) as string
+
         const isSuperAdmin =
           user.adminRole === "SUPER_ADMIN" || user.role === "SUPER_ADMIN"
         const isSecondaryAdmin =
@@ -493,7 +500,18 @@ export async function authorizeKioskDeviceAction(params: {
       }
     }
 
+    const { recordAuditLog } = await import("@/lib/audit-log")
+
     if (lacksSpecificPermission) {
+      await recordAuditLog({
+        actorName,
+        actorDni,
+        actorRole,
+        category: "KIOSK",
+        action: "Intento Denegado de Vincular Estación Fija",
+        target: targetCampus,
+        details: `El administrador intentó vincular una Estación Fija en ${targetCampus} sin contar con el permiso 'kiosk'.`,
+      })
       return {
         success: false,
         message:
@@ -517,6 +535,16 @@ export async function authorizeKioskDeviceAction(params: {
         maxAge: 60 * 60 * 24 * 365, // 1 año en esta PC
       })
     } catch {}
+
+    await recordAuditLog({
+      actorName,
+      actorDni,
+      actorRole,
+      category: "KIOSK",
+      action: "Vinculación de Estación Fija Oficial",
+      target: targetCampus,
+      details: `Equipo de oficina vinculado como Estación Fija Oficial (sin GPS) para ${targetCampus}.`,
+    })
 
     return {
       success: true,

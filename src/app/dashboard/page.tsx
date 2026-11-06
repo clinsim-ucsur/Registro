@@ -9,7 +9,9 @@ import {
   BarChart3, 
   Clock,
   Layers,
-  Calendar as CalendarIcon
+  Calendar as CalendarIcon,
+  ScrollText,
+  Globe
 } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { redirect } from "next/navigation"
@@ -23,26 +25,47 @@ import { DashboardAnalytics } from "@/components/dashboard/analytics"
 import { DashboardRules } from "@/components/dashboard/rules"
 import { DashboardCatalogs } from "@/components/dashboard/catalogs"
 import { DashboardSchedules } from "@/components/dashboard/schedules"
+import { DashboardAuditLogs } from "@/components/dashboard/audit-logs"
 import { ForceChangePasswordModal } from "@/components/dashboard/force-change-password-modal"
 import { getAdminSession } from "@/lib/session"
 import { computeAnalytics } from "@/lib/analytics"
 import { getOvertimeSettingsAction } from "@/actions/overtime"
+import { getAuditLogs } from "@/lib/audit-log"
 
 export default async function DashboardPage() {
   const session = await getAdminSession()
   if (!session) redirect("/login")
   
   const currentUserRole = session.role
+  const adminTier = session.adminTier
+  const scopedCampusId = session.campusId // null para SUPER_ADMIN y ADMIN_GLOBAL; ID de sede para ADMIN_SEDE
   const permissions = session.permissions || []
 
   // Helper de permiso: Si es SUPER_ADMIN o tiene el permiso explícito en su cuenta
   const hasAccess = (moduleId: string) => {
+    if (moduleId === "logs") {
+      return currentUserRole === "SUPER_ADMIN"
+    }
     if (currentUserRole === "SUPER_ADMIN") return true
     return permissions.includes(moduleId)
   }
 
-  const [records, users, admins, weeklyAnalytics, initialAnalytics, rules, campuses, catalogCampuses, catalogCourses, technicianSchedules, overtimeSettings] = await Promise.all([
+  const [
+    records,
+    users,
+    admins,
+    weeklyAnalytics,
+    initialAnalytics,
+    rules,
+    allCampuses,
+    catalogCampuses,
+    catalogCourses,
+    technicianSchedules,
+    overtimeSettings,
+    auditLogs,
+  ] = await Promise.all([
     prisma.attendanceRecord.findMany({
+      where: scopedCampusId ? { campusId: scopedCampusId } : undefined,
       orderBy: { timestamp: 'desc' },
       take: 1000,
       include: {
@@ -51,16 +74,16 @@ export default async function DashboardPage() {
         course: { select: { id: true, name: true } },
       }
     }),
+    // Personal Operativo: SOLO usuarios con rol operativo real (DOCENTE, TECNICO, PACIENTE_SIMULADO).
+    // Los administrativos netos (role = SUPER_ADMIN / ADMIN_SECUNDARIO) NO aparecen como Pacientes ni Personal Operativo.
     prisma.user.findMany({
       where: {
-        OR: [
-          { role: { in: ['DOCENTE', 'TECNICO', 'PACIENTE_SIMULADO'] } },
-          { adminRole: { not: null } }
-        ]
+        role: { in: ['DOCENTE', 'TECNICO', 'PACIENTE_SIMULADO'] },
+        ...(scopedCampusId ? { campusId: scopedCampusId } : {}),
       },
       include: { campus: { select: { id: true, name: true } } },
       orderBy: { name: 'asc' },
-      take: 300 // MVP limit
+      take: 500,
     }),
     prisma.user.findMany({
       where: {
@@ -72,9 +95,10 @@ export default async function DashboardPage() {
       include: { campus: { select: { id: true, name: true } } },
       orderBy: { name: 'asc' },
     }),
-    computeAnalytics({ days: 7 }),
-    computeAnalytics({ days: 30 }),
+    computeAnalytics({ days: 7, campusId: scopedCampusId }),
+    computeAnalytics({ days: 30, campusId: scopedCampusId }),
     prisma.toleranceRule.findMany({
+      where: scopedCampusId ? { OR: [{ campusId: scopedCampusId }, { campusId: null }] } : undefined,
       include: { campus: { select: { id: true, name: true } } },
       orderBy: { createdAt: 'desc' },
     }),
@@ -83,6 +107,7 @@ export default async function DashboardPage() {
       orderBy: { name: 'asc' },
     }),
     prisma.campus.findMany({
+      where: scopedCampusId ? { id: scopedCampusId } : undefined,
       orderBy: { name: 'asc' },
       include: {
         _count: {
@@ -99,6 +124,7 @@ export default async function DashboardPage() {
       }
     }),
     prisma.technicianSchedule.findMany({
+      where: scopedCampusId ? { campusId: scopedCampusId } : undefined,
       orderBy: [{ date: 'desc' }, { expectedEntryTime: 'asc' }],
       include: {
         user: { select: { id: true, name: true, dni: true } },
@@ -107,7 +133,13 @@ export default async function DashboardPage() {
       take: 300,
     }),
     getOvertimeSettingsAction(),
+    currentUserRole === "SUPER_ADMIN" ? getAuditLogs() : Promise.resolve([]),
   ])
+
+  // Sedes visibles según el alcance del administrador logueado
+  const visibleCampuses = scopedCampusId
+    ? allCampuses.filter((c) => c.id === scopedCampusId)
+    : allCampuses
 
   // Determinar default tab accesible
   const defaultTab = hasAccess("overview") ? "overview" :
@@ -117,6 +149,13 @@ export default async function DashboardPage() {
     hasAccess("users") ? "users" :
     hasAccess("catalogs") ? "catalogs" :
     hasAccess("admins") ? "admins" : "overview"
+
+  const tierLabel =
+    adminTier === "SUPER_ADMIN"
+      ? "Super Admin"
+      : adminTier === "ADMIN_SEDE"
+      ? `Admin por Sede`
+      : "Admin General"
   
   return (
     <Tabs defaultValue={defaultTab} orientation="vertical" className="flex flex-row h-screen w-full bg-slate-50 overflow-hidden font-sans">
@@ -128,9 +167,13 @@ export default async function DashboardPage() {
         <div className="p-8 border-b border-white/10">
           <h2 className="text-2xl font-black tracking-tight">Admin<span className="text-[#1967D2]">Panel</span></h2>
           <p className="text-xs text-slate-400 mt-2 font-medium tracking-wide uppercase">Científica del Sur</p>
-          {session.campusName && (
-            <div className="mt-3 px-3 py-1.5 rounded-xl bg-white/10 border border-white/10 text-xs font-bold text-blue-200">
-              📍 {session.campusName}
+          {session.campusName ? (
+            <div className="mt-3 px-3 py-1.5 rounded-xl bg-emerald-500/15 border border-emerald-400/25 text-xs font-bold text-emerald-200">
+              📍 Vista: {session.campusName}
+            </div>
+          ) : (
+            <div className="mt-3 px-3 py-1.5 rounded-xl bg-white/10 border border-white/10 text-xs font-bold text-blue-200 flex items-center gap-1.5">
+              <Globe size={13} /> Vista: Todas las Sedes
             </div>
           )}
         </div>
@@ -220,6 +263,15 @@ export default async function DashboardPage() {
                 <Shield size={20}/> Control de Acceso
               </TabsTrigger>
             )}
+
+            {currentUserRole === "SUPER_ADMIN" && (
+              <TabsTrigger 
+                value="logs" 
+                className="w-full justify-start gap-4 px-5 py-3.5 text-sm md:text-base font-bold rounded-2xl text-amber-200/90 data-[state=active]:bg-amber-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-amber-900/50 hover:bg-white/5 transition-all outline-none"
+              >
+                <ScrollText size={20}/> Informe de Logs
+              </TabsTrigger>
+            )}
             
           </TabsList>
         </div>
@@ -242,7 +294,7 @@ export default async function DashboardPage() {
           <div>
             <h1 className="text-2xl font-extrabold text-slate-800">Centro de Control</h1>
             <p className="text-sm font-medium text-slate-500">
-              Gestión y Monitoreo en Tiempo Real {session.campusName ? `— ${session.campusName}` : ""}
+              Gestión y Monitoreo en Tiempo Real — {session.campusName ? `Sede: ${session.campusName}` : "Todas las Sedes"}
             </p>
           </div>
           
@@ -251,7 +303,7 @@ export default async function DashboardPage() {
              <div className="text-right hidden md:block">
                 <p className="text-sm font-bold text-slate-800">{session.name || "Administrador"}</p>
                 <p className="text-[10px] uppercase tracking-wider text-slate-400 font-black">
-                  {currentUserRole === 'SUPER_ADMIN' ? 'Super Admin' : 'Admin Secundario'}
+                  {tierLabel} {session.campusName ? `(${session.campusName})` : ""}
                 </p>
              </div>
              <div className={`w-10 h-10 text-white font-black flex items-center justify-center rounded-full shadow-sm ${currentUserRole === 'SUPER_ADMIN' ? 'bg-indigo-600 shadow-indigo-500/30' : 'bg-[#1967D2] shadow-blue-500/30'}`}>
@@ -284,7 +336,7 @@ export default async function DashboardPage() {
               <TabsContent value="reports" className="m-0 p-0 outline-none">
                 <DashboardReports
                   initialRecords={records}
-                  campuses={campuses}
+                  campuses={visibleCampuses}
                   initialOvertimeSettings={overtimeSettings}
                 />
               </TabsContent>
@@ -294,7 +346,7 @@ export default async function DashboardPage() {
               <TabsContent value="rules" className="m-0 p-0 outline-none">
                 <DashboardRules
                   rules={rules}
-                  campuses={campuses}
+                  campuses={visibleCampuses}
                   technicians={users.filter((u) => u.role === "TECNICO") as any}
                 />
               </TabsContent>
@@ -305,14 +357,18 @@ export default async function DashboardPage() {
                 <DashboardSchedules
                   initialSchedules={technicianSchedules as any}
                   technicians={users.filter((u) => u.role === "TECNICO") as any}
-                  campuses={campuses}
+                  campuses={visibleCampuses}
                 />
               </TabsContent>
             )}
 
             {hasAccess("users") && (
               <TabsContent value="users" className="m-0 p-0 outline-none">
-                <DashboardUsers users={users} campuses={campuses} />
+                <DashboardUsers
+                  users={users}
+                  campuses={visibleCampuses}
+                  currentUserRole={currentUserRole}
+                />
               </TabsContent>
             )}
 
@@ -324,7 +380,17 @@ export default async function DashboardPage() {
             
             {hasAccess("admins") && (
               <TabsContent value="admins" className="m-0 p-0 outline-none">
-                <DashboardAdmins admins={admins} campuses={campuses} />
+                <DashboardAdmins
+                  admins={admins}
+                  campuses={allCampuses}
+                  currentUserRole={currentUserRole}
+                />
+              </TabsContent>
+            )}
+
+            {currentUserRole === "SUPER_ADMIN" && (
+              <TabsContent value="logs" className="m-0 p-0 outline-none">
+                <DashboardAuditLogs initialLogs={auditLogs} />
               </TabsContent>
             )}
             

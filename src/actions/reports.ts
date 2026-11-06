@@ -18,7 +18,7 @@ export type ReportFilterParams = {
 
 export async function fetchFilteredRecordsAction(filters: ReportFilterParams) {
   try {
-    await requireAdmin()
+    const session = await requireAdmin()
 
     const where: any = {}
 
@@ -33,8 +33,11 @@ export async function fetchFilteredRecordsAction(filters: ReportFilterParams) {
       where.timestamp = { ...(where.timestamp || {}), lt }
     }
 
-    // Filtro por Sede
-    if (filters.campusId && filters.campusId.trim() !== "") {
+    // Si el administrador tiene alcance restringido a una sola sede (Admin por Sede),
+    // forzar siempre su sede asignada en las consultas.
+    if (session.campusId) {
+      where.campusId = session.campusId
+    } else if (filters.campusId && filters.campusId.trim() !== "") {
       where.campusId = filters.campusId
     }
 

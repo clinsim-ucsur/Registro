@@ -11,10 +11,15 @@ export async function getAnalyticsAction(
   campusId: string | null
 ): Promise<{ success: true; data: AnalyticsData } | { success: false; message: string }> {
   try {
-    await requireAdmin()
+    const session = await requireAdmin()
 
     const safeDays = ALLOWED_RANGES.includes(days) ? days : 30
-    const safeCampus = typeof campusId === "string" && campusId.length > 0 ? campusId : null
+    // Si el administrador tiene asignada una sede exclusiva (Admin por Sede), restringir siempre a esa sede
+    const safeCampus = session.campusId
+      ? session.campusId
+      : typeof campusId === "string" && campusId.length > 0
+      ? campusId
+      : null
 
     const data = await computeAnalytics({ days: safeDays, campusId: safeCampus })
     return { success: true, data }

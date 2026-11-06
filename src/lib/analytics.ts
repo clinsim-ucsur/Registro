@@ -49,7 +49,10 @@ export async function computeAnalytics({ days, campusId }: { days: number; campu
     prisma.campus.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } }),
     prisma.user.groupBy({
       by: ["role"],
-      where: { role: { in: ["DOCENTE", "TECNICO", "PACIENTE_SIMULADO"] } },
+      where: {
+        role: { in: ["DOCENTE", "TECNICO", "PACIENTE_SIMULADO"] },
+        ...(campusId ? { campusId } : {}),
+      },
       _count: { _all: true },
     }),
     prisma.systemSetting.findMany({

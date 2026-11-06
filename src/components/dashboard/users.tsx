@@ -34,7 +34,15 @@ function Modal({ isOpen, onClose, title, children }: { isOpen: boolean, onClose:
   )
 }
 
-export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuses?: { id: string; name: string }[] }) {
+export function DashboardUsers({
+  users,
+  campuses = [],
+  currentUserRole = "SUPER_ADMIN",
+}: {
+  users: any[]
+  campuses?: { id: string; name: string }[]
+  currentUserRole?: "SUPER_ADMIN" | "ADMIN_SECUNDARIO"
+}) {
   const [searchTerm, setSearchTerm] = useState("")
 
   const [editingUser, setEditingUser] = useState<any | null>(null)
@@ -97,14 +105,20 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
   const handlePromoteToAdmin = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!promotingUser) return
+    const tier = promotingUser.adminTier || "ADMIN_GLOBAL"
+    if (tier === "ADMIN_SEDE" && !promotingUser.adminCampusId) {
+      toast.error("Seleccione la sede que administrará este usuario.")
+      return
+    }
     setIsProcessing(true)
     try {
       const res = await createAdminAction({
         name: promotingUser.name,
         dni: promotingUser.dni,
-        role: (promotingUser.adminRole || Role.ADMIN_SECUNDARIO) as Role,
+        role: (tier === "SUPER_ADMIN" ? Role.SUPER_ADMIN : Role.ADMIN_SECUNDARIO) as Role,
+        adminTier: tier,
         password: promotingUser.password,
-        campusId: promotingUser.campusId || null,
+        campusId: tier === "ADMIN_SEDE" ? promotingUser.adminCampusId : null,
       })
 
       if (res.success) {
@@ -270,7 +284,14 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
                             variant="outline"
                             size="icon"
                             title="Habilitar Acceso Administrativo (Dashboard)"
-                            onClick={() => setPromotingUser({ ...user, adminRole: "ADMIN_SECUNDARIO", password: "" })}
+                            onClick={() =>
+                              setPromotingUser({
+                                ...user,
+                                adminTier: "ADMIN_GLOBAL",
+                                adminCampusId: user.campusId || "",
+                                password: "",
+                              })
+                            }
                             className="h-9 w-9 text-indigo-600 border-indigo-200 hover:bg-indigo-50 hover:text-indigo-800 rounded-xl transition-colors shadow-sm"
                           >
                             <Shield size={16} />
@@ -503,24 +524,46 @@ export function DashboardUsers({ users, campuses = [] }: { users: any[]; campuse
           <div className="p-4 bg-indigo-50 border border-indigo-100 rounded-2xl text-xs text-indigo-900 flex items-start gap-3">
             <Shield className="text-indigo-600 shrink-0 mt-0.5" size={20} />
             <div>
-              <p className="font-bold text-sm">Acceso al Dashboard Administrativo</p>
+              <p className="font-bold text-sm">Sede Operativa Independiente de Vista Admin</p>
               <p className="mt-1 leading-relaxed text-indigo-700">
-                <strong>{promotingUser?.name}</strong> (DNI: {promotingUser?.dni}) mantendrá su registro y podrá seguir marcando su asistencia de <strong>{promotingUser?.role}</strong>, pero ahora tendrá credenciales para iniciar sesión en el panel y ver todas las marcaciones.
+                <strong>{promotingUser?.name}</strong> (DNI: {promotingUser?.dni}) conservará intacto su rol operativo de <strong>{promotingUser?.role}</strong> y su sede base (<strong>{promotingUser?.campus?.name || "Sin sede fija"}</strong>). Abajo puedes elegir qué sede(s) verá cuando ingrese como Administrador.
               </p>
             </div>
           </div>
 
           <div>
-            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Nivel de Administrador</label>
+            <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Nivel de Rol Administrativo</label>
             <select
-              value={promotingUser?.adminRole || "ADMIN_SECUNDARIO"}
-              onChange={e => setPromotingUser({ ...promotingUser, adminRole: e.target.value })}
+              value={promotingUser?.adminTier || "ADMIN_GLOBAL"}
+              onChange={e => setPromotingUser({ ...promotingUser, adminTier: e.target.value })}
               className="w-full h-12 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-600 transition-all"
             >
-              <option value="ADMIN_SECUNDARIO">Admin Secundario (Gestión y Reportes)</option>
-              <option value="SUPER_ADMIN">Super Administrador (Control Total del Sistema)</option>
+              <option value="ADMIN_GLOBAL">Admin General (Ve todas las sedes — sin acceso a Logs ni crear Super Admin)</option>
+              <option value="ADMIN_SEDE">Admin por Sede (Ve únicamente la información de 1 sede asignada)</option>
+              {currentUserRole === "SUPER_ADMIN" && (
+                <option value="SUPER_ADMIN">Super Admin (Acceso Total sin restricciones + Informe de Logs)</option>
+              )}
             </select>
           </div>
+
+          {promotingUser?.adminTier === "ADMIN_SEDE" && (
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">
+                Sede que Visualizará como Admin (Independiente de su sede operativa)
+              </label>
+              <select
+                value={promotingUser?.adminCampusId || ""}
+                onChange={e => setPromotingUser({ ...promotingUser, adminCampusId: e.target.value })}
+                className="w-full h-12 rounded-xl bg-slate-50 border border-slate-200 px-4 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-600 transition-all"
+                required
+              >
+                <option value="">Seleccione sede a supervisar...</option>
+                {campuses.map(c => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div>
             <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Contraseña para Iniciar Sesión</label>

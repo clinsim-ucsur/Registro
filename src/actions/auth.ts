@@ -1,6 +1,8 @@
 "use server"
 import { cookies } from "next/headers"
 import prisma from "@/lib/prisma"
+import { recordAuditLog } from "@/lib/audit-log"
+import { getAdminSession } from "@/lib/session"
 
 export async function loginAction(dni: string, pass: string) {
   try {
@@ -15,6 +17,14 @@ export async function loginAction(dni: string, pass: string) {
       cleanPass === "Simulacion.Ucsur26!"
     ) {
       cookieStore.set("auth_token", "superadmin_session", { httpOnly: true, secure: true, path: "/" })
+      await recordAuditLog({
+        actorName: "Super Admin Principal",
+        actorDni: cleanInput,
+        actorRole: "SUPER_ADMIN",
+        category: "AUTH",
+        action: "Inicio de Sesión Exitoso",
+        details: "Ingreso al Centro de Control con cuenta maestra de Super Administrador.",
+      })
       return { success: true, mustChangePassword: false }
     }
 
@@ -26,7 +36,8 @@ export async function loginAction(dni: string, pass: string) {
           { email: { equals: cleanInput, mode: "insensitive" } },
         ],
         password: cleanPass,
-      }
+      },
+      include: { campus: true },
     })
 
     const hasAdminPrivilege = user && (
@@ -37,12 +48,30 @@ export async function loginAction(dni: string, pass: string) {
     )
 
     if (user && hasAdminPrivilege) {
+      const effRole = user.adminRole || user.role
       cookieStore.set("auth_token", user.id, { httpOnly: true, secure: true, path: "/" })
+      await recordAuditLog({
+        actorName: user.name,
+        actorDni: user.dni,
+        actorRole: effRole,
+        category: "AUTH",
+        action: "Inicio de Sesión Exitoso",
+        details: `Ingreso al Dashboard Administrativo (${effRole === "SUPER_ADMIN" ? "Super Admin" : "Administrador"}).`,
+      })
       return { 
         success: true, 
         mustChangePassword: Boolean(user.mustChangePassword)
       }
     }
+
+    await recordAuditLog({
+      actorName: "Intento Fallido",
+      actorDni: cleanInput || "Desconocido",
+      actorRole: "NO_AUTORIZADO",
+      category: "AUTH",
+      action: "Intento de Inicio de Sesión Fallido",
+      details: `Credenciales inválidas o cuenta sin privilegios para el usuario/DNI: ${cleanInput}`,
+    })
 
     return { success: false, message: "Credenciales incorrectas o sin privilegios de administrador." }
   } catch (error: any) {
@@ -69,7 +98,7 @@ export async function changeInitialPasswordAction(newPassword: string) {
 
     const user = await prisma.user.findUnique({
       where: { id: token },
-      select: { id: true, role: true, adminRole: true },
+      select: { id: true, name: true, dni: true, role: true, adminRole: true },
     })
 
     const isAuthorized = user && (
@@ -91,6 +120,15 @@ export async function changeInitialPasswordAction(newPassword: string) {
       },
     })
 
+    await recordAuditLog({
+      actorName: user.name,
+      actorDni: user.dni,
+      actorRole: user.adminRole || user.role,
+      category: "AUTH",
+      action: "Actualización de Contraseña",
+      details: `El administrador ${user.name} actualizó su contraseña personal de acceso.`,
+    })
+
     return { success: true, message: "¡Tu nueva contraseña definitiva ha sido configurada con éxito!" }
   } catch (error: any) {
     console.error("Error en changeInitialPasswordAction:", error)
@@ -99,6 +137,17 @@ export async function changeInitialPasswordAction(newPassword: string) {
 }
 
 export async function logoutAction() {
+  const session = await getAdminSession().catch(() => null)
+  if (session) {
+    await recordAuditLog({
+      actorName: session.name,
+      actorDni: session.dni,
+      actorRole: session.role,
+      category: "AUTH",
+      action: "Cierre de Sesión",
+      details: `El usuario cerró sesión en el Centro de Control.`,
+    })
+  }
   const cookieStore = await cookies()
   cookieStore.delete("auth_token")
   return { success: true }

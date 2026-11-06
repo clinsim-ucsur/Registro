@@ -950,6 +950,65 @@ async function main() {
     "Modo Híbrido (Celular fuera de Sede): Bloquea marcación cuando el usuario aún no llega a la universidad"
   )
 
+  // =========================================================================
+  // 14. JERARQUÍA DE ROLES, SEPARACIÓN DE SEDE OPERATIVA VS ADMIN Y LOGS
+  // =========================================================================
+  console.log("\n--- TEST 14: JERARQUÍA DE ROLES, SEDE OPERATIVA INDEPENDIENTE Y LOGS ---")
+
+  const {
+    buildStoredPermissions,
+    extractAdminCampusId,
+    extractAdminTier,
+    extractModulePermissions,
+  } = await import("../src/lib/admin-scope")
+
+  // 14.1 Separación de sede operativa vs sede de visualización administrativa
+  const techGlobalPerms = buildStoredPermissions({
+    modulePermissions: ["overview", "reports"],
+    adminCampusId: null,
+    adminTier: "ADMIN_GLOBAL",
+  })
+  assert(
+    extractAdminCampusId(techGlobalPerms, "ADMIN_SECUNDARIO", "campus_villa_id") === null &&
+      extractAdminTier(techGlobalPerms, "ADMIN_SECUNDARIO", "campus_villa_id") === "ADMIN_GLOBAL" &&
+      extractModulePermissions(techGlobalPerms).length === 2,
+    "Alcance Admin Independiente: Un Técnico con sede base Villa puede ver 'Todas las sedes' como Admin sin alterar su sede de Técnico"
+  )
+
+  // 14.2 Admin por Sede restringido estrictamente a su sede asignada
+  const sedeAdminPerms = buildStoredPermissions({
+    modulePermissions: ["overview", "users"],
+    adminCampusId: "campus_norte_id",
+    adminTier: "ADMIN_SEDE",
+  })
+  assert(
+    extractAdminCampusId(sedeAdminPerms, "ADMIN_SECUNDARIO", "campus_villa_id") === "campus_norte_id" &&
+      extractAdminTier(sedeAdminPerms, "ADMIN_SECUNDARIO", "campus_villa_id") === "ADMIN_SEDE",
+    "Admin por Sede: Restringe su vista exclusivamente a la sede administrativa asignada"
+  )
+
+  // 14.3 Verificación en BD: Jean Pieer es el único SUPER_ADMIN y conserva su rol TECNICO en Campus Villa,
+  //      mientras Martha y Xiomara son Administrativas Netas (NO Pacientes Simulados)
+  const dbJean = await prisma.user.findUnique({ where: { dni: "72455873" }, include: { campus: true } })
+  const dbMartha = await prisma.user.findUnique({ where: { dni: "10252359" } })
+  const dbXiomara = await prisma.user.findUnique({ where: { dni: "75158437" } })
+
+  assert(
+    dbJean?.role === Role.TECNICO &&
+      dbJean?.campus?.name === "Campus Villa" &&
+      dbJean?.adminRole === Role.SUPER_ADMIN &&
+      extractAdminCampusId(dbJean.permissions, "SUPER_ADMIN", dbJean.campusId) === null,
+    "BD (Jean Pieer): Conserva rol operativo TECNICO en Campus Villa y vista Admin Global como único SUPER_ADMIN"
+  )
+
+  assert(
+    dbMartha?.role === Role.ADMIN_SECUNDARIO &&
+      dbXiomara?.role === Role.ADMIN_SECUNDARIO &&
+      dbMartha?.adminRole === Role.ADMIN_SECUNDARIO &&
+      dbXiomara?.adminRole === Role.ADMIN_SECUNDARIO,
+    "BD (Administrativos Netos): Martha y Xiomara figuran como ADMIN_SECUNDARIO y ya no aparecen en la lista de Pacientes"
+  )
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")

@@ -4,6 +4,13 @@ import prisma from "@/lib/prisma"
 import { Role, Shift } from "@prisma/client"
 import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
 import { revalidatePath } from "next/cache"
+import { getAdminSession } from "@/lib/session"
+import { recordAuditLog } from "@/lib/audit-log"
+import {
+  buildStoredPermissions,
+  extractModulePermissions,
+  type AdminTier,
+} from "@/lib/admin-scope"
 
 export async function bulkUploadUsersAction(data: { name: string, dni: string, role: string, campus?: string }[]) {
   try {
@@ -109,6 +116,16 @@ export async function bulkUploadUsersAction(data: { name: string, dni: string, r
       await Promise.all(writeOperations.slice(i, i + BATCH_SIZE).map((fn) => fn()))
     }
 
+    const session = await getAdminSession().catch(() => null)
+    await recordAuditLog({
+      actorName: session?.name || "Administrador",
+      actorDni: session?.dni || "—",
+      actorRole: session?.role || "SUPER_ADMIN",
+      category: "USERS",
+      action: "Carga Masiva de Personal (Excel)",
+      details: `${insertedCount} usuarios nuevos creados y ${updatedCount} actualizados (Omitidos: ${errorCount}).`,
+    })
+
     return {
       success: true,
       message: `¡Carga exitosa! ${insertedCount} usuarios creados, ${updatedCount} actualizados. (Errores/Omitidos: ${errorCount})`
@@ -203,6 +220,17 @@ export async function editUserAction(
       }
     }
 
+    const session = await getAdminSession().catch(() => null)
+    await recordAuditLog({
+      actorName: session?.name || "Administrador",
+      actorDni: session?.dni || "—",
+      actorRole: session?.role || "SUPER_ADMIN",
+      category: "USERS",
+      action: "Edición de Personal Operativo",
+      target: `${data.name} (${data.dni})`,
+      details: `Rol operativo: ${data.role}${data.defaultShift ? ` | Turno: ${data.defaultShift}` : ""}`,
+    })
+
     try {
       revalidatePath("/dashboard")
       revalidatePath("/")
@@ -240,6 +268,17 @@ export async function createUserAction(data: {
       }
     })
 
+    const session = await getAdminSession().catch(() => null)
+    await recordAuditLog({
+      actorName: session?.name || "Administrador",
+      actorDni: session?.dni || "—",
+      actorRole: session?.role || "SUPER_ADMIN",
+      category: "USERS",
+      action: "Registro de Nuevo Personal Operativo",
+      target: `${data.name} (${data.dni})`,
+      details: `Alta manual con rol operativo: ${data.role}.`,
+    })
+
     revalidatePath("/dashboard")
     return { success: true, message: "Usuario creado con éxito." }
   } catch (error) {
@@ -261,6 +300,17 @@ export async function deleteUserAction(dni: string) {
     // Borramos al usuario
     await prisma.user.delete({ where: { id: user.id } })
 
+    const session = await getAdminSession().catch(() => null)
+    await recordAuditLog({
+      actorName: session?.name || "Administrador",
+      actorDni: session?.dni || "—",
+      actorRole: session?.role || "SUPER_ADMIN",
+      category: "USERS",
+      action: "Baja de Personal Operativo",
+      target: `${user.name} (${user.dni})`,
+      details: `Se eliminó la ficha del colaborador (${user.role}).`,
+    })
+
     revalidatePath("/dashboard")
     return { success: true, message: "Usuario eliminado definitivamente." }
   } catch (error) {
@@ -270,71 +320,146 @@ export async function deleteUserAction(dni: string) {
 }
 
 // ---------------------------------------------
-// CRUD: CREAR ADMINISTRADOR
+// CRUD: CREAR ADMINISTRADOR (CON ALCANCE DE SEDE INDEPENDIENTE Y NIVELES)
 // ---------------------------------------------
 export async function createAdminAction(data: {
   name: string
   dni: string
   role: Role
+  adminTier?: AdminTier
   password?: string
   campusId?: string | null
   permissions?: string[]
 }) {
   try {
-    const existing = await prisma.user.findUnique({ where: { dni: data.dni } })
+    const session = await getAdminSession().catch(() => null)
 
-    // Plantilla estándar por defecto si no se especifican permisos manualmente
-    let finalPermissions = data.permissions || []
-    if (finalPermissions.length === 0) {
-      if (data.role === Role.SUPER_ADMIN) {
-        finalPermissions = ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins", "kiosk"]
-      } else {
-        // Plantilla estándar para Admin Secundario: Vista básica, reportes y personal operativo
-        finalPermissions = ["overview", "reports", "users"]
+    // Determinar el nivel administrativo solicitado
+    const requestedTier: AdminTier =
+      data.adminTier ||
+      (data.role === Role.SUPER_ADMIN
+        ? "SUPER_ADMIN"
+        : data.campusId
+        ? "ADMIN_SEDE"
+        : "ADMIN_GLOBAL")
+
+    const effectiveAdminRole: Role =
+      requestedTier === "SUPER_ADMIN" ? Role.SUPER_ADMIN : Role.ADMIN_SECUNDARIO
+
+    // REGLA DE JERARQUÍA: Solo un SUPER_ADMIN puede designar nuevos SUPER_ADMIN
+    if (effectiveAdminRole === Role.SUPER_ADMIN && session && session.role !== "SUPER_ADMIN") {
+      return {
+        success: false,
+        message:
+          "Acceso denegado: Solo un Super Administrador con acceso total puede designar cuentas de rango Super Admin.",
       }
     }
 
+    if (requestedTier === "ADMIN_SEDE" && !data.campusId) {
+      return {
+        success: false,
+        message: "Para el rol 'Admin por Sede' debe seleccionar la sede que administrará.",
+      }
+    }
+
+    const existing = await prisma.user.findUnique({ where: { dni: data.dni } })
+
+    let baseModules = extractModulePermissions(data.permissions)
+    if (baseModules.length === 0) {
+      if (requestedTier === "SUPER_ADMIN") {
+        baseModules = ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins", "kiosk", "logs"]
+      } else if (requestedTier === "ADMIN_GLOBAL") {
+        baseModules = ["overview", "analytics", "reports", "rules", "users", "catalogs"]
+      } else {
+        baseModules = ["overview", "analytics", "reports", "users"]
+      }
+    }
+
+    // Los roles no-SuperAdmin nunca pueden tener el módulo de logs de auditoría
+    if (requestedTier !== "SUPER_ADMIN") {
+      baseModules = baseModules.filter((m) => m !== "logs")
+    }
+
+    const targetAdminCampusId =
+      requestedTier === "SUPER_ADMIN" || requestedTier === "ADMIN_GLOBAL"
+        ? null
+        : data.campusId || null
+
+    const storedPermissions = buildStoredPermissions({
+      modulePermissions: baseModules,
+      adminCampusId: targetAdminCampusId,
+      adminTier: requestedTier,
+    })
+
     if (existing) {
-      // Si el usuario ya existe (por ejemplo docente, paciente o técnico),
-      // se le otorga adminRole sin alterar su rol operativo (DOCENTE, TECNICO, PACIENTE_SIMULADO)
-      // preservando su historial de marcaciones y su aparición en las listas de personal operativo.
-      const newPass = data.password && data.password.trim() !== "" ? data.password.trim() : existing.password
+      // Si el usuario ya existe (por ejemplo TÉCNICO, DOCENTE o PACIENTE_SIMULADO),
+      // se le otorga adminRole y su alcance de sede administrativo en `permissions`,
+      // SIN alterar su `role` operativo ni su `campusId` operativo (ej. Técnico de Campus Villa).
+      const isPureAdmin =
+        existing.role === Role.SUPER_ADMIN || existing.role === Role.ADMIN_SECUNDARIO
+
+      const newPass =
+        data.password && data.password.trim() !== ""
+          ? data.password.trim()
+          : existing.password
+
       await prisma.user.update({
         where: { id: existing.id },
         data: {
           name: data.name || existing.name,
-          adminRole: data.role, // Guarda el rol administrativo aquí
+          adminRole: effectiveAdminRole,
+          ...(isPureAdmin ? { role: effectiveAdminRole, campusId: targetAdminCampusId } : {}),
           password: newPass,
           mustChangePassword: true,
-          campusId: data.campusId !== undefined ? (data.campusId || null) : existing.campusId,
-          permissions: finalPermissions,
-        }
+          permissions: storedPermissions,
+        },
+      })
+
+      await recordAuditLog({
+        actorName: session?.name || "Super Admin",
+        actorDni: session?.dni || "—",
+        actorRole: session?.role || "SUPER_ADMIN",
+        category: "ADMINS",
+        action: "Promoción a Administrador",
+        target: `${existing.name} (${existing.dni})`,
+        details: `Nivel asignado: ${requestedTier} | Alcance Admin: ${targetAdminCampusId ? "Sede específica" : "Todas las sedes"} (Sede operativa ${existing.role} preservada).`,
       })
 
       revalidatePath("/dashboard")
       return {
         success: true,
-        message: `¡Usuario ${existing.name} promovido exitosamente a Administrador con acceso al Dashboard!`
+        message: `¡Usuario ${existing.name} promovido a ${requestedTier === "SUPER_ADMIN" ? "Super Admin" : requestedTier === "ADMIN_GLOBAL" ? "Admin General" : "Admin por Sede"} sin alterar su perfil operativo!`,
       }
     }
 
     const cleanPass = data.password && data.password.trim() !== "" ? data.password.trim() : null
 
+    // Si es un administrativo neto nuevo, su role y adminRole son administrativos (nunca PACIENTE_SIMULADO)
     await prisma.user.create({
       data: {
         name: data.name.trim(),
         dni: data.dni.trim(),
-        role: data.role,
-        adminRole: data.role,
+        role: effectiveAdminRole,
+        adminRole: effectiveAdminRole,
         password: cleanPass,
         mustChangePassword: true,
-        campusId: data.campusId || null,
-        permissions: finalPermissions,
-      }
+        campusId: targetAdminCampusId,
+        permissions: storedPermissions,
+      },
+    })
+
+    await recordAuditLog({
+      actorName: session?.name || "Super Admin",
+      actorDni: session?.dni || "—",
+      actorRole: session?.role || "SUPER_ADMIN",
+      category: "ADMINS",
+      action: "Creación de Administrador Neto",
+      target: `${data.name.trim()} (${data.dni.trim()})`,
+      details: `Nivel asignado: ${requestedTier} | Alcance: ${targetAdminCampusId ? "Sede asignada" : "Todas las sedes"}`,
     })
 
     revalidatePath("/dashboard")
-    return { success: true, message: "Administrador creado exitosamente." }
+    return { success: true, message: "Cuenta administrativa creada exitosamente." }
   } catch (error: any) {
     console.error("[createAdminAction] Error:", error)
     return { success: false, message: error.message || "Error al crear administrador." }
@@ -343,28 +468,68 @@ export async function createAdminAction(data: {
 
 // ---------------------------------------------
 // CRUD: REVOCAR PRIVILEGIOS DE ADMINISTRADOR
-// (Sin eliminar el usuario ni sus asistencias de la BD)
+// (Corrige el bug que convertía administrativos netos en PACIENTE_SIMULADO)
 // ---------------------------------------------
-export async function revokeAdminAction(dni: string, fallbackRole?: Role) {
+export async function revokeAdminAction(dni: string) {
   try {
-    const user = await prisma.user.findUnique({ where: { dni } })
+    const session = await getAdminSession().catch(() => null)
+    const user = await prisma.user.findUnique({
+      where: { dni },
+      include: { _count: { select: { records: true } } },
+    })
     if (!user) return { success: false, message: "Usuario no encontrado." }
 
-    const updateData: any = {
-      adminRole: null,
-      password: null,
-      permissions: [],
+    const targetIsSuperAdmin =
+      user.adminRole === Role.SUPER_ADMIN || user.role === Role.SUPER_ADMIN
+    if (targetIsSuperAdmin && session && session.role !== "SUPER_ADMIN") {
+      return {
+        success: false,
+        message: "Solo un Super Administrador puede revocar a otro Super Administrador.",
+      }
     }
 
-    // Si el usuario tenía como rol operativo SUPER_ADMIN o ADMIN_SECUNDARIO original,
-    // se le asigna el fallbackRole para que no quede con rol admin inválido
-    if (user.role === Role.SUPER_ADMIN || user.role === Role.ADMIN_SECUNDARIO) {
-      updateData.role = fallbackRole || Role.PACIENTE_SIMULADO
+    const isPureAdmin =
+      user.role === Role.SUPER_ADMIN || user.role === Role.ADMIN_SECUNDARIO
+
+    if (isPureAdmin) {
+      // Si es un administrativo neto (no es docente, ni técnico, ni paciente simulado):
+      // Si no tiene asistencias operativas, eliminamos la cuenta administrativa para que NUNCA pase a la lista de Pacientes.
+      if (user._count.records === 0) {
+        await prisma.user.delete({ where: { id: user.id } })
+      } else {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            role: Role.ADMIN_SECUNDARIO,
+            adminRole: null,
+            password: null,
+            permissions: [],
+          },
+        })
+      }
+    } else {
+      // Si es un Técnico, Docente o Paciente Simulado que tenía permisos de Admin,
+      // solo le quitamos el acceso al Dashboard conservando intacto su rol y sede operativa.
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          adminRole: null,
+          password: null,
+          permissions: [],
+        },
+      })
     }
 
-    await prisma.user.update({
-      where: { id: user.id },
-      data: updateData,
+    await recordAuditLog({
+      actorName: session?.name || "Super Admin",
+      actorDni: session?.dni || "—",
+      actorRole: session?.role || "SUPER_ADMIN",
+      category: "ADMINS",
+      action: "Revocación de Privilegios Administrativos",
+      target: `${user.name} (${user.dni})`,
+      details: isPureAdmin
+        ? "Se dio de baja la cuenta administrativa neta."
+        : `Se retiró el acceso administrativo preservando su ficha operativa (${user.role}).`,
     })
 
     revalidatePath("/dashboard")
@@ -377,42 +542,116 @@ export async function revokeAdminAction(dni: string, fallbackRole?: Role) {
 
 // ---------------------------------------------
 // CRUD: EDITAR ADMINISTRADOR
+// (Preserva intacta la sede operativa de Técnicos/Docentes/Pacientes)
 // ---------------------------------------------
-export async function editAdminAction(oldDni: string, data: {
-  name: string
-  dni: string
-  role: Role
-  password?: string
-  campusId?: string | null
-  permissions?: string[]
-}) {
+export async function editAdminAction(
+  oldDni: string,
+  data: {
+    name: string
+    dni: string
+    role: Role
+    adminTier?: AdminTier
+    password?: string
+    campusId?: string | null
+    permissions?: string[]
+  }
+) {
   try {
+    const session = await getAdminSession().catch(() => null)
+    const existing = await prisma.user.findUnique({ where: { dni: oldDni } })
+    if (!existing) {
+      return { success: false, message: "Administrador no encontrado." }
+    }
+
+    const requestedTier: AdminTier =
+      data.adminTier ||
+      (data.role === Role.SUPER_ADMIN
+        ? "SUPER_ADMIN"
+        : data.campusId
+        ? "ADMIN_SEDE"
+        : "ADMIN_GLOBAL")
+
+    const effectiveAdminRole: Role =
+      requestedTier === "SUPER_ADMIN" ? Role.SUPER_ADMIN : Role.ADMIN_SECUNDARIO
+
+    const existingWasSuperAdmin =
+      existing.adminRole === Role.SUPER_ADMIN || existing.role === Role.SUPER_ADMIN
+
+    // Solo un SUPER_ADMIN puede otorgar o modificar cuentas SUPER_ADMIN
+    if (
+      (effectiveAdminRole === Role.SUPER_ADMIN || existingWasSuperAdmin) &&
+      session &&
+      session.role !== "SUPER_ADMIN"
+    ) {
+      return {
+        success: false,
+        message:
+          "Acceso denegado: Solo un Super Administrador puede modificar o asignar el rango de Super Admin.",
+      }
+    }
+
+    if (requestedTier === "ADMIN_SEDE" && !data.campusId) {
+      return {
+        success: false,
+        message: "Para el rol 'Admin por Sede' debe seleccionar una sede asignada.",
+      }
+    }
+
+    const targetAdminCampusId =
+      requestedTier === "SUPER_ADMIN" || requestedTier === "ADMIN_GLOBAL"
+        ? null
+        : data.campusId || null
+
+    let cleanModules = extractModulePermissions(data.permissions ?? existing.permissions)
+    if (requestedTier !== "SUPER_ADMIN") {
+      cleanModules = cleanModules.filter((m) => m !== "logs")
+    }
+
+    const storedPermissions = buildStoredPermissions({
+      modulePermissions: cleanModules,
+      adminCampusId: targetAdminCampusId,
+      adminTier: requestedTier,
+    })
+
+    const isPureAdmin =
+      existing.role === Role.SUPER_ADMIN || existing.role === Role.ADMIN_SECUNDARIO
+
     const updateData: any = {
       name: data.name,
       dni: data.dni,
-      adminRole: data.role,
+      adminRole: effectiveAdminRole,
+      permissions: storedPermissions,
     }
 
-    if (data.campusId !== undefined) {
-      updateData.campusId = data.campusId || null
+    // IMPORTANTE: Solo si es un administrativo neto actualizamos `user.campusId` y `user.role`.
+    // Si es un Técnico, Docente o Paciente Simulado (ej. Jean Pieer Técnico de Campus Villa),
+    // SU `user.campusId` OPERATIVO NO SE TOCA NUNCA al cambiar qué sede ve como Admin.
+    if (isPureAdmin) {
+      updateData.role = effectiveAdminRole
+      updateData.campusId = targetAdminCampusId
     }
 
-    if (data.permissions !== undefined) {
-      updateData.permissions = data.permissions
-    }
-
-    // Solo actualiza la contraseña si se ingresó algo
     if (data.password && data.password.trim() !== "") {
       updateData.password = data.password.trim()
     }
 
     await prisma.user.update({
       where: { dni: oldDni },
-      data: updateData
+      data: updateData,
+    })
+
+    await recordAuditLog({
+      actorName: session?.name || "Super Admin",
+      actorDni: session?.dni || "—",
+      actorRole: session?.role || "SUPER_ADMIN",
+      category: "ADMINS",
+      action: "Actualización de Permisos / Alcance de Admin",
+      target: `${data.name} (${data.dni})`,
+      details: `Nivel: ${requestedTier} | Vista Admin: ${targetAdminCampusId ? "Sede específica" : "Todas las sedes"} | Módulos: ${cleanModules.join(", ")}`,
     })
 
     revalidatePath("/dashboard")
-    return { success: true, message: "Administrador actualizado." }
+    return { success: true, message: "Configuración del administrador actualizada." }
   } catch (error: any) {
     console.error("[editAdminAction] Error:", error)
     return { success: false, message: error.message || "Error al actualizar administrador." }
