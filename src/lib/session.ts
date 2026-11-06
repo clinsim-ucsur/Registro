@@ -28,7 +28,7 @@ export async function getAdminSession(): Promise<AdminSession | null> {
       role: "SUPER_ADMIN",
       campusId: null,
       campusName: null,
-      permissions: ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins"],
+      permissions: ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins", "kiosk"],
       mustChangePassword: false,
     }
   }
@@ -50,7 +50,7 @@ export async function getAdminSession(): Promise<AdminSession | null> {
     campusName: user.campus?.name ?? null,
     mustChangePassword: Boolean(user.mustChangePassword),
     permissions: effectiveAdminRole === "SUPER_ADMIN" && (!user.permissions || user.permissions.length === 0)
-      ? ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins"]
+      ? ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins", "kiosk"]
       : (user.permissions ?? []),
   }
 }

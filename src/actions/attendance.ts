@@ -461,6 +461,7 @@ export async function authorizeKioskDeviceAction(params: {
     const targetCampus = (params.campusName || "Campus Villa").trim()
 
     let isAuthorized = false
+    let lacksSpecificPermission = false
 
     if (
       (cleanInput.toLowerCase() === "admin.clinsim" || cleanInput.toLowerCase() === "admin") &&
@@ -477,21 +478,33 @@ export async function authorizeKioskDeviceAction(params: {
           password: cleanPass,
         },
       })
-      if (
-        user &&
-        (user.adminRole === "SUPER_ADMIN" ||
-          user.adminRole === "ADMIN_SECUNDARIO" ||
-          user.role === "SUPER_ADMIN" ||
-          user.role === "ADMIN_SECUNDARIO")
-      ) {
-        isAuthorized = true
+      if (user) {
+        const isSuperAdmin =
+          user.adminRole === "SUPER_ADMIN" || user.role === "SUPER_ADMIN"
+        const isSecondaryAdmin =
+          user.adminRole === "ADMIN_SECUNDARIO" || user.role === "ADMIN_SECUNDARIO"
+        const userPerms = Array.isArray(user.permissions) ? user.permissions : []
+
+        if (isSuperAdmin || (isSecondaryAdmin && userPerms.includes("kiosk"))) {
+          isAuthorized = true
+        } else if (isSecondaryAdmin) {
+          lacksSpecificPermission = true
+        }
+      }
+    }
+
+    if (lacksSpecificPermission) {
+      return {
+        success: false,
+        message:
+          "Acceso restringido: Su cuenta no cuenta con el permiso 'Vincular Estación Fija'. Solicítelo a un Super Administrador.",
       }
     }
 
     if (!isAuthorized) {
       return {
         success: false,
-        message: "Credenciales de administrador inválidas.",
+        message: "Credenciales inválidas o sin privilegios de Super Administrador.",
       }
     }
 

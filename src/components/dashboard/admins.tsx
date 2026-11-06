@@ -34,9 +34,10 @@ export const AVAILABLE_MODULES = [
   { id: "users", name: "Personal Operativo", desc: "Directorio de docentes, técnicos y pacientes simulados." },
   { id: "catalogs", name: "Sedes & Cursos", desc: "Gestión de campus autorizados y catálogo académico." },
   { id: "admins", name: "Control de Acceso", desc: "Gestión de otros administradores y permisos de cuentas." },
+  { id: "kiosk", name: "Vincular Estación Fija", desc: "Autorizar o desvincular equipos fijos de sede para marcar sin GPS." },
 ] as const
 
-const DEFAULT_SUPER_ADMIN_PERMS = ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins"]
+const DEFAULT_SUPER_ADMIN_PERMS = ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins", "kiosk"]
 const DEFAULT_ADMIN_PERMS = ["overview", "reports", "users"]
 
 interface DashboardAdminsProps {
@@ -199,15 +200,16 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                     </TableRow>
                   ) : (
                     filteredAdmins.map((admin) => {
+                      const effRole = admin.adminRole || admin.role
                       const adminPerms: string[] = admin.permissions && admin.permissions.length > 0
                         ? admin.permissions
-                        : (admin.role === "SUPER_ADMIN" ? DEFAULT_SUPER_ADMIN_PERMS : DEFAULT_ADMIN_PERMS)
+                        : (effRole === "SUPER_ADMIN" ? DEFAULT_SUPER_ADMIN_PERMS : DEFAULT_ADMIN_PERMS)
 
                       return (
                         <TableRow key={admin.id} className="border-slate-100 hover:bg-slate-50/80 transition-colors">
                           <TableCell className="px-6 py-4">
                             <div className="flex items-center gap-3">
-                              <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-black text-sm text-white ${admin.role === "SUPER_ADMIN" ? "bg-indigo-600" : "bg-[#1967D2]"}`}>
+                              <div className={`w-9 h-9 rounded-xl flex items-center justify-center font-black text-sm text-white ${effRole === "SUPER_ADMIN" ? "bg-indigo-600" : "bg-[#1967D2]"}`}>
                                 {admin.name.slice(0, 2).toUpperCase()}
                               </div>
                               <p className="font-bold text-slate-800">{admin.name}</p>
@@ -224,18 +226,13 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                             )}
                           </TableCell>
                           <TableCell>
-                            {(() => {
-                              const effRole = admin.adminRole || admin.role
-                              return (
-                                <span className={`px-3 py-1 rounded-lg text-[10px] font-black tracking-widest uppercase ${effRole === 'SUPER_ADMIN' ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-slate-100 text-slate-600'}`}>
-                                  {effRole === 'SUPER_ADMIN' ? 'Super Admin' : 'Admin'}
-                                </span>
-                              )
-                            })()}
+                            <span className={`px-3 py-1 rounded-lg text-[10px] font-black tracking-widest uppercase ${effRole === 'SUPER_ADMIN' ? 'bg-indigo-100 text-indigo-700 border border-indigo-200' : 'bg-slate-100 text-slate-600'}`}>
+                              {effRole === 'SUPER_ADMIN' ? 'Super Admin' : 'Admin'}
+                            </span>
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-wrap gap-1 max-w-xs">
-                              {admin.role === 'SUPER_ADMIN' ? (
+                              {effRole === 'SUPER_ADMIN' ? (
                                 <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded-md border border-indigo-100">
                                   <Lock size={11} /> Control Total ({AVAILABLE_MODULES.length})
                                 </span>
@@ -257,6 +254,7 @@ export function DashboardAdmins({ admins, campuses }: DashboardAdminsProps) {
                               size="icon"
                               onClick={() => setEditingAdmin({
                                 ...admin,
+                                role: effRole,
                                 oldDni: admin.dni,
                                 password: '',
                                 permissions: adminPerms,

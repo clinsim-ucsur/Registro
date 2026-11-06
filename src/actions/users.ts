@@ -287,7 +287,7 @@ export async function createAdminAction(data: {
     let finalPermissions = data.permissions || []
     if (finalPermissions.length === 0) {
       if (data.role === Role.SUPER_ADMIN) {
-        finalPermissions = ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins"]
+        finalPermissions = ["overview", "analytics", "reports", "rules", "users", "catalogs", "admins", "kiosk"]
       } else {
         // Plantilla estándar para Admin Secundario: Vista básica, reportes y personal operativo
         finalPermissions = ["overview", "reports", "users"]
