@@ -903,6 +903,53 @@ async function main() {
     "Formato de Ambiente: Oculta el código previo a ':' y muestra solo el nombre del ambiente"
   )
 
+  // =========================================================================
+  // 13. MODO HÍBRIDO: PC KIOSCO SIN GPS + CELULARES CON GEOCERCA EN CAMPUS
+  // =========================================================================
+  console.log("\n--- TEST 13: MODO HÍBRIDO (KIOSCO PC SIN GPS + CELULARES CON GPS EN CAMPUS) ---")
+
+  const { validateHybridLocation, REAL_UCSUR_CAMPUS_COORDS } = await import("../src/lib/geofence")
+  const campusesList = await prisma.campus.findMany()
+
+  // 13.1 PC Kiosco autorizada marca directo sin requerir GPS
+  const kioskResult = validateHybridLocation(undefined, campusesList, "Campus Villa", true)
+  assert(
+    kioskResult.allowed === true && kioskResult.detectedCampusName === "Campus Villa",
+    "Modo Híbrido (Kiosco PC): Permite marcación sin GPS cuando la PC tiene token de Kiosco autorizado"
+  )
+
+  // 13.2 Celular sin ubicación es rechazado solicitando activar GPS
+  const mobileNoGpsResult = validateHybridLocation(undefined, campusesList, "Campus Villa", false)
+  assert(
+    mobileNoGpsResult.allowed === false && (mobileNoGpsResult.error?.includes("GPS") ?? false),
+    "Modo Híbrido (Celular sin GPS): Rechaza marcación desde celular si el GPS está apagado o bloqueado"
+  )
+
+  // 13.3 Celular dentro del campus (ej. Campus Villa frente a consultorios) es aprobado
+  const realVillaPt = REAL_UCSUR_CAMPUS_COORDS["Campus Villa"][0]
+  const mobileInVillaResult = validateHybridLocation(
+    { lat: realVillaPt.latitude + 0.0005, lng: realVillaPt.longitude - 0.0005, accuracy: 25 },
+    campusesList,
+    "Campus Villa",
+    false
+  )
+  assert(
+    mobileInVillaResult.allowed === true && mobileInVillaResult.detectedCampusName === "Campus Villa",
+    "Modo Híbrido (Celular en Campus): Permite marcación instantánea desde el celular dentro del Campus Villa"
+  )
+
+  // 13.4 Celular fuera de la universidad (ej. a >5 km de distancia) es bloqueado
+  const mobileOutsideResult = validateHybridLocation(
+    { lat: -12.0464, lng: -77.0428, accuracy: 15 },
+    campusesList,
+    "Campus Villa",
+    false
+  )
+  assert(
+    mobileOutsideResult.allowed === false && (mobileOutsideResult.error?.includes("Ubicación fuera de la universidad") ?? false),
+    "Modo Híbrido (Celular fuera de Sede): Bloquea marcación cuando el usuario aún no llega a la universidad"
+  )
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")

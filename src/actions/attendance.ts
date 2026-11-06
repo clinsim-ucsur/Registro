@@ -1,10 +1,11 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
+import { cookies } from "next/headers"
 import { Role, RecordType, RecordStatus, Shift } from "@prisma/client"
 import prisma from "@/lib/prisma"
 import { limaMinutesOfDay, limaDayOfWeek } from "@/lib/timezone"
-import { detectAndValidateCampus } from "@/lib/geofence"
+import { detectAndValidateCampus, validateHybridLocation } from "@/lib/geofence"
 import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
 import {
   getDailyProgramForUser,
@@ -443,6 +444,90 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
   }
 }
 
+const KIOSK_TOKEN_PREFIX = "CLINSIM_KIOSK_AUTHORIZED_2026_"
+
+/**
+ * Autoriza una PC de oficina en Modo Kiosco para que nunca requiera GPS
+ * (sorteando el bloqueo de ubicación de TI en la PC fija), mientras los celulares sí validan GPS.
+ */
+export async function authorizeKioskDeviceAction(params: {
+  adminUser: string
+  adminPass: string
+  campusName: string
+}): Promise<{ success: boolean; kioskToken?: string; campusName?: string; message: string }> {
+  try {
+    const cleanInput = (params.adminUser || "").trim()
+    const cleanPass = (params.adminPass || "").trim()
+    const targetCampus = (params.campusName || "Campus Villa").trim()
+
+    let isAuthorized = false
+
+    if (
+      (cleanInput.toLowerCase() === "admin.clinsim" || cleanInput.toLowerCase() === "admin") &&
+      cleanPass === "Simulacion.Ucsur26!"
+    ) {
+      isAuthorized = true
+    } else {
+      const user = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { dni: { equals: cleanInput, mode: "insensitive" } },
+            { email: { equals: cleanInput, mode: "insensitive" } },
+          ],
+          password: cleanPass,
+        },
+      })
+      if (
+        user &&
+        (user.adminRole === "SUPER_ADMIN" ||
+          user.adminRole === "ADMIN_SECUNDARIO" ||
+          user.role === "SUPER_ADMIN" ||
+          user.role === "ADMIN_SECUNDARIO")
+      ) {
+        isAuthorized = true
+      }
+    }
+
+    if (!isAuthorized) {
+      return {
+        success: false,
+        message: "Credenciales de administrador inválidas.",
+      }
+    }
+
+    const token = `${KIOSK_TOKEN_PREFIX}${targetCampus}`
+    try {
+      const cookieStore = await cookies()
+      cookieStore.set("kiosk_authorized_token", token, {
+        httpOnly: false,
+        path: "/",
+        maxAge: 60 * 60 * 24 * 365, // 1 año en esta PC
+      })
+    } catch {}
+
+    return {
+      success: true,
+      kioskToken: token,
+      campusName: targetCampus,
+      message: `🖥️ Esta PC quedó autorizada como Kiosco Oficial (${targetCampus}) libre de GPS.`,
+    }
+  } catch (error) {
+    console.error("[authorizeKioskDeviceAction] Error:", error)
+    return {
+      success: false,
+      message: "Error al verificar las credenciales de administrador.",
+    }
+  }
+}
+
+export async function revokeKioskDeviceAction(): Promise<{ success: boolean }> {
+  try {
+    const cookieStore = await cookies()
+    cookieStore.delete("kiosk_authorized_token")
+  } catch {}
+  return { success: true }
+}
+
 // ------------------------------------------------------------------
 // 2. REEMPLAZO DE `registrarDatos(datos)`
 // ------------------------------------------------------------------
@@ -454,6 +539,7 @@ type RegisterAttendanceData = {
   campusId?: string
   courseId?: string
   expectedEntryTime?: string
+  kioskToken?: string
   isOfflineSync?: boolean
   clientTimestamp?: Date 
   location?: { lat: number; lng: number; accuracy?: number }
@@ -524,32 +610,43 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       }
     }
 
-    // Detección y validación de sede por geolocalización (GPS) según configuración de Sedes & Cursos
+    // Verificar si es una PC Kiosco Autorizada (exenta de GPS)
+    let isKioskAuthorized = Boolean(
+      data.kioskToken && data.kioskToken.startsWith(KIOSK_TOKEN_PREFIX)
+    )
+    if (!isKioskAuthorized) {
+      try {
+        const cookieStore = await cookies()
+        const cookieToken = cookieStore.get("kiosk_authorized_token")?.value
+        if (cookieToken && cookieToken.startsWith(KIOSK_TOKEN_PREFIX)) {
+          isKioskAuthorized = true
+        }
+      } catch {}
+    }
+
+    // Detección y validación de sede en Modo Híbrido (PC Kiosco sin GPS vs Celular con GPS en campus)
     let resolvedCampusName: string | null = null
 
     const tentativeCampusName = (data.campusId && data.campusId.trim() !== '')
       ? data.campusId.trim()
       : (scheduledShift?.campus?.name || user.campus?.name || "Campus Villa")
 
-    if (!data.isOfflineSync && data.location) {
-      const geoResult = detectAndValidateCampus(data.location, allCampuses, tentativeCampusName)
-      if (!geoResult.allowed) {
-        return { success: false, message: geoResult.error || "Ubicación fuera del perímetro permitido." }
-      }
-
-      if (data.campusId && data.campusId.trim() !== '') {
-        resolvedCampusName = data.campusId.trim()
-      } else if (geoResult.detectedCampusName) {
-        resolvedCampusName = geoResult.detectedCampusName
-      }
-    } else if (!data.isOfflineSync && !data.location) {
-      const targetDb = allCampuses.find((c) => c.name.toLowerCase() === tentativeCampusName.toLowerCase())
-      if (targetDb && targetDb.geoEnforced && targetDb.latitude != null && targetDb.longitude != null) {
+    if (!data.isOfflineSync) {
+      const hybridCheck = validateHybridLocation(
+        data.location,
+        allCampuses,
+        tentativeCampusName,
+        isKioskAuthorized
+      )
+      if (!hybridCheck.allowed) {
         return {
           success: false,
-          message: `La sede "${targetDb.name}" requiere validación de ubicación GPS para registrar la asistencia.`
+          message:
+            hybridCheck.error ||
+            "Debe encontrarse dentro del perímetro de la universidad para registrar su asistencia desde este dispositivo.",
         }
       }
+      resolvedCampusName = hybridCheck.detectedCampusName || tentativeCampusName
     }
 
     if (!resolvedCampusName) {

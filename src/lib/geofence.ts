@@ -256,3 +256,119 @@ export function checkGeofence(
   if (result.allowed) return null
   return result.error || "Ubicación fuera del perímetro permitido."
 }
+
+// Coordenadas reales adicionales de las sedes UCSUR para cobertura de edificios interiores
+export const REAL_UCSUR_CAMPUS_COORDS: Record<string, { latitude: number; longitude: number; radiusMeters: number }[]> = {
+  "Campus Villa": [
+    { latitude: -12.222415, longitude: -76.976528, radiusMeters: 500 },
+    { latitude: -12.2038, longitude: -76.9738, radiusMeters: 600 },
+  ],
+  "Campus Norte": [
+    { latitude: -11.944026, longitude: -77.071771, radiusMeters: 500 },
+    { latitude: -11.9705, longitude: -77.0685, radiusMeters: 600 },
+  ],
+  "Campus Ate": [
+    { latitude: -12.01651, longitude: -76.890059, radiusMeters: 500 },
+    { latitude: -12.0287, longitude: -76.8992, radiusMeters: 600 },
+  ],
+  "Campus Aramburú": [
+    { latitude: -12.103614, longitude: -77.018929, radiusMeters: 500 },
+    { latitude: -12.1009, longitude: -77.0253, radiusMeters: 500 },
+  ],
+}
+
+/**
+ * Validación de Modo Híbrido:
+ * - Si el dispositivo es una PC Kiosco autorizada (`isKioskAuthorized === true`), permite marcar SIN exigir GPS.
+ * - Si el dispositivo es un celular / dispositivo externo (`isKioskAuthorized === false`), exige ubicación GPS
+ *   dentro del perímetro de alguna de las sedes de la universidad (con margen de precisión indoor para consultorios).
+ */
+export function validateHybridLocation(
+  loc: { lat: number; lng: number; accuracy?: number } | undefined,
+  campuses: GeoCampus[],
+  targetCampusName?: string,
+  isKioskAuthorized: boolean = false
+): GeoDetectionResult {
+  if (isKioskAuthorized) {
+    return {
+      allowed: true,
+      detectedCampusName: targetCampusName || "Campus Villa",
+      distanceMeters: 0,
+    }
+  }
+
+  if (!loc || !Number.isFinite(loc.lat) || !Number.isFinite(loc.lng)) {
+    return {
+      allowed: false,
+      detectedCampusName: null,
+      distanceMeters: Infinity,
+      error:
+        "Para marcar desde su celular o dispositivo personal debe encontrarse dentro de la universidad y permitir el acceso al GPS.",
+    }
+  }
+
+  // Margen adicional por deriva de señal GPS dentro de aulas/consultorios techados (máx. +200m)
+  const indoorAccuracyBuffer = Math.min(Math.max(loc.accuracy ?? 0, 0), 200)
+
+  // Construir puntos de verificación combinando BD + coordenadas oficiales de campus
+  const candidatePoints: { name: string; lat: number; lng: number; radius: number }[] = []
+
+  for (const c of campuses) {
+    if (c.latitude != null && c.longitude != null) {
+      candidatePoints.push({
+        name: c.name,
+        lat: c.latitude,
+        lng: c.longitude,
+        radius: Math.max(c.radiusMeters || 100, 450),
+      })
+    }
+  }
+
+  for (const [name, pts] of Object.entries(REAL_UCSUR_CAMPUS_COORDS)) {
+    for (const pt of pts) {
+      candidatePoints.push({
+        name,
+        lat: pt.latitude,
+        lng: pt.longitude,
+        radius: pt.radiusMeters,
+      })
+    }
+  }
+
+  let matchedCampusName: string | null = null
+  let minMatchDist = Infinity
+  let closestCampusName = targetCampusName || "Campus Villa"
+  let minAnyDist = Infinity
+
+  for (const pt of candidatePoints) {
+    const dist = distanceMeters(loc.lat, loc.lng, pt.lat, pt.lng)
+    const effectiveRadius = pt.radius + indoorAccuracyBuffer
+
+    if (dist <= effectiveRadius && dist < minMatchDist) {
+      minMatchDist = dist
+      matchedCampusName = pt.name
+    }
+    if (dist < minAnyDist) {
+      minAnyDist = dist
+      closestCampusName = pt.name
+    }
+  }
+
+  if (matchedCampusName) {
+    return {
+      allowed: true,
+      detectedCampusName: targetCampusName || matchedCampusName,
+      distanceMeters: Math.round(minMatchDist),
+    }
+  }
+
+  const distFormatted =
+    minAnyDist >= 1000 ? `${(minAnyDist / 1000).toFixed(1)} km` : `${Math.round(minAnyDist)} m`
+
+  return {
+    allowed: false,
+    detectedCampusName: null,
+    distanceMeters: Math.round(minAnyDist),
+    error: `Ubicación fuera de la universidad: Usted se encuentra a ${distFormatted} de ${closestCampusName}. Solo puede marcar asistencia cuando ya haya llegado al campus.`,
+  }
+}
