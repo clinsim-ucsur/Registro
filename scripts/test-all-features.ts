@@ -869,7 +869,7 @@ async function main() {
   // =========================================================================
   console.log("\n--- TEST 12: MARCACIÓN UNIFICADA SOLO CON DNI Y PROGRAMACIÓN DIARIA API ---")
 
-  const { isSamePersonName, mapSessionToCourseName, parseTimeString } = await import("../src/lib/daily-program-api")
+  const { isSamePersonName, mapSessionToCourseName, parseTimeString, formatAmbienteName } = await import("../src/lib/daily-program-api")
 
   // 12.1 Coincidencia inteligente de nombres (BD vs API Excel/JSON) sin falsos positivos entre hermanos
   assert(
@@ -894,6 +894,13 @@ async function main() {
   assert(
     tStart?.formatted === "07:00" && tStart.minutes === 420 && tEnd?.formatted === "16:10" && tEnd.minutes === 970,
     "Normalización de horas: Convierte '7:00' -> '07:00' (420m) y '16:10' -> '16:10' (970m)"
+  )
+
+  // 12.4 Limpieza de código de ambiente (solo nombre después de ':')
+  assert(
+    formatAmbienteName("SL02TA21: CONSULTORIO 1 - L 107") === "CONSULTORIO 1 - L 107" &&
+    formatAmbienteName("SL02LA31: SALA ALTA FIDELIDAD 1 - OPERACIONES L 112") === "SALA ALTA FIDELIDAD 1 - OPERACIONES L 112",
+    "Formato de Ambiente: Oculta el código previo a ':' y muestra solo el nombre del ambiente"
   )
 
   console.log("\n==================================================")

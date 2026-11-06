@@ -134,6 +134,19 @@ export function mapSessionToCourseName(sesionRaw: string): string {
 }
 
 /**
+ * Limpia el código técnico del ambiente y devuelve solo el nombre después de ":"
+ * Ejemplo: "SL02TA21: CONSULTORIO 1 - L 107" -> "CONSULTORIO 1 - L 107"
+ */
+export function formatAmbienteName(rawAmbiente: string): string {
+  const clean = (rawAmbiente || "").trim()
+  const colonIdx = clean.indexOf(":")
+  if (colonIdx !== -1) {
+    return clean.slice(colonIdx + 1).trim()
+  }
+  return clean
+}
+
+/**
  * Determina la sede según el código de ambiente o piso, con respaldo en Campus Villa.
  */
 export function resolveCampusFromAmbiente(ambiente: string, piso: string, fallbackCampus?: string | null): string {
@@ -180,7 +193,8 @@ function normalizeRawSessions(rawList: RawProgramSession[]): NormalizedProgramSe
     if (!start || !end) continue
 
     const piso = (item.Piso || "").trim()
-    const ambiente = (item.Ambiente || "").trim()
+    const rawAmbiente = (item.Ambiente || "").trim()
+    const ambiente = formatAmbienteName(rawAmbiente)
     const sesion = (item["Sesión"] || "").trim()
 
     normalized.push({
@@ -188,7 +202,7 @@ function normalizeRawSessions(rawList: RawProgramSession[]): NormalizedProgramSe
       ambiente,
       sesion,
       courseName: mapSessionToCourseName(sesion),
-      campusName: resolveCampusFromAmbiente(ambiente, piso),
+      campusName: resolveCampusFromAmbiente(rawAmbiente, piso),
       horaInicio: start.formatted,
       horaFin: end.formatted,
       startMinutes: start.minutes,

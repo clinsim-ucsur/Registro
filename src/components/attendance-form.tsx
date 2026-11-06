@@ -734,7 +734,9 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                               Ambiente Asignado
                             </p>
                             <p className="text-sm font-black text-slate-800 break-words">
-                              {dailyProgram?.found ? dailyProgram.ambiente : "Por asignar en sede"}
+                              {dailyProgram?.found
+                                ? dailyProgram.ambiente.replace(/^[^:]+:\s*/, "")
+                                : "Por asignar en sede"}
                             </p>
                           </div>
                         </div>
