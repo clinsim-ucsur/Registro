@@ -6,11 +6,19 @@ import prisma from "@/lib/prisma"
 import { limaMinutesOfDay, limaDayOfWeek } from "@/lib/timezone"
 import { detectAndValidateCampus } from "@/lib/geofence"
 import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
-import { getDailyProgramForUser, type UserDailyProgramSummary } from "@/lib/daily-program-api"
+import {
+  getDailyProgramForUser,
+  fetchDailyProgramSessions,
+  matchDailyProgramFromSessions,
+  type UserDailyProgramSummary,
+} from "@/lib/daily-program-api"
 import { calculateExpectedExitTime } from "@/lib/overtime"
 
-// Caché de sedes en memoria (TTL: 60s) para acelerar tiempos de respuesta de marcación
+// Cachés en memoria (TTL: 60s) para acelerar tiempos de respuesta de validación y marcación
 let cachedCampuses: { data: any[]; expiresAt: number } | null = null
+let cachedCourses: { data: { id: string; name: string }[]; expiresAt: number } | null = null
+let cachedToleranceRules: { data: any[]; expiresAt: number } | null = null
+let cachedDirectory: { data: Record<string, any>; expiresAt: number } | null = null
 
 async function getCachedCampusesList() {
   const now = Date.now()
@@ -26,6 +34,206 @@ async function getCachedCampusesList() {
   } catch (err) {
     console.warn("No se pudo consultar sedes desde BD para geocerca, usando catálogo oficial:", err)
     return cachedCampuses ? cachedCampuses.data : []
+  }
+}
+
+async function getCachedCoursesList() {
+  const now = Date.now()
+  if (cachedCourses && cachedCourses.expiresAt > now) {
+    return cachedCourses.data
+  }
+  try {
+    const list = await prisma.course.findMany({
+      select: { id: true, name: true },
+    })
+    cachedCourses = { data: list, expiresAt: now + 60_000 }
+    return list
+  } catch {
+    return cachedCourses ? cachedCourses.data : []
+  }
+}
+
+async function getCachedToleranceRulesList() {
+  const now = Date.now()
+  if (cachedToleranceRules && cachedToleranceRules.expiresAt > now) {
+    return cachedToleranceRules.data
+  }
+  try {
+    const list = await prisma.toleranceRule.findMany()
+    cachedToleranceRules = { data: list, expiresAt: now + 60_000 }
+    return list
+  } catch {
+    return cachedToleranceRules ? cachedToleranceRules.data : []
+  }
+}
+
+// ------------------------------------------------------------------
+// 0. PRECARGA DEL DIRECTORIO DIARIO EN MEMORIA (RESPUESTA INSTANTÁNEA 0ms)
+// ------------------------------------------------------------------
+export async function preloadAttendanceDirectoryAction(): Promise<{
+  success: boolean
+  directory: Record<string, any>
+}> {
+  try {
+    const nowMs = Date.now()
+    if (cachedDirectory && cachedDirectory.expiresAt > nowMs) {
+      return { success: true, directory: cachedDirectory.data }
+    }
+
+    const now = new Date()
+    const limaOffset = -5 * 60 * 60 * 1000
+    const limaToday = new Date(now.getTime() + limaOffset)
+    limaToday.setUTCHours(0, 0, 0, 0)
+    const startOfDayUTC = new Date(limaToday.getTime() - limaOffset)
+    const endOfDayUTC = new Date(startOfDayUTC.getTime() + 24 * 60 * 60 * 1000)
+
+    const limaDateStr = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Lima",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(now)
+
+    const [users, todayRecords, todaySchedules, allRules, dailySessions] = await Promise.all([
+      prisma.user.findMany({
+        select: {
+          id: true,
+          name: true,
+          dni: true,
+          role: true,
+          campusId: true,
+          defaultShift: true,
+          campus: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.attendanceRecord.findMany({
+        where: { timestamp: { gte: startOfDayUTC, lt: endOfDayUTC } },
+        orderBy: { timestamp: "desc" },
+        select: { userId: true, type: true },
+      }),
+      prisma.technicianSchedule.findMany({
+        where: { date: limaDateStr },
+        include: { campus: true },
+      }),
+      getCachedToleranceRulesList(),
+      fetchDailyProgramSessions(),
+    ])
+
+    const lastRecordByUserId = new Map<string, RecordType>()
+    for (const r of todayRecords) {
+      if (!lastRecordByUserId.has(r.userId)) {
+        lastRecordByUserId.set(r.userId, r.type)
+      }
+    }
+
+    const scheduleByUserId = new Map<string, any>()
+    for (const s of todaySchedules) {
+      scheduleByUserId.set(s.userId, s)
+    }
+
+    const techRules = allRules.filter((r: any) => r.role === Role.TECNICO)
+    const directory: Record<string, any> = {}
+
+    for (const user of users) {
+      const dniKey = user.dni.trim()
+      const isAdmin = user.role === Role.SUPER_ADMIN || user.role === Role.ADMIN_SECUNDARIO
+      const effectiveRole: Role = isAdmin ? Role.DOCENTE : user.role
+      const todaySched = effectiveRole === Role.TECNICO ? scheduleByUserId.get(user.id) : null
+
+      if (effectiveRole === Role.TECNICO && todaySched?.shift === Shift.DESCANSO) {
+        directory[dniKey] = {
+          success: false,
+          message: `🏖️ Hola ${user.name}, hoy tienes asignado tu DÍA DE DESCANSO según el cronograma oficial. No requieres registrar asistencia.`,
+        }
+        continue
+      }
+
+      if (
+        effectiveRole === Role.TECNICO &&
+        (todaySched?.shift === Shift.COMISION || (!todaySched && user.defaultShift === Shift.COMISION))
+      ) {
+        directory[dniKey] = {
+          success: false,
+          isComision: true,
+          message: `✈️ Hola ${user.name}, hoy estás en COMISIÓN DE SERVICIO / EVENTO ESPECIAL (EV) en provincia según el cronograma oficial. No es necesario marcar asistencia.`,
+        }
+        continue
+      }
+
+      let technicianAssignment: any = null
+      let dailyProgram: UserDailyProgramSummary | null = null
+
+      if (effectiveRole === Role.TECNICO) {
+        if (todaySched) {
+          let expectedTime = todaySched.expectedEntryTime
+          const def = DEFAULT_SHIFT_TIMES[todaySched.shift as Shift] || DEFAULT_SHIFT_TIMES.MANANA
+          if (todaySched.shift === Shift.INTERMEDIO && expectedTime === "13:00") expectedTime = def.entry
+          else if (todaySched.shift === Shift.MANANA && expectedTime === "13:00") expectedTime = def.entry
+          else if (
+            todaySched.shift === Shift.TARDE &&
+            ["06:00", "07:00", "08:00", "09:00", "10:00"].includes(expectedTime)
+          ) {
+            expectedTime = "13:00"
+          }
+          technicianAssignment = {
+            campusName: todaySched.campus?.name || user.campus?.name || "Campus Villa",
+            shift: todaySched.shift,
+            expectedEntryTime: expectedTime,
+            expectedExitTime: calculateExpectedExitTime(expectedTime, 9),
+            source: "SCHEDULE",
+          }
+        } else {
+          const defaultShift = user.defaultShift || Shift.MANANA
+          const def = DEFAULT_SHIFT_TIMES[defaultShift] || DEFAULT_SHIFT_TIMES.MANANA
+          const matchingRule =
+            techRules.find(
+              (r: any) =>
+                (r.shift === defaultShift || r.shift === null) &&
+                (r.campusId === user.campusId || r.campusId === null)
+            ) || null
+          const expectedEntry = matchingRule?.expectedEntryTime || def.entry
+          technicianAssignment = {
+            campusName: user.campus?.name || "Campus Villa",
+            shift: defaultShift,
+            expectedEntryTime: expectedEntry,
+            expectedExitTime: calculateExpectedExitTime(expectedEntry, 9),
+            source: "DEFAULT_PROFILE",
+          }
+        }
+      } else {
+        dailyProgram = matchDailyProgramFromSessions(
+          dailySessions,
+          user.name,
+          effectiveRole,
+          user.campus?.name || "Campus Villa"
+        )
+      }
+
+      directory[dniKey] = {
+        success: true,
+        user: {
+          id: user.id,
+          name: user.name,
+          role: effectiveRole,
+          campusId: user.campusId,
+          campusName:
+            technicianAssignment?.campusName ||
+            (dailyProgram?.found ? dailyProgram.campusName : null) ||
+            user.campus?.name ||
+            "Campus Villa",
+          defaultShift: user.defaultShift,
+        },
+        lastRecordType: lastRecordByUserId.get(user.id) ?? null,
+        technicianAssignment,
+        dailyProgram,
+      }
+    }
+
+    cachedDirectory = { data: directory, expiresAt: Date.now() + 15_000 }
+    return { success: true, directory }
+  } catch (error) {
+    console.error("[preloadAttendanceDirectoryAction] Error:", error)
+    return { success: false, directory: {} }
   }
 }
 
@@ -65,32 +273,14 @@ export async function getTodayAttendanceStateAction(userId: string): Promise<{
 // ------------------------------------------------------------------
 export async function validateUserAction(dni: string, roleOverride?: Role) {
   try {
-    const user = await prisma.user.findUnique({
-      where: { dni },
-      select: {
-        id: true,
-        name: true,
-        role: true,
-        campusId: true,
-        defaultShift: true,
-        campus: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-      },
-    })
+    const cleanDni = dni.trim()
 
-    if (!user) {
-      return { success: false, message: "⚠ El DNI ingresado no se encuentra registrado en el sistema." }
+    // Respuesta en 0ms si el directorio en memoria está caliente
+    if (cachedDirectory && cachedDirectory.expiresAt > Date.now() && !roleOverride) {
+      const hit = cachedDirectory.data[cleanDni]
+      if (hit) return hit
     }
 
-    // Determinar el rol operativo automáticamente a partir del usuario en BD
-    const isAdmin = user.role === Role.SUPER_ADMIN || user.role === Role.ADMIN_SECUNDARIO
-    const effectiveRole: Role = isAdmin ? (roleOverride || Role.DOCENTE) : user.role
-
-    // Consultar en paralelo: último registro de hoy, cronograma de técnico (si aplica) y programación diaria API (si aplica)
     const now = new Date()
     const limaOffset = -5 * 60 * 60 * 1000
     const limaToday = new Date(now.getTime() + limaOffset)
@@ -105,30 +295,50 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
       day: "2-digit",
     }).format(now)
 
-    const [lastRecord, todaySched, dailyProgram] = await Promise.all([
+    // 1 solo lote en paralelo (evita esperas secuenciales BD -> BD -> API)
+    const [user, lastRecord, todaySched, allRules, dailySessions] = await Promise.all([
+      prisma.user.findUnique({
+        where: { dni: cleanDni },
+        select: {
+          id: true,
+          name: true,
+          role: true,
+          campusId: true,
+          defaultShift: true,
+          campus: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
+      }),
       prisma.attendanceRecord.findFirst({
         where: {
-          userId: user.id,
+          user: { dni: cleanDni },
           timestamp: { gte: startOfDayUTC, lt: endOfDayUTC },
         },
         orderBy: { timestamp: "desc" },
         select: { type: true },
       }),
-      effectiveRole === Role.TECNICO
-        ? prisma.technicianSchedule.findUnique({
-            where: {
-              userId_date: {
-                userId: user.id,
-                date: limaDateStr,
-              },
-            },
-            include: { campus: true },
-          })
-        : Promise.resolve(null),
-      effectiveRole === Role.DOCENTE || effectiveRole === Role.PACIENTE_SIMULADO
-        ? getDailyProgramForUser(user.name, effectiveRole, user.campus?.name || "Campus Villa")
-        : Promise.resolve(null),
+      prisma.technicianSchedule.findFirst({
+        where: {
+          user: { dni: cleanDni },
+          date: limaDateStr,
+        },
+        include: { campus: true },
+      }),
+      getCachedToleranceRulesList(),
+      fetchDailyProgramSessions(),
     ])
+
+    if (!user) {
+      return { success: false, message: "⚠ El DNI ingresado no se encuentra registrado en el sistema." }
+    }
+
+    // Determinar el rol operativo automáticamente a partir del usuario en BD
+    const isAdmin = user.role === Role.SUPER_ADMIN || user.role === Role.ADMIN_SECUNDARIO
+    const effectiveRole: Role = isAdmin ? (roleOverride || Role.DOCENTE) : user.role
 
     if (effectiveRole === Role.TECNICO && todaySched?.shift === Shift.DESCANSO) {
       return {
@@ -153,11 +363,12 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
       source: "SCHEDULE" | "DEFAULT_PROFILE"
     } | null = null
 
+    let dailyProgram: UserDailyProgramSummary | null = null
+
     if (effectiveRole === Role.TECNICO) {
       if (todaySched) {
         let expectedTime = todaySched.expectedEntryTime
         const def = DEFAULT_SHIFT_TIMES[todaySched.shift] || DEFAULT_SHIFT_TIMES.MANANA
-        // Corregir contradicciones si el turno fue cambiado pero quedó el horario anterior
         if (todaySched.shift === Shift.INTERMEDIO && expectedTime === "13:00") {
           expectedTime = def.entry
         } else if (todaySched.shift === Shift.MANANA && expectedTime === "13:00") {
@@ -176,26 +387,13 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
       } else {
         const defaultShift = user.defaultShift || Shift.MANANA
         const def = DEFAULT_SHIFT_TIMES[defaultShift] || DEFAULT_SHIFT_TIMES.MANANA
-        const matchingRule = await prisma.toleranceRule.findFirst({
-          where: {
-            role: Role.TECNICO,
-            AND: [
-              {
-                OR: [
-                  { shift: defaultShift },
-                  { shift: null },
-                ],
-              },
-              {
-                OR: [
-                  ...(user.campusId ? [{ campusId: user.campusId }] : []),
-                  { campusId: null },
-                ],
-              },
-            ],
-          },
-          orderBy: [{ campusId: "desc" }],
-        })
+        const techRules = allRules.filter((r: any) => r.role === Role.TECNICO)
+        const matchingRule =
+          techRules.find(
+            (r: any) =>
+              (r.shift === defaultShift || r.shift === null) &&
+              (r.campusId === user.campusId || r.campusId === null)
+          ) || null
 
         const expectedEntry = matchingRule?.expectedEntryTime || def.entry
         technicianAssignment = {
@@ -206,9 +404,16 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
           source: "DEFAULT_PROFILE",
         }
       }
+    } else if (effectiveRole === Role.DOCENTE || effectiveRole === Role.PACIENTE_SIMULADO) {
+      dailyProgram = matchDailyProgramFromSessions(
+        dailySessions,
+        user.name,
+        effectiveRole,
+        user.campus?.name || "Campus Villa"
+      )
     }
 
-    return {
+    const result = {
       success: true,
       user: {
         id: user.id,
@@ -224,8 +429,14 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
       },
       lastRecordType: lastRecord?.type ?? null,
       technicianAssignment,
-      dailyProgram: dailyProgram as UserDailyProgramSummary | null,
+      dailyProgram,
     }
+
+    if (cachedDirectory) {
+      cachedDirectory.data[cleanDni] = result
+    }
+
+    return result
   } catch (error) {
     console.error("[validateUserAction] Error:", error)
     return { success: false, message: "Error de conexión con la base de datos." }
@@ -262,8 +473,8 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       day: "2-digit",
     }).format(recordTimestamp)
 
-    // Consulta concurrente en paralelo: usuario, turno programado y sedes en 1 roundtrip
-    const [user, scheduledShift, allCampuses] = await Promise.all([
+    // Consulta concurrente en paralelo: usuario, turno programado y catálogos en caché en 1 roundtrip
+    const [user, scheduledShift, allCampuses, allCourses, allRules] = await Promise.all([
       prisma.user.findUnique({
         where: { id: data.userId },
         include: { campus: true },
@@ -280,6 +491,8 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           })
         : Promise.resolve(null),
       getCachedCampusesList(),
+      getCachedCoursesList(),
+      getCachedToleranceRulesList(),
     ])
 
     if (!user) {
@@ -287,7 +500,6 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
     }
 
     if (data.role === Role.TECNICO) {
-      // Si el técnico está programado en DESCANSO para hoy
       if (scheduledShift && scheduledShift.shift === Shift.DESCANSO) {
         return {
           success: false,
@@ -295,7 +507,6 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         }
       }
 
-      // Si el técnico está asignado a COMISIÓN / EVENTO ESPECIAL (EV)
       if (scheduledShift && scheduledShift.shift === Shift.COMISION) {
         return {
           success: false,
@@ -321,7 +532,6 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       : (scheduledShift?.campus?.name || user.campus?.name || "Campus Villa")
 
     if (!data.isOfflineSync && data.location) {
-      // Validación de sede: respeta la activación/desactivación en Sedes y Cursos
       const geoResult = detectAndValidateCampus(data.location, allCampuses, tentativeCampusName)
       if (!geoResult.allowed) {
         return { success: false, message: geoResult.error || "Ubicación fuera del perímetro permitido." }
@@ -333,7 +543,6 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         resolvedCampusName = geoResult.detectedCampusName
       }
     } else if (!data.isOfflineSync && !data.location) {
-      // Si la sede tiene activada la geocerca en "Sedes y Cursos", exigir GPS
       const targetDb = allCampuses.find((c) => c.name.toLowerCase() === tentativeCampusName.toLowerCase())
       if (targetDb && targetDb.geoEnforced && targetDb.latitude != null && targetDb.longitude != null) {
         return {
@@ -343,7 +552,6 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       }
     }
 
-    // Fallbacks si no hubo coordenadas GPS o en modo contingencia / offline:
     if (!resolvedCampusName) {
       if (data.campusId && data.campusId.trim() !== '') {
         resolvedCampusName = data.campusId.trim()
@@ -356,7 +564,7 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       }
     }
 
-    // Resolver Campus ID en memoria desde el catálogo precargado (ahorra consulta repetida a la BD)
+    // Resolver Campus ID en memoria desde el catálogo precargado
     let finalCampusId: string | null = null
     if (resolvedCampusName) {
       const match = allCampuses.find(
@@ -374,7 +582,7 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       }
     }
 
-    // Si es Docente o Paciente Simulado y no vino courseId o expectedEntryTime, consultar programación diaria
+    // Si es Docente o Paciente Simulado y no vino courseId o expectedEntryTime, consultar programación diaria en caché
     let resolvedCourseName = data.courseId?.trim() || ""
     let resolvedExpectedEntryTime = data.expectedEntryTime?.trim() || ""
 
@@ -394,20 +602,27 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       }
     }
 
-    // Resolver Course por nombre
-    let finalCourseId = null
+    // Resolver Course ID desde caché en memoria (evita roundtrip adicional a la BD)
+    let finalCourseId: string | null = null
     if (resolvedCourseName !== '') {
-      let course = await prisma.course.findUnique({ where: { name: resolvedCourseName } })
-      if (!course) {
-        course = await prisma.course.create({ data: { name: resolvedCourseName } })
+      const cachedCourse = allCourses.find(
+        (c) => c.name.toLowerCase() === resolvedCourseName.toLowerCase()
+      )
+      if (cachedCourse?.id) {
+        finalCourseId = cachedCourse.id
+      } else {
+        let course = await prisma.course.findUnique({ where: { name: resolvedCourseName } })
+        if (!course) {
+          course = await prisma.course.create({ data: { name: resolvedCourseName } })
+          cachedCourses = null
+        }
+        finalCourseId = course.id
       }
-      finalCourseId = course.id
     }
 
     let status: RecordStatus = RecordStatus.A_TIEMPO
     
     if (data.type === RecordType.ENTRADA) {
-      // Para TÉCNICOS: resolver turno de hoy por cronograma o por turno predeterminado del perfil
       if (data.role === Role.TECNICO) {
         let techRule: {
           expectedEntryTime: string
@@ -422,29 +637,19 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         const currentDayOfWeek = limaDayOfWeek(recordTimestamp)
         let userShift = (data.shift || scheduledShift?.shift || user.defaultShift || Shift.MANANA) as Shift
 
-        // En domingos (currentDayOfWeek === 0):
-        // Los técnicos de la tarde rotan comúnmente a turno Intermedio si no tienen programación específica
         if (!data.shift && !scheduledShift && currentDayOfWeek === 0 && userShift === Shift.TARDE) {
           userShift = Shift.INTERMEDIO
         }
 
         const defShift = DEFAULT_SHIFT_TIMES[userShift] || DEFAULT_SHIFT_TIMES.MANANA
 
-        // Consultar reglas activas en la BD para este rol y sede
-        const shiftRules = await prisma.toleranceRule.findMany({
-          where: {
-            role: Role.TECNICO,
-            OR: [
-              { campusId: finalCampusId },
-              { campusId: null },
-            ],
-          },
-          orderBy: [{ campusId: 'desc' }],
-        })
+        // Filtrar desde reglas en memoria
+        const shiftRules = allRules.filter(
+          (r: any) =>
+            r.role === Role.TECNICO && (r.campusId === finalCampusId || r.campusId === null)
+        )
 
-        // Filtrar reglas que correspondan a su turno
-        // Si es domingo y el técnico es de Mañana, permitir también evaluar reglas de Intermedio si llega cerca de las 9/10 AM
-        const matchingShiftRules = shiftRules.filter(r => {
+        const matchingShiftRules = shiftRules.filter((r: any) => {
           if (r.shift) {
             if (r.shift === userShift) return true
             if (currentDayOfWeek === 0 && userShift === Shift.MANANA && r.shift === Shift.INTERMEDIO) return true
@@ -457,20 +662,17 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           return r.expectedEntryTime === defShift.entry
         })
 
-        // Filtrar por día de la semana según daysOfWeek
-        const rulesForToday = matchingShiftRules.filter(r => {
+        const rulesForToday = matchingShiftRules.filter((r: any) => {
           if (!r.daysOfWeek || r.daysOfWeek.trim() === "" || r.daysOfWeek === "ALL") return true
-          const days = r.daysOfWeek.split(",").map(d => Number(d.trim()))
+          const days = r.daysOfWeek.split(",").map((d: string) => Number(d.trim()))
           return days.includes(currentDayOfWeek)
         })
 
-        // Si hay varias reglas para hoy (ej: Domingo 9 AM y 10 AM en Turno Intermedio),
-        // seleccionar la regla más cercana a la hora de marcación del técnico
         let matchedShiftRule = null
         const candidateRules = rulesForToday.length > 0 ? rulesForToday : matchingShiftRules
 
         if (candidateRules.length > 0) {
-          candidateRules.sort((a, b) => {
+          candidateRules.sort((a: any, b: any) => {
             const diffA = Math.abs(getShiftDiffInMinutes(recordTimestamp, a.expectedEntryTime).diffInMinutes)
             const diffB = Math.abs(getShiftDiffInMinutes(recordTimestamp, b.expectedEntryTime).diffInMinutes)
             return diffA - diffB
@@ -478,11 +680,9 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           matchedShiftRule = candidateRules[0]
         }
 
-        // Determinar hora esperada de ingreso
         let resolvedEntryTime = matchedShiftRule?.expectedEntryTime ?? defShift.entry
         if (scheduledShift) {
           let sTime = scheduledShift.expectedEntryTime
-          // Auto-corrección si el turno fue cambiado pero quedó la hora anterior
           if (userShift === Shift.INTERMEDIO && sTime === "13:00") {
             sTime = resolvedEntryTime || defShift.entry
           } else if (userShift === Shift.MANANA && sTime === "13:00") {
@@ -493,19 +693,16 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           resolvedEntryTime = sTime
         }
 
-        // Comprobar si la marcación anticipada o tardanza están desactivadas
-        // (sea a nivel general de reglas de técnico, de la regla específica de su turno o del cronograma)
-        const allTechRulesDisabledEarly = shiftRules.length > 0 && shiftRules.every(r => r.enableEarlyTolerance === false)
+        const allTechRulesDisabledEarly = shiftRules.length > 0 && shiftRules.every((r: any) => r.enableEarlyTolerance === false)
         const isEarlyToleranceDisabled = allTechRulesDisabledEarly
           || (matchedShiftRule != null && matchedShiftRule.enableEarlyTolerance === false)
           || scheduledShift?.enableEarlyTolerance === false
 
-        const allTechRulesDisabledLate = shiftRules.length > 0 && shiftRules.every(r => r.enableLateTolerance === false)
+        const allTechRulesDisabledLate = shiftRules.length > 0 && shiftRules.every((r: any) => r.enableLateTolerance === false)
         const isLateToleranceDisabled = allTechRulesDisabledLate
           || (matchedShiftRule != null && matchedShiftRule.enableLateTolerance === false)
           || scheduledShift?.enableLateTolerance === false
 
-        // Tolerancias: priorizar la regla configurada por el administrador en ToleranceRule, luego scheduledShift, luego default
         const earlyMins = matchedShiftRule?.earlyEntryToleranceMinutes ?? scheduledShift?.earlyEntryToleranceMinutes ?? defShift.early
         const graceMins = matchedShiftRule?.gracePeriodMinutes ?? scheduledShift?.gracePeriodMinutes ?? defShift.grace
         const lateMins = matchedShiftRule?.lateToleranceMinutes ?? scheduledShift?.lateToleranceMinutes ?? defShift.late
@@ -529,8 +726,6 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         }
         status = calculateStatusFromRule(recordTimestamp, techRule)
       } else {
-        // Para Docentes y Pacientes Simulados: usar hora de su primera programación del día (o regla de sede/rol)
-        const allRules = await prisma.toleranceRule.findMany()
         const matchedRule = findApplicableToleranceRule(allRules, finalCampusId || undefined, data.role)
         if (resolvedExpectedEntryTime) {
           const dynamicRule = {
@@ -559,7 +754,7 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           }
           status = calculateStatusFromRule(recordTimestamp, matchedRule)
         } else {
-          status = await calculateToleranceStatus(recordTimestamp, finalCampusId || undefined, data.role)
+          status = RecordStatus.A_TIEMPO
         }
       }
     }
@@ -575,6 +770,10 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         isOfflineSync: data.isOfflineSync ?? false,
       }
     })
+
+    if (cachedDirectory && user.dni && cachedDirectory.data[user.dni]) {
+      cachedDirectory.data[user.dni].lastRecordType = data.type
+    }
 
     try {
       revalidatePath("/dashboard")

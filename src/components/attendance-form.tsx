@@ -1,11 +1,16 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
 import { Role, RecordType, Shift } from "@prisma/client"
-import { validateUserAction, registerAttendanceAction, syncOfflineRecordsAction } from "@/actions/attendance"
+import {
+  validateUserAction,
+  registerAttendanceAction,
+  syncOfflineRecordsAction,
+  preloadAttendanceDirectoryAction,
+} from "@/actions/attendance"
 import { type UserDailyProgramSummary } from "@/lib/daily-program-api"
 import { toast } from "sonner"
 import {
@@ -97,6 +102,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const [isContingencyMode, setIsContingencyMode] = useState(false)
   const [connectionError, setConnectionError] = useState(false)
   const [pendingOfflineCount, setPendingOfflineCount] = useState(0)
+  const directoryRef = useRef<Record<string, any> | null>(null)
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -104,6 +110,27 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       dni: "",
     },
   })
+
+  // Precarga silenciosa del directorio diario apenas abre la página para respuesta en 0ms al digitar DNI
+  useEffect(() => {
+    let mounted = true
+    const warmDirectory = async () => {
+      try {
+        const res = await preloadAttendanceDirectoryAction()
+        if (mounted && res.success && res.directory) {
+          directoryRef.current = res.directory
+        }
+      } catch {
+        // Si falla la precarga silenciosa, validateDni consultará bajo demanda
+      }
+    }
+    warmDirectory()
+    const refreshInterval = setInterval(warmDirectory, 60_000)
+    return () => {
+      mounted = false
+      clearInterval(refreshInterval)
+    }
+  }, [])
 
   // Reloj en vivo para mostrar la hora exacta en que está marcando el usuario en el resumen
   useEffect(() => {
@@ -215,6 +242,40 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     }
   }, [watchDni])
 
+  const applyValidationResult = (res: any) => {
+    if (res.success && res.user) {
+      setValidatedUser(res.user)
+
+      if (res.user.role === Role.TECNICO && res.technicianAssignment) {
+        setTechnicianAssignment(res.technicianAssignment)
+        setSelectedShift((res.technicianAssignment.shift as Shift) || null)
+      } else {
+        setTechnicianAssignment(null)
+        setSelectedShift(null)
+      }
+
+      if (res.dailyProgram) {
+        setDailyProgram(res.dailyProgram)
+      } else {
+        setDailyProgram(null)
+      }
+
+      setTodayLastRecord(res.lastRecordType ?? null)
+      setConnectionError(false)
+    } else {
+      setValidatedUser(null)
+      setTodayLastRecord(null)
+      setTechnicianAssignment(null)
+      setDailyProgram(null)
+      setSelectedShift(null)
+      if (res.isComision) {
+        toast.info(res.message, { duration: 9000, icon: "✈️" })
+      } else {
+        toast.error(res.message || "Usuario no encontrado")
+      }
+    }
+  }
+
   const validateDni = async (dni: string, retryAttempts = 1) => {
     if (isOffline || isContingencyMode) {
       setValidatedUser({
@@ -227,6 +288,14 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       setTechnicianAssignment(null)
       setDailyProgram(null)
       setConnectionError(false)
+      return
+    }
+
+    // Resolución instantánea (0ms) si el DNI ya está en el directorio precargado en memoria
+    if (directoryRef.current && directoryRef.current[dni]) {
+      setIsValidating(false)
+      setConnectionError(false)
+      applyValidationResult(directoryRef.current[dni])
       return
     }
 
@@ -247,7 +316,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
         } catch (err) {
           lastError = err
           if (attempt < retryAttempts) {
-            await new Promise((r) => setTimeout(r, 600))
+            await new Promise((r) => setTimeout(r, 400))
           }
         }
       }
@@ -256,38 +325,11 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
         throw lastError
       }
 
-      if (res.success && res.user) {
-        setValidatedUser(res.user)
-        toast.success(`Identificado: ${res.user.name}`)
-
-        if (res.user.role === Role.TECNICO && res.technicianAssignment) {
-          setTechnicianAssignment(res.technicianAssignment)
-          setSelectedShift((res.technicianAssignment.shift as Shift) || null)
-        } else {
-          setTechnicianAssignment(null)
-          setSelectedShift(null)
-        }
-
-        if (res.dailyProgram) {
-          setDailyProgram(res.dailyProgram)
-        } else {
-          setDailyProgram(null)
-        }
-
-        setTodayLastRecord(res.lastRecordType ?? null)
-        setConnectionError(false)
-      } else {
-        setValidatedUser(null)
-        setTodayLastRecord(null)
-        setTechnicianAssignment(null)
-        setDailyProgram(null)
-        setSelectedShift(null)
-        if (res.isComision) {
-          toast.info(res.message, { duration: 9000, icon: "✈️" })
-        } else {
-          toast.error(res.message || "Usuario no encontrado")
-        }
+      if (res.success && res.user && directoryRef.current) {
+        directoryRef.current[dni] = res
       }
+
+      applyValidationResult(res)
     } catch (error) {
       console.error("Error al validar DNI:", error)
       setConnectionError(true)
@@ -428,12 +470,75 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       return
     }
 
+    // Marcación instantánea optimista cuando no requiere espera de GPS
+    const currentUser = validatedUser!
+    const currentShift = selectedShift || undefined
+    const previousLastRecord = directoryRef.current?.[data.dni]?.lastRecordType ?? null
+
+    if (!requiresGeo) {
+      if (directoryRef.current && directoryRef.current[data.dni]) {
+        directoryRef.current[data.dni] = {
+          ...directoryRef.current[data.dni],
+          lastRecordType: type,
+        }
+      }
+      toast.success(
+        `✓ Se registró exitosamente su ${type.toLowerCase()}: ${currentUser.name} (${targetCampusName})`,
+        { duration: 4000 }
+      )
+      resetForm()
+      setIsSubmitting(null)
+
+      // Persistir en segundo plano sin bloquear la pantalla
+      void (async () => {
+        try {
+          const res = await registerAttendanceAction({
+            userId: currentUser.id,
+            role: detectedRole,
+            type,
+            shift: currentShift,
+            campusId: targetCampusName,
+            courseId: resolvedCourse,
+            expectedEntryTime: resolvedExpectedEntry,
+            clientTimestamp: new Date(),
+            location,
+            isOfflineSync: false,
+          })
+          if (!res.success) {
+            if (directoryRef.current && directoryRef.current[data.dni]) {
+              directoryRef.current[data.dni] = {
+                ...directoryRef.current[data.dni],
+                lastRecordType: previousLastRecord,
+              }
+            }
+            toast.error(res.message)
+          }
+        } catch (error) {
+          console.warn("Fallo de red en registro en segundo plano, guardando en memoria local:", error)
+          const newRecord = {
+            dni: data.dni,
+            role: detectedRole,
+            type,
+            campusId: targetCampusName,
+            courseId: resolvedCourse,
+            location,
+            timestamp: new Date().toISOString(),
+          }
+          const localData = JSON.parse(localStorage.getItem("offline_records") || "[]")
+          localData.push(newRecord)
+          localStorage.setItem("offline_records", JSON.stringify(localData))
+          setPendingOfflineCount(localData.length)
+        }
+      })()
+      return
+    }
+
     try {
       const res = await registerAttendanceAction({
-        userId: validatedUser!.id,
+        userId: currentUser.id,
         role: detectedRole,
         type,
-        shift: selectedShift || undefined,
+        shift: currentShift,
         campusId: targetCampusName,
         courseId: resolvedCourse,
         expectedEntryTime: resolvedExpectedEntry,
@@ -443,6 +548,12 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       })
 
       if (res.success) {
+        if (directoryRef.current && directoryRef.current[data.dni]) {
+          directoryRef.current[data.dni] = {
+            ...directoryRef.current[data.dni],
+            lastRecordType: type,
+          }
+        }
         toast.success(res.message, { duration: 5000 })
         resetForm()
       } else {

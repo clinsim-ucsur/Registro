@@ -36,7 +36,7 @@ export interface UserDailyProgramSummary {
   matchedRoleInSession?: "DOCENTE_LIDER" | "DOCENTE_COLABORADOR" | "PACIENTE_ESTANDARIZADO"
   entryTime: string // Hora Inicio de la programación más temprana ("HH:mm")
   exitTime: string // Hora Fin de la última programación del día ("HH:mm")
-  ambiente: string // Ambiente de la programación más temprana
+  ambiente: string // Ambiente de la programación más temprana (sin código)
   piso: string // Piso de la programación más temprana
   sesion: string // Sesión de la programación más temprana
   courseName: string // Curso oficial mapeado de la programación más temprana
@@ -52,13 +52,14 @@ export interface UserDailyProgramSummary {
   }[]
 }
 
-// Caché en memoria (TTL: 2 minutos) para respuesta instantánea al digitar DNI
+// Caché en memoria con Stale-While-Revalidate para respuesta instantánea (0ms cuando está caliente)
 let cachedSessions: {
   data: NormalizedProgramSession[]
   expiresAt: number
 } | null = null
+let inflightRefresh: Promise<NormalizedProgramSession[]> | null = null
 
-const CACHE_TTL_MS = 2 * 60 * 1000
+const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutos fresco, luego refresca en segundo plano sin bloquear
 
 /**
  * Normaliza una cadena de hora (ej. "7:00", "08:40", "16:10") a formato "HH:mm" y minutos del día.
@@ -215,77 +216,97 @@ function normalizeRawSessions(rawList: RawProgramSession[]): NormalizedProgramSe
   return normalized
 }
 
-/**
- * Obtiene las sesiones programadas del día desde la API 1 (JSON) o API 2 (Google Sheet CSV como respaldo).
- */
-export async function fetchDailyProgramSessions(): Promise<NormalizedProgramSession[]> {
-  const now = Date.now()
-  if (cachedSessions && cachedSessions.expiresAt > now) {
-    return cachedSessions.data
-  }
-
-  // 1. Intentar con API 1 (Google Apps Script JSON)
+async function fetchFromApi2Csv(): Promise<NormalizedProgramSession[]> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 5000)
   try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 6500)
-    const res = await fetch(API_1_JSON_URL, {
-      signal: controller.signal,
-      cache: "no-store",
-    })
-    clearTimeout(timer)
-
-    if (res.ok) {
-      const json = await res.json()
-      if (json && Array.isArray(json.sesiones)) {
-        const parsed = normalizeRawSessions(json.sesiones)
-        cachedSessions = { data: parsed, expiresAt: now + CACHE_TTL_MS }
-        return parsed
-      }
-    }
-  } catch (err) {
-    console.warn("[daily-program-api] Falló API 1 JSON, intentando respaldo API 2 CSV:", err)
-  }
-
-  // 2. Respaldo con API 2 (Google Sheets CSV export)
-  try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 6500)
     const res = await fetch(API_2_CSV_URL, {
       signal: controller.signal,
       cache: "no-store",
     })
-    clearTimeout(timer)
-
-    if (res.ok) {
-      const csvText = await res.text()
-      const lines = csvText.split(/\r?\n/).filter((l) => l.trim().length > 0)
-      if (lines.length > 1) {
-        const rawList: RawProgramSession[] = []
-        for (let i = 1; i < lines.length; i++) {
-          const cols = parseCsvLine(lines[i])
-          if (cols.length >= 8) {
-            rawList.push({
-              Piso: cols[0],
-              Ambiente: cols[1],
-              "Sesión": cols[2],
-              "Hora Inicio": cols[3],
-              "Hora Fin": cols[4],
-              "Docente Líder": cols[5],
-              "Docentes Colaboradores": cols[6],
-              "Pacientes Estandarizados": cols[7],
-            })
-          }
-        }
-        const parsed = normalizeRawSessions(rawList)
-        cachedSessions = { data: parsed, expiresAt: now + CACHE_TTL_MS }
-        return parsed
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const csvText = await res.text()
+    const lines = csvText.split(/\r?\n/).filter((l) => l.trim().length > 0)
+    if (lines.length <= 1) throw new Error("CSV vacío")
+    const rawList: RawProgramSession[] = []
+    for (let i = 1; i < lines.length; i++) {
+      const cols = parseCsvLine(lines[i])
+      if (cols.length >= 8) {
+        rawList.push({
+          Piso: cols[0],
+          Ambiente: cols[1],
+          "Sesión": cols[2],
+          "Hora Inicio": cols[3],
+          "Hora Fin": cols[4],
+          "Docente Líder": cols[5],
+          "Docentes Colaboradores": cols[6],
+          "Pacientes Estandarizados": cols[7],
+        })
       }
     }
-  } catch (err) {
-    console.warn("[daily-program-api] Falló API 2 CSV:", err)
+    const parsed = normalizeRawSessions(rawList)
+    if (parsed.length === 0) throw new Error("Sin sesiones válidas en CSV")
+    return parsed
+  } finally {
+    clearTimeout(timer)
   }
+}
 
-  return cachedSessions ? cachedSessions.data : []
+async function fetchFromApi1Json(): Promise<NormalizedProgramSession[]> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 6000)
+  try {
+    const res = await fetch(API_1_JSON_URL, {
+      signal: controller.signal,
+      cache: "no-store",
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const json = await res.json()
+    if (!json || !Array.isArray(json.sesiones)) throw new Error("JSON inválido")
+    const parsed = normalizeRawSessions(json.sesiones)
+    if (parsed.length === 0) throw new Error("Sin sesiones válidas en JSON")
+    return parsed
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function refreshDailyProgramCache(): Promise<NormalizedProgramSession[]> {
+  if (inflightRefresh) return inflightRefresh
+  inflightRefresh = (async () => {
+    try {
+      // Competencia en paralelo: responde el que llegue más rápido (API 2 CSV suele responder 3x más rápido que Apps Script)
+      const fastest = await Promise.any([fetchFromApi2Csv(), fetchFromApi1Json()])
+      cachedSessions = {
+        data: fastest,
+        expiresAt: Date.now() + CACHE_TTL_MS,
+      }
+      return fastest
+    } catch (err) {
+      console.warn("[daily-program-api] No se pudo actualizar desde API 1 / API 2:", err)
+      return cachedSessions ? cachedSessions.data : []
+    } finally {
+      inflightRefresh = null
+    }
+  })()
+  return inflightRefresh
+}
+
+/**
+ * Obtiene las sesiones programadas del día de forma ultra-rápida:
+ * - Si hay datos en caché (frescos o ligeramente vencidos), responde en 0ms y refresca en segundo plano.
+ * - Si es la primera carga en frío, compite en paralelo entre API 2 (CSV rápido) y API 1 (JSON).
+ */
+export async function fetchDailyProgramSessions(): Promise<NormalizedProgramSession[]> {
+  const now = Date.now()
+  if (cachedSessions) {
+    if (cachedSessions.expiresAt <= now && !inflightRefresh) {
+      // Stale-while-revalidate: refrescar en segundo plano sin hacer esperar al usuario
+      void refreshDailyProgramCache()
+    }
+    return cachedSessions.data
+  }
+  return refreshDailyProgramCache()
 }
 
 // ------------------------------------------------------------------
@@ -374,7 +395,6 @@ function matchesSessionField(userName: string, fieldValue: string): boolean {
   if (!fieldValue || fieldValue.trim().toLowerCase() === "ninguno") return false
   if (isSamePersonName(userName, fieldValue)) return true
 
-  // Si hay múltiples nombres separados por slash, punto y coma o salto de línea
   const parts = fieldValue.split(/[;/\n]+/).map((p) => p.trim()).filter(Boolean)
   if (parts.length > 1) {
     return parts.some((part) => isSamePersonName(userName, part))
@@ -382,18 +402,12 @@ function matchesSessionField(userName: string, fieldValue: string): boolean {
   return false
 }
 
-/**
- * Obtiene el resumen de programación del día para un Docente o Paciente Simulado.
- * - Toma como referencia de ingreso la programación MÁS TEMPRANA del día (Hora Inicio, Ambiente y Curso).
- * - Toma como fin de su turno la ÚLTIMA programación del día (Hora Fin más tardía).
- */
-export async function getDailyProgramForUser(
+export function matchDailyProgramFromSessions(
+  allSessions: NormalizedProgramSession[],
   userName: string,
   userRole: Role,
   fallbackCampusName?: string | null
-): Promise<UserDailyProgramSummary> {
-  const allSessions = await fetchDailyProgramSessions()
-
+): UserDailyProgramSummary {
   const matchedSessions: {
     session: NormalizedProgramSession
     roleInSession: "DOCENTE_LIDER" | "DOCENTE_COLABORADOR" | "PACIENTE_ESTANDARIZADO"
@@ -462,3 +476,14 @@ export async function getDailyProgramForUser(
   }
 }
 
+/**
+ * Obtiene el resumen de programación del día para un Docente o Paciente Simulado.
+ */
+export async function getDailyProgramForUser(
+  userName: string,
+  userRole: Role,
+  fallbackCampusName?: string | null
+): Promise<UserDailyProgramSummary> {
+  const allSessions = await fetchDailyProgramSessions()
+  return matchDailyProgramFromSessions(allSessions, userName, userRole, fallbackCampusName)
+}
