@@ -815,11 +815,10 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
           <button
             type="button"
             onClick={() => setShowKioskModal((prev) => !prev)}
-            className="flex items-center gap-1 font-bold text-slate-500 hover:text-slate-800 bg-white hover:bg-slate-100 px-2.5 py-1 rounded-full border border-slate-200 transition-colors cursor-pointer"
-            title="Vincular equipo fijo de la sede (no requiere GPS)"
+            aria-label="Configuración administrativa"
+            className="p-1 rounded-full text-slate-300 opacity-25 hover:opacity-80 hover:text-slate-500 transition-opacity cursor-pointer"
           >
-            <Lock size={11} />
-            <span>{kioskConfig ? "Estación Activa" : "Estación Fija"}</span>
+            <Lock size={10} />
           </button>
         </div>
       </div>
