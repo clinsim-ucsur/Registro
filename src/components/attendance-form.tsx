@@ -5,61 +5,78 @@ import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
 import { Role, RecordType, Shift } from "@prisma/client"
-import { validateUserAction, registerAttendanceAction, syncOfflineRecordsAction, getTodayAttendanceStateAction } from "@/actions/attendance"
-import { getTodayTechnicianAssignmentAction } from "@/actions/schedules"
+import { validateUserAction, registerAttendanceAction, syncOfflineRecordsAction } from "@/actions/attendance"
+import { type UserDailyProgramSummary } from "@/lib/daily-program-api"
 import { toast } from "sonner"
 import {
-  Loader2, LogIn, LogOut, Search, UserCheck, CheckCircle2, WifiOff,
-  Wifi, RefreshCw, ShieldCheck, AlertCircle, AlertTriangle
+  Loader2,
+  LogIn,
+  LogOut,
+  Search,
+  UserCheck,
+  WifiOff,
+  Wifi,
+  RefreshCw,
+  ShieldCheck,
+  Clock,
+  MapPin,
+  DoorOpen,
+  BookOpen,
+  BadgeCheck,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { checkGeofence, detectAndValidateCampus, resolveGeoCampuses, isGeoActive, type GeoCampus } from "@/lib/geofence"
+import { detectAndValidateCampus, resolveGeoCampuses, isGeoActive, type GeoCampus } from "@/lib/geofence"
 
 const formSchema = z.object({
-  role: z.nativeEnum(Role, { required_error: "Seleccione un rol" }),
-  campusId: z.string().optional(),
-  courseId: z.string().optional(),
   dni: z.string().length(8, "El DNI debe tener 8 dígitos numéricos").regex(/^\d+$/, "Solo números"),
 })
 
-const DEFAULT_CAMPUSES = [
-  "Campus Villa",
-  "Campus Norte",
-  "Campus Aramburú",
-  "Campus Ate"
-]
+const ROLE_UI_META: Record<
+  string,
+  { label: string; badgeClass: string; borderClass: string; accentBg: string }
+> = {
+  [Role.TECNICO]: {
+    label: "Técnico",
+    badgeClass: "bg-indigo-600 text-white",
+    borderClass: "border-indigo-200",
+    accentBg: "from-indigo-50/90 to-blue-50/70",
+  },
+  [Role.DOCENTE]: {
+    label: "Docente",
+    badgeClass: "bg-[#1967D2] text-white",
+    borderClass: "border-blue-200",
+    accentBg: "from-blue-50/90 to-slate-50/80",
+  },
+  [Role.PACIENTE_SIMULADO]: {
+    label: "Paciente Simulado",
+    badgeClass: "bg-emerald-600 text-white",
+    borderClass: "border-emerald-200",
+    accentBg: "from-emerald-50/90 to-teal-50/70",
+  },
+}
 
-const DEFAULT_COURSES = [
-  "Simulación Quirúrgica",
-  "Simulación Clínica Integrada (SCI)",
-  "Semiología Basada en Simulación (SBS)",
-  "Simulación Ginecológica",
-  "Simulación Pediátrica",
-  "Externado de Cirugía",
-  "Externado de Medicina",
-  "Externado de Pediatría",
-  "Externado de Ginecología",
-  "Primeros Auxilios",
-  "Medicina Legal",
-  "Ecografía",
-  "Otros"
-]
+const SHIFT_LABELS: Record<string, string> = {
+  MANANA: "Mañana",
+  INTERMEDIO: "Intermedio",
+  TARDE: "Tarde",
+  NOCHE: "Noche",
+}
 
 interface AttendanceFormProps {
   campuses?: (Partial<GeoCampus> & { id: string; name: string })[]
   courses?: { id: string; name: string }[]
 }
 
-export default function AttendanceForm({ campuses: propCampuses, courses: propCourses }: AttendanceFormProps = {}) {
+export default function AttendanceForm({ campuses: propCampuses }: AttendanceFormProps = {}) {
   const [isValidating, setIsValidating] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState<RecordType | null>(null)
   const [validatedUser, setValidatedUser] = useState<{
     id: string
     name: string
+    role: Role
     campusId?: string | null
     campusName?: string | null
     defaultShift?: string | null
@@ -68,37 +85,48 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
     campusName: string | null
     shift: string
     expectedEntryTime: string
+    expectedExitTime?: string
     source: "SCHEDULE" | "DEFAULT_PROFILE"
   } | null>(null)
+  const [dailyProgram, setDailyProgram] = useState<UserDailyProgramSummary | null>(null)
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null)
   const [isOffline, setIsOffline] = useState(false)
   const [todayLastRecord, setTodayLastRecord] = useState<RecordType | null | "loading">(null)
+  const [markingTimeStr, setMarkingTimeStr] = useState<string>("")
 
   const [isContingencyMode, setIsContingencyMode] = useState(false)
   const [connectionError, setConnectionError] = useState(false)
   const [pendingOfflineCount, setPendingOfflineCount] = useState(0)
-  const [selectResetKey, setSelectResetKey] = useState(0)
-
-  const availableCampuses = (propCampuses && propCampuses.length > 0)
-    ? propCampuses.map(c => c.name)
-    : DEFAULT_CAMPUSES
-
-  const availableCourses = (propCourses && propCourses.length > 0)
-    ? propCourses.map(c => c.name)
-    : DEFAULT_COURSES
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      role: Role.DOCENTE,
       dni: "",
     },
   })
 
+  // Reloj en vivo para mostrar la hora exacta en que está marcando el usuario en el resumen
+  useEffect(() => {
+    const updateClock = () => {
+      const now = new Date()
+      const formatted = new Intl.DateTimeFormat("es-PE", {
+        timeZone: "America/Lima",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(now)
+      setMarkingTimeStr(formatted)
+    }
+    updateClock()
+    const timer = setInterval(updateClock, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
   // Detección y Sincronización Offline
   const syncOfflineRecords = async () => {
     if (typeof window === "undefined") return
-    const localData = localStorage.getItem('offline_records')
+    const localData = localStorage.getItem("offline_records")
     if (!localData) {
       setPendingOfflineCount(0)
       return
@@ -114,7 +142,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       setPendingOfflineCount(records.length)
       const res = await syncOfflineRecordsAction(records)
       if (res.success) {
-        localStorage.removeItem('offline_records')
+        localStorage.removeItem("offline_records")
         setPendingOfflineCount(0)
         setIsContingencyMode(false)
         toast.success(`Se sincronizaron automáticamente ${res.syncedCount} registros locales.`)
@@ -130,7 +158,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
   useEffect(() => {
     if (typeof window !== "undefined") {
       setIsOffline(!navigator.onLine)
-      const localData = localStorage.getItem('offline_records')
+      const localData = localStorage.getItem("offline_records")
       if (localData) {
         try {
           const recs = JSON.parse(localData)
@@ -149,73 +177,64 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       toast.error("Sin conexión a Internet. Activando Modo Offline.")
     }
 
-    window.addEventListener('online', handleOnline)
-    window.addEventListener('offline', handleOffline)
+    window.addEventListener("online", handleOnline)
+    window.addEventListener("offline", handleOffline)
 
     if (typeof window !== "undefined" && navigator.onLine) {
       syncOfflineRecords()
     }
 
     return () => {
-      window.removeEventListener('online', handleOnline)
-      window.removeEventListener('offline', handleOffline)
+      window.removeEventListener("online", handleOnline)
+      window.removeEventListener("offline", handleOffline)
     }
   }, [])
 
-  const watchRole = form.watch("role")
   const watchDni = form.watch("dni")
-  const showExtraFields = watchRole === Role.DOCENTE || watchRole === Role.PACIENTE_SIMULADO
 
-  const resetFormPreservingRole = (roleToKeep: Role) => {
-    form.reset({
-      role: roleToKeep,
-      dni: "",
-      campusId: undefined,
-      courseId: undefined,
-    })
-    setSelectResetKey((prev) => prev + 1)
+  const resetForm = () => {
+    form.reset({ dni: "" })
     setValidatedUser(null)
     setTodayLastRecord(null)
     setTechnicianAssignment(null)
-    setSelectedShift(null)
-    setConnectionError(false)
-  }
-
-  const handleRoleChange = (newRole: Role) => {
-    if (newRole === watchRole) return
-    form.setValue("role", newRole)
-    form.setValue("dni", "")
-    form.setValue("campusId", undefined)
-    form.setValue("courseId", undefined)
-    setSelectResetKey((prev) => prev + 1)
-    setValidatedUser(null)
-    setTodayLastRecord(null)
-    setTechnicianAssignment(null)
+    setDailyProgram(null)
     setSelectedShift(null)
     setConnectionError(false)
   }
 
   useEffect(() => {
     if (watchDni?.length === 8) {
-      validateDni(watchDni, watchRole)
+      validateDni(watchDni)
     } else {
       setValidatedUser(null)
       setTodayLastRecord(null)
+      setTechnicianAssignment(null)
+      setDailyProgram(null)
+      setSelectedShift(null)
       setConnectionError(false)
     }
-  }, [watchDni, watchRole])
+  }, [watchDni])
 
-  const validateDni = async (dni: string, role: Role, retryAttempts = 1) => {
+  const validateDni = async (dni: string, retryAttempts = 1) => {
     if (isOffline || isContingencyMode) {
-      setValidatedUser({ id: `offline_${dni}`, name: `Usuario DNI: ${dni} (Modo Local)` })
+      setValidatedUser({
+        id: `offline_${dni}`,
+        name: `Usuario DNI: ${dni} (Modo Local)`,
+        role: Role.TECNICO,
+        campusName: "Campus Villa",
+      })
       setTodayLastRecord(null)
       setTechnicianAssignment(null)
+      setDailyProgram(null)
       setConnectionError(false)
       return
     }
 
     setIsValidating(true)
     setConnectionError(false)
+    setValidatedUser(null)
+    setTechnicianAssignment(null)
+    setDailyProgram(null)
 
     try {
       let res: any = null
@@ -223,7 +242,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
 
       for (let attempt = 0; attempt <= retryAttempts; attempt++) {
         try {
-          res = await validateUserAction(dni, role)
+          res = await validateUserAction(dni)
           break
         } catch (err) {
           lastError = err
@@ -239,27 +258,29 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
 
       if (res.success && res.user) {
         setValidatedUser(res.user)
-        toast.success(`Usuario encontrado: ${res.user.name}`)
+        toast.success(`Identificado: ${res.user.name}`)
 
-        // Asignación de técnico recibida directamente en 1 roundtrip
-        if (role === Role.TECNICO && res.technicianAssignment) {
+        if (res.user.role === Role.TECNICO && res.technicianAssignment) {
           setTechnicianAssignment(res.technicianAssignment)
           setSelectedShift((res.technicianAssignment.shift as Shift) || null)
-          if (res.technicianAssignment.campusName) {
-            form.setValue("campusId", res.technicianAssignment.campusName)
-          }
         } else {
           setTechnicianAssignment(null)
           setSelectedShift(null)
         }
 
-        // Estado del día recibido directamente
+        if (res.dailyProgram) {
+          setDailyProgram(res.dailyProgram)
+        } else {
+          setDailyProgram(null)
+        }
+
         setTodayLastRecord(res.lastRecordType ?? null)
         setConnectionError(false)
       } else {
         setValidatedUser(null)
         setTodayLastRecord(null)
         setTechnicianAssignment(null)
+        setDailyProgram(null)
         setSelectedShift(null)
         if (res.isComision) {
           toast.info(res.message, { duration: 9000, icon: "✈️" })
@@ -287,10 +308,9 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       const timer = setTimeout(() => {
         if (!finished) {
           finished = true
-          // Reintentar sin highAccuracy (usando red/antenas) si el satélite GPS tarda mucho
           navigator.geolocation.getCurrentPosition(
             (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy }),
-            (err) => reject(new Error("Tiempo de espera agotado al obtener el GPS. Asegúrese de tener el GPS activado.")),
+            () => reject(new Error("Tiempo de espera agotado al obtener el GPS. Asegúrese de tener el GPS activado.")),
             { enableHighAccuracy: false, timeout: 6000, maximumAge: 10000 }
           )
         }
@@ -308,11 +328,13 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
           if (!finished) {
             finished = true
             clearTimeout(timer)
-            reject(new Error(
-              err.code === err.PERMISSION_DENIED
-                ? "Debe permitir el acceso a su ubicación para marcar asistencia."
-                : "No se pudo obtener su ubicación GPS. Active el GPS o acérquese a una ventana."
-            ))
+            reject(
+              new Error(
+                err.code === err.PERMISSION_DENIED
+                  ? "Debe permitir el acceso a su ubicación para marcar asistencia."
+                  : "No se pudo obtener su ubicación GPS. Active el GPS o acérquese a una ventana."
+              )
+            )
           }
         },
         { enableHighAccuracy: true, timeout: 7000, maximumAge: 0 }
@@ -325,10 +347,19 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       return
     }
 
-    if (showExtraFields && (!data.campusId || !data.courseId)) {
-      toast.error("Por favor seleccione Sede y Curso")
-      return
-    }
+    const detectedRole = validatedUser?.role || Role.TECNICO
+    const resolvedCampus =
+      technicianAssignment?.campusName ||
+      (dailyProgram?.found ? dailyProgram.campusName : null) ||
+      validatedUser?.campusName ||
+      "Campus Villa"
+    const resolvedCourse = dailyProgram?.found ? dailyProgram.courseName : undefined
+    const resolvedExpectedEntry =
+      detectedRole === Role.TECNICO
+        ? technicianAssignment?.expectedEntryTime
+        : dailyProgram?.found
+          ? dailyProgram.entryTime
+          : undefined
 
     setIsSubmitting(type)
 
@@ -343,28 +374,25 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       radiusMeters: c.radiusMeters ?? 500,
     }))
 
-    // Sede tentativa para evaluar si la sede destino requiere GPS
-    const tentativeCampusName = data.campusId || technicianAssignment?.campusName || validatedUser?.campusName || undefined
     const resolvedCampuses = resolveGeoCampuses(geoCampuses)
-    const targetCampusConfig = tentativeCampusName
-      ? resolvedCampuses.find((c) => c.name.toLowerCase() === tentativeCampusName.toLowerCase())
+    const targetCampusConfig = resolvedCampus
+      ? resolvedCampuses.find((c) => c.name.toLowerCase() === resolvedCampus.toLowerCase())
       : null
 
-    // La geolocalización solo se exige si está activada en la opción de Sedes y Cursos
-    const requiresGeo = targetCampusConfig
-      ? isGeoActive(targetCampusConfig)
-      : resolvedCampuses.some(isGeoActive)
+    const requiresGeo = targetCampusConfig ? isGeoActive(targetCampusConfig) : resolvedCampuses.some(isGeoActive)
 
     if (requiresGeo && !isOffline && !isContingencyMode) {
       try {
         location = await getLocation()
       } catch (e: any) {
-        toast.error(e.message || "Se requiere acceso a su ubicación GPS para registrar la asistencia en esta sede.", { duration: 6000 })
+        toast.error(e.message || "Se requiere acceso a su ubicación GPS para registrar la asistencia en esta sede.", {
+          duration: 6000,
+        })
         setIsSubmitting(null)
         return
       }
 
-      const geoResult = detectAndValidateCampus(location, geoCampuses, tentativeCampusName)
+      const geoResult = detectAndValidateCampus(location, geoCampuses, resolvedCampus)
       if (!geoResult.allowed) {
         toast.error(geoResult.error || "Ubicación fuera del perímetro de la sede autorizada.", { duration: 8000 })
         setIsSubmitting(null)
@@ -374,27 +402,28 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
       detectedCampusName = geoResult.detectedCampusName || undefined
     }
 
-    const targetCampusName = data.campusId || detectedCampusName || tentativeCampusName || "Campus Villa"
-    
-    // Si está offline o en modo contingencia local por red inestable
+    const targetCampusName = detectedCampusName || resolvedCampus || "Campus Villa"
+
     if (isOffline || isContingencyMode) {
-      const fallbackCampus = targetCampusName || "Campus Villa"
       const newRecord = {
         dni: data.dni,
-        role: data.role,
-        type: type,
-        campusId: fallbackCampus,
-        courseId: data.courseId,
+        role: detectedRole,
+        type,
+        campusId: targetCampusName,
+        courseId: resolvedCourse,
         location,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       }
-      const localData = JSON.parse(localStorage.getItem('offline_records') || '[]')
+      const localData = JSON.parse(localStorage.getItem("offline_records") || "[]")
       localData.push(newRecord)
-      localStorage.setItem('offline_records', JSON.stringify(localData))
+      localStorage.setItem("offline_records", JSON.stringify(localData))
       setPendingOfflineCount(localData.length)
 
-      toast.success(`✅ Marcación (${type === "ENTRADA" ? "Ingreso" : "Salida"}) guardada en la memoria local del dispositivo. Se sincronizará automáticamente.`, { duration: 7000 })
-      resetFormPreservingRole(watchRole)
+      toast.success(
+        `✅ Marcación (${type === "ENTRADA" ? "Ingreso" : "Salida"}) guardada en la memoria local del dispositivo. Se sincronizará automáticamente.`,
+        { duration: 7000 }
+      )
+      resetForm()
       setIsSubmitting(null)
       return
     }
@@ -402,49 +431,53 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
     try {
       const res = await registerAttendanceAction({
         userId: validatedUser!.id,
-        role: data.role,
-        type: type,
+        role: detectedRole,
+        type,
         shift: selectedShift || undefined,
-        campusId: targetCampusName, 
-        courseId: data.courseId,
+        campusId: targetCampusName,
+        courseId: resolvedCourse,
+        expectedEntryTime: resolvedExpectedEntry,
         clientTimestamp: new Date(),
         location,
-        isOfflineSync: false 
+        isOfflineSync: false,
       })
 
       if (res.success) {
         toast.success(res.message, { duration: 5000 })
-        resetFormPreservingRole(watchRole)
+        resetForm()
       } else {
         toast.error(res.message)
       }
     } catch (error: any) {
       console.warn("Fallo de red en registro online, activando respaldo local:", error)
-      // Respaldo automático local para que el colaborador no pierda su marcación ni su hora
-      const fallbackCampus = targetCampusName || "Campus Villa"
       const newRecord = {
         dni: data.dni,
-        role: data.role,
-        type: type,
-        campusId: fallbackCampus,
-        courseId: data.courseId,
+        role: detectedRole,
+        type,
+        campusId: targetCampusName,
+        courseId: resolvedCourse,
         location,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       }
-      const localData = JSON.parse(localStorage.getItem('offline_records') || '[]')
+      const localData = JSON.parse(localStorage.getItem("offline_records") || "[]")
       localData.push(newRecord)
-      localStorage.setItem('offline_records', JSON.stringify(localData))
+      localStorage.setItem("offline_records", JSON.stringify(localData))
       setPendingOfflineCount(localData.length)
 
-      toast.warning(`La red se interrumpió, pero su marcación (${type}) fue guardada de inmediato en el dispositivo y se sincronizará automáticamente.`, { duration: 8000 })
-      resetFormPreservingRole(watchRole)
+      toast.warning(
+        `La red se interrumpió, pero su marcación (${type}) fue guardada de inmediato en el dispositivo y se sincronizará automáticamente.`,
+        { duration: 8000 }
+      )
+      resetForm()
     } finally {
       setIsSubmitting(null)
     }
   }
 
+  const roleMeta = validatedUser ? ROLE_UI_META[validatedUser.role] || ROLE_UI_META[Role.DOCENTE] : null
+
   return (
-    <div className="bg-white rounded-[2rem] p-8 md:p-10 shadow-[0_45px_75px_-15px_rgba(0,0,0,0.6)] w-full relative overflow-hidden transition-all duration-500 hover:-translate-y-2">
+    <div className="bg-white rounded-[2rem] p-8 md:p-10 shadow-[0_45px_75px_-15px_rgba(0,0,0,0.6)] w-full relative overflow-hidden transition-all duration-500">
       <div className="absolute top-0 left-0 w-full h-2.5 bg-gradient-to-r from-blue-400 to-[#1967D2]"></div>
 
       {/* Barra de Estado de Conexión y Diagnóstico de Red */}
@@ -478,161 +511,65 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
         )}
       </div>
 
-      <h2 className="text-2xl md:text-3xl font-black text-slate-800 mb-8 text-center tracking-wide">
-        Registro de Asistencia
-      </h2>
+      <div className="text-center mb-7">
+        <h2 className="text-2xl md:text-3xl font-black text-slate-800 tracking-wide">
+          Registro de Asistencia
+        </h2>
+        <p className="text-slate-500 text-xs md:text-sm font-medium mt-1">
+          Ingrese su número de DNI para identificar automáticamente su rol, sede y programación del día
+        </p>
+      </div>
 
       <Form {...form}>
-        <form className="space-y-8">
-          
-          {/* Selector de Rol de Usuario limpio con color diferencial por rol */}
-          <FormField
-            control={form.control}
-            name="role"
-            render={({ field }) => (
-              <FormItem className="space-y-2">
-                <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">
-                  Rol del Usuario
-                </FormLabel>
-
-                <div className="grid grid-cols-3 gap-3">
-                  {[
-                    {
-                      value: Role.DOCENTE,
-                      title: "Docente",
-                      activeClass: "bg-[#1967D2] text-white border-[#1967D2] shadow-sm",
-                    },
-                    {
-                      value: Role.TECNICO,
-                      title: "Técnico",
-                      activeClass: "bg-indigo-600 text-white border-indigo-600 shadow-sm",
-                    },
-                    {
-                      value: Role.PACIENTE_SIMULADO,
-                      title: "Paciente Sim.",
-                      activeClass: "bg-emerald-600 text-white border-emerald-600 shadow-sm",
-                    },
-                  ].map((r) => {
-                    const isSelected = watchRole === r.value
-                    return (
-                      <button
-                        key={r.value}
-                        type="button"
-                        onClick={() => {
-                          field.onChange(r.value)
-                          handleRoleChange(r.value)
-                        }}
-                        className={`w-full py-4 px-2 rounded-xl border-2 text-center text-sm md:text-base font-bold transition-all duration-200 cursor-pointer ${
-                          isSelected
-                            ? `${r.activeClass}`
-                            : "bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200"
-                        }`}
-                      >
-                        {r.title}
-                      </button>
-                    )
-                  })}
-                </div>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          {showExtraFields && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 animate-fade-in-up">
-              <FormField
-                control={form.control}
-                name="campusId"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">
-                      Sede
-                    </FormLabel>
-                    <Select
-                      key={`campus-select-${selectResetKey}`}
-                      value={field.value || ""}
-                      onValueChange={(val) => field.onChange(val || undefined)}
-                    >
-                      <FormControl>
-                        <SelectTrigger className="h-16 text-lg font-normal bg-white border-2 border-slate-200 text-slate-800 rounded-xl focus:ring-[#1967D2] focus:border-[#1967D2]">
-                          <SelectValue placeholder="Seleccione Sede" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent alignItemWithTrigger={false} side="bottom" sideOffset={4} className="bg-white text-slate-800 border-slate-200 rounded-xl text-xl max-h-[300px] overflow-y-auto">
-                        {availableCampuses.map((cName) => (
-                          <SelectItem key={cName} value={cName} className="py-3">
-                            {cName}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name="courseId"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">
-                      Curso
-                    </FormLabel>
-                    <Select
-                      key={`course-select-${selectResetKey}`}
-                      value={field.value || ""}
-                      onValueChange={(val) => field.onChange(val || undefined)}
-                    >
-                      <FormControl>
-                        <SelectTrigger className="h-16 text-lg font-normal bg-white border-2 border-slate-200 text-slate-800 rounded-xl focus:ring-[#1967D2] focus:border-[#1967D2]">
-                          <SelectValue placeholder="Seleccione Curso" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent alignItemWithTrigger={false} side="bottom" sideOffset={4} className="bg-white text-slate-800 border-slate-200 rounded-xl text-xl max-h-[300px] overflow-y-auto">
-                        {availableCourses.map((crsName) => (
-                          <SelectItem key={crsName} value={crsName} className="py-3">
-                            {crsName}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
-          )}
-
+        <form className="space-y-6" onSubmit={(e) => e.preventDefault()}>
           <FormField
             control={form.control}
             name="dni"
             render={({ field }) => (
               <FormItem>
-                <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">Número de DNI</FormLabel>
+                <FormLabel className="text-slate-500 text-xs font-bold uppercase tracking-widest">
+                  Número de DNI
+                </FormLabel>
                 <FormControl>
                   <div className="relative">
                     <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-slate-400" size={24} />
-                    <Input 
-                      placeholder="Ingrese sus 8 dígitos" 
+                    <Input
+                      placeholder="Ingrese sus 8 dígitos"
                       maxLength={8}
-                      className="h-20 pl-14 bg-slate-50 border-2 border-slate-200 text-slate-900 text-2xl font-black tracking-[0.4em] rounded-xl focus-visible:ring-[#1967D2] focus-visible:border-[#1967D2] transition-all placeholder:text-slate-300 placeholder:tracking-normal placeholder:font-medium"
+                      autoFocus
+                      className="h-20 pl-14 pr-14 bg-slate-50 border-2 border-slate-200 text-slate-900 text-2xl font-black tracking-[0.4em] rounded-xl focus-visible:ring-[#1967D2] focus-visible:border-[#1967D2] transition-all placeholder:text-slate-300 placeholder:tracking-normal placeholder:font-medium"
                       {...field}
-                      onChange={e => {
-                        const val = e.target.value.replace(/\D/g, '');
-                        field.onChange(val);
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/\D/g, "")
+                        field.onChange(val)
                       }}
                     />
                     {isValidating && (
-                      <Loader2 className="absolute right-5 top-1/2 -translate-y-1/2 text-[#1967D2] animate-spin" size={24} />
+                      <Loader2 className="absolute right-5 top-1/2 -translate-y-1/2 text-[#1967D2] animate-spin" size={26} />
                     )}
-                    {validatedUser && (
+                    {validatedUser && !isValidating && (
                       <UserCheck className="absolute right-5 top-1/2 -translate-y-1/2 text-emerald-500" size={28} />
                     )}
                   </div>
                 </FormControl>
 
-                {connectionError && (
+                {/* Pantalla de carga mientras el sistema analiza el DNI y su programación */}
+                {isValidating && (
+                  <div className="mt-4 rounded-2xl border border-blue-200 bg-gradient-to-r from-blue-50/90 to-indigo-50/70 p-6 flex flex-col items-center justify-center gap-3 text-center animate-fade-in-up">
+                    <Loader2 size={32} className="text-[#1967D2] animate-spin" />
+                    <div className="space-y-0.5">
+                      <p className="text-sm font-black text-slate-800">
+                        Analizando DNI y programación del día...
+                      </p>
+                      <p className="text-xs font-medium text-slate-500">
+                        Verificando rol, horario de entrada/salida, sede y ambiente asignado
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Alerta de error de conexión con opción de Modo Contingencia Local */}
+                {connectionError && !isValidating && (
                   <div className="rounded-2xl border border-amber-300 bg-amber-50/90 p-4 text-xs space-y-2.5 mt-3 animate-fade-in-up shadow-xs">
                     <div className="flex items-center gap-2 font-black text-amber-900">
                       <WifiOff size={16} className="text-amber-700" />
@@ -645,7 +582,7 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                       <Button
                         type="button"
                         size="sm"
-                        onClick={() => validateDni(watchDni, watchRole, 2)}
+                        onClick={() => validateDni(watchDni, 2)}
                         disabled={isValidating}
                         className="h-9 px-4 rounded-xl font-black bg-amber-600 hover:bg-amber-700 text-white shadow-xs"
                       >
@@ -657,7 +594,12 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                         variant="outline"
                         onClick={() => {
                           setIsContingencyMode(true)
-                          setValidatedUser({ id: `offline_${watchDni}`, name: `Usuario DNI: ${watchDni} (Modo Local)` })
+                          setValidatedUser({
+                            id: `offline_${watchDni}`,
+                            name: `Usuario DNI: ${watchDni} (Modo Local)`,
+                            role: Role.TECNICO,
+                            campusName: "Campus Villa",
+                          })
                           setConnectionError(false)
                           toast.info("Modo contingencia activado: Su marcación se guardará de inmediato en el dispositivo.")
                         }}
@@ -669,86 +611,209 @@ export default function AttendanceForm({ campuses: propCampuses, courses: propCo
                   </div>
                 )}
 
-                {validatedUser && (
-                  <div className="space-y-2 mt-2">
-                    <p className="text-emerald-600 text-sm flex items-center gap-1.5 font-bold bg-emerald-50 p-2.5 rounded-md border border-emerald-100">
-                      <CheckCircle2 size={18}/>
-                      Validado: {validatedUser.name}
-                    </p>
+                {/* Resumen de Información al validar el DNI */}
+                {validatedUser && !isValidating && roleMeta && (
+                  <div
+                    className={`mt-4 rounded-2xl border-2 ${roleMeta.borderClass} bg-gradient-to-br ${roleMeta.accentBg} p-5 space-y-4 animate-fade-in-up shadow-xs`}
+                  >
+                    {/* Cabecera: Quién está marcando + Rol detectado */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200/80">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-9 h-9 rounded-xl bg-white shadow-xs border border-slate-200/80 flex items-center justify-center shrink-0">
+                          <BadgeCheck size={20} className="text-emerald-600" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                            Colaborador Identificado
+                          </p>
+                          <p className="text-base md:text-lg font-black text-slate-900 truncate">
+                            {validatedUser.name}
+                          </p>
+                        </div>
+                      </div>
+                      <span
+                        className={`text-xs font-black uppercase tracking-widest px-3.5 py-1.5 rounded-full shadow-xs ${roleMeta.badgeClass}`}
+                      >
+                        {roleMeta.label}
+                      </span>
+                    </div>
 
-                    {watchRole === Role.TECNICO && (
-                      <div className="p-3.5 rounded-xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200">
-                        <div className="flex items-center justify-between flex-wrap gap-2">
-                          <span className="text-xs font-black uppercase tracking-wider text-[#1967D2] flex items-center gap-1">
-                            📋 Sede Base / Asignada: {technicianAssignment?.campusName || validatedUser?.campusName || "Campus Villa"}
-                          </span>
-                          {technicianAssignment?.shift && (
-                            <span className="text-[11px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full bg-[#1967D2] text-white">
-                              Turno: {technicianAssignment.shift} ({technicianAssignment.expectedEntryTime})
-                            </span>
-                          )}
+                    {/* CASO 1: Resumen para TÉCNICOS (Quién marca, Hora que marca / turno y Sede) */}
+                    {validatedUser.role === Role.TECNICO && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
+                          <Clock size={18} className="text-indigo-600 mt-0.5 shrink-0" />
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                              Hora de Marcación y Turno
+                            </p>
+                            <p className="text-sm font-black text-slate-800">
+                              Marcando: <span className="text-indigo-700">{markingTimeStr}</span>
+                            </p>
+                            {technicianAssignment && (
+                              <p className="text-xs font-semibold text-slate-600 mt-0.5">
+                                Turno {SHIFT_LABELS[technicianAssignment.shift] || technicianAssignment.shift}:{" "}
+                                <span className="font-bold text-slate-800">
+                                  {technicianAssignment.expectedEntryTime} — {technicianAssignment.expectedExitTime || "15:00"}
+                                </span>
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
+                          <MapPin size={18} className="text-indigo-600 mt-0.5 shrink-0" />
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                              Sede Asignada
+                            </p>
+                            <p className="text-sm font-black text-slate-800">
+                              {technicianAssignment?.campusName || validatedUser.campusName || "Campus Villa"}
+                            </p>
+                            <p className="text-xs font-medium text-slate-500 mt-0.5">
+                              {technicianAssignment?.source === "SCHEDULE" ? "Según cronograma del día" : "Sede base asignada"}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* CASO 2: Resumen para DOCENTES y PACIENTES SIMULADOS */}
+                    {(validatedUser.role === Role.DOCENTE || validatedUser.role === Role.PACIENTE_SIMULADO) && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        {/* Hora de marcación y Horario (1er ingreso -> última salida del día) */}
+                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
+                          <Clock size={18} className="text-[#1967D2] mt-0.5 shrink-0" />
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                              Hora de Marcación y Horario
+                            </p>
+                            <p className="text-sm font-black text-slate-800">
+                              Marcando: <span className="text-[#1967D2]">{markingTimeStr}</span>
+                            </p>
+                            {dailyProgram?.found ? (
+                              <p className="text-xs font-semibold text-slate-600 mt-0.5">
+                                Turno hoy:{" "}
+                                <span className="font-black text-slate-900">
+                                  Ingreso {dailyProgram.entryTime} — Salida {dailyProgram.exitTime}
+                                </span>
+                              </p>
+                            ) : (
+                              <p className="text-xs font-medium text-amber-700 mt-0.5">
+                                Sin horario programado en lista de hoy
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Sede */}
+                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
+                          <MapPin size={18} className="text-[#1967D2] mt-0.5 shrink-0" />
+                          <div>
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                              Sede Asignada
+                            </p>
+                            <p className="text-sm font-black text-slate-800">
+                              {dailyProgram?.found
+                                ? dailyProgram.campusName
+                                : validatedUser.campusName || "Campus Villa"}
+                            </p>
+                            {dailyProgram?.found && dailyProgram.piso && (
+                              <p className="text-xs font-medium text-slate-500 mt-0.5">
+                                Ubicación: {dailyProgram.piso}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Ambiente donde ingresa */}
+                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
+                          <DoorOpen size={18} className="text-emerald-600 mt-0.5 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                              Ambiente Asignado
+                            </p>
+                            <p className="text-sm font-black text-slate-800 break-words">
+                              {dailyProgram?.found ? dailyProgram.ambiente : "Por asignar en sede"}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Curso / Sesión donde ingresa */}
+                        <div className="bg-white/90 rounded-xl p-3.5 border border-slate-200/70 flex items-start gap-3">
+                          <BookOpen size={18} className="text-emerald-600 mt-0.5 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                              Curso / Sesión de Ingreso
+                            </p>
+                            <p className="text-sm font-black text-slate-800 break-words">
+                              {dailyProgram?.found ? dailyProgram.courseName : "General"}
+                            </p>
+                            {dailyProgram?.found && dailyProgram.sesion && (
+                              <p className="text-xs font-medium text-slate-500 mt-0.5 truncate" title={dailyProgram.sesion}>
+                                {dailyProgram.sesion}
+                              </p>
+                            )}
+                          </div>
                         </div>
                       </div>
                     )}
                   </div>
                 )}
+
                 <FormMessage className="text-sm font-medium" />
               </FormItem>
             )}
           />
 
-          {/* Botones ENTRADA / SALIDA con lógica de secuencia */}
+          {/* Botón de Marcación ENTRADA / SALIDA según el estado del día */}
           {(() => {
-            // Determinar qué botón mostrar según el último registro de hoy
-            // null / "loading" = no hay registro → mostrar ENTRADA
-            // último fue ENTRADA → mostrar SALIDA
-            // último fue SALIDA → mostrar ENTRADA (posible nueva jornada o re-ingreso)
-            const isLoadingState = todayLastRecord === "loading"
+            const isLoadingState = todayLastRecord === "loading" || isValidating
             const lastType = isLoadingState ? null : (todayLastRecord as RecordType | null)
             const showEntrada = lastType !== RecordType.ENTRADA
             const showSalida = lastType === RecordType.ENTRADA
-            // Técnicos y Pacientes Sim. pueden marcar salida; Docentes registran solo Entrada
-            const canMarkSalida = watchRole !== Role.DOCENTE
 
-            const isButtonDisabled = (!validatedUser && !isOffline && !isContingencyMode) || isSubmitting !== null || isLoadingState
+            const isButtonDisabled =
+              (!validatedUser && !isOffline && !isContingencyMode) || isSubmitting !== null || isLoadingState
 
             return (
-              <div className="grid grid-cols-1 gap-5 pt-4">
+              <div className="grid grid-cols-1 gap-4 pt-2">
                 {showEntrada && (
                   <Button
                     type="button"
                     disabled={isButtonDisabled}
                     onClick={form.handleSubmit((d) => onSubmit(d, RecordType.ENTRADA))}
-                    className="h-20 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(25,103,210,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(25,103,210,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none"
+                    className="h-20 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(25,103,210,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(25,103,210,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none cursor-pointer"
                   >
-                    {isLoadingState ? <Loader2 size={24} className="animate-spin mr-2" /> :
-                      isSubmitting === RecordType.ENTRADA ? <Loader2 size={24} className="animate-spin mr-2" /> :
-                      <LogIn size={24} className="mr-2" />}
-                    {isLoadingState ? "Verificando..." : "ENTRADA"}
+                    {isLoadingState ? (
+                      <Loader2 size={24} className="animate-spin mr-2" />
+                    ) : isSubmitting === RecordType.ENTRADA ? (
+                      <Loader2 size={24} className="animate-spin mr-2" />
+                    ) : (
+                      <LogIn size={24} className="mr-2" />
+                    )}
+                    {isLoadingState ? "ANALIZANDO..." : "MARCAR ENTRADA"}
                   </Button>
                 )}
 
-                {showSalida && canMarkSalida && (
+                {showSalida && (
                   <Button
                     type="button"
                     disabled={isButtonDisabled}
                     onClick={form.handleSubmit((d) => onSubmit(d, RecordType.SALIDA))}
-                    className="h-20 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(15,23,42,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(15,23,42,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none"
+                    className="h-20 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-black text-xl shadow-[0_10px_20px_-5px_rgba(15,23,42,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(15,23,42,0.7)] transition-all hover:-translate-y-1 disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none cursor-pointer"
                   >
-                    {isSubmitting === RecordType.SALIDA ? <Loader2 size={24} className="animate-spin mr-2" /> : <LogOut size={24} className="mr-2" />}
-                    SALIDA
+                    {isSubmitting === RecordType.SALIDA ? (
+                      <Loader2 size={24} className="animate-spin mr-2" />
+                    ) : (
+                      <LogOut size={24} className="mr-2" />
+                    )}
+                    MARCAR SALIDA
                   </Button>
-                )}
-
-                {showSalida && !canMarkSalida && (
-                  <p className="text-center text-sm font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-xl py-4">
-                    ✅ Entrada ya registrada hoy. No se requiere marca de salida para Docentes.
-                  </p>
                 )}
               </div>
             )
           })()}
-
         </form>
       </Form>
     </div>

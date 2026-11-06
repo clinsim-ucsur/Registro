@@ -6,6 +6,8 @@ import prisma from "@/lib/prisma"
 import { limaMinutesOfDay, limaDayOfWeek } from "@/lib/timezone"
 import { detectAndValidateCampus } from "@/lib/geofence"
 import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
+import { getDailyProgramForUser, type UserDailyProgramSummary } from "@/lib/daily-program-api"
+import { calculateExpectedExitTime } from "@/lib/overtime"
 
 // Caché de sedes en memoria (TTL: 60s) para acelerar tiempos de respuesta de marcación
 let cachedCampuses: { data: any[]; expiresAt: number } | null = null
@@ -59,9 +61,9 @@ export async function getTodayAttendanceStateAction(userId: string): Promise<{
 }
 
 // ------------------------------------------------------------------
-// 1. REEMPLAZO DE `validarDNI(rol, dni)`
+// 1. VALIDACIÓN AUTOMÁTICA POR DNI (ROL, SEDE, HORARIO Y AMBIENTE)
 // ------------------------------------------------------------------
-export async function validateUserAction(dni: string, role: Role) {
+export async function validateUserAction(dni: string, roleOverride?: Role) {
   try {
     const user = await prisma.user.findUnique({
       where: { dni },
@@ -81,16 +83,14 @@ export async function validateUserAction(dni: string, role: Role) {
     })
 
     if (!user) {
-      return { success: false, message: "⚠ El usuario no está registrado." }
+      return { success: false, message: "⚠ El DNI ingresado no se encuentra registrado en el sistema." }
     }
 
-    // Permitir marcación si el rol coincide, O si el usuario es un Administrador con funciones operativas
+    // Determinar el rol operativo automáticamente a partir del usuario en BD
     const isAdmin = user.role === Role.SUPER_ADMIN || user.role === Role.ADMIN_SECUNDARIO
-    if (user.role !== role && !isAdmin) {
-      return { success: false, message: "⚠ El DNI existe, pero el rol seleccionado es incorrecto." }
-    }
+    const effectiveRole: Role = isAdmin ? (roleOverride || Role.DOCENTE) : user.role
 
-    // Consultar en paralelo: último registro de hoy y cronograma de técnico (si aplica)
+    // Consultar en paralelo: último registro de hoy, cronograma de técnico (si aplica) y programación diaria API (si aplica)
     const now = new Date()
     const limaOffset = -5 * 60 * 60 * 1000
     const limaToday = new Date(now.getTime() + limaOffset)
@@ -105,7 +105,7 @@ export async function validateUserAction(dni: string, role: Role) {
       day: "2-digit",
     }).format(now)
 
-    const [lastRecord, todaySched] = await Promise.all([
+    const [lastRecord, todaySched, dailyProgram] = await Promise.all([
       prisma.attendanceRecord.findFirst({
         where: {
           userId: user.id,
@@ -114,7 +114,7 @@ export async function validateUserAction(dni: string, role: Role) {
         orderBy: { timestamp: "desc" },
         select: { type: true },
       }),
-      role === Role.TECNICO
+      effectiveRole === Role.TECNICO
         ? prisma.technicianSchedule.findUnique({
             where: {
               userId_date: {
@@ -125,16 +125,19 @@ export async function validateUserAction(dni: string, role: Role) {
             include: { campus: true },
           })
         : Promise.resolve(null),
+      effectiveRole === Role.DOCENTE || effectiveRole === Role.PACIENTE_SIMULADO
+        ? getDailyProgramForUser(user.name, effectiveRole, user.campus?.name || "Campus Villa")
+        : Promise.resolve(null),
     ])
 
-    if (role === Role.TECNICO && todaySched?.shift === Shift.DESCANSO) {
+    if (effectiveRole === Role.TECNICO && todaySched?.shift === Shift.DESCANSO) {
       return {
         success: false,
         message: `🏖️ Hola ${user.name}, hoy tienes asignado tu DÍA DE DESCANSO según el cronograma oficial. No requieres registrar asistencia.`,
       }
     }
 
-    if (role === Role.TECNICO && (todaySched?.shift === Shift.COMISION || (!todaySched && user.defaultShift === Shift.COMISION))) {
+    if (effectiveRole === Role.TECNICO && (todaySched?.shift === Shift.COMISION || (!todaySched && user.defaultShift === Shift.COMISION))) {
       return {
         success: false,
         isComision: true,
@@ -146,10 +149,11 @@ export async function validateUserAction(dni: string, role: Role) {
       campusName: string | null
       shift: string
       expectedEntryTime: string
+      expectedExitTime: string
       source: "SCHEDULE" | "DEFAULT_PROFILE"
     } | null = null
 
-    if (role === Role.TECNICO) {
+    if (effectiveRole === Role.TECNICO) {
       if (todaySched) {
         let expectedTime = todaySched.expectedEntryTime
         const def = DEFAULT_SHIFT_TIMES[todaySched.shift] || DEFAULT_SHIFT_TIMES.MANANA
@@ -163,9 +167,10 @@ export async function validateUserAction(dni: string, role: Role) {
         }
 
         technicianAssignment = {
-          campusName: todaySched.campus?.name || user.campus?.name || null,
+          campusName: todaySched.campus?.name || user.campus?.name || "Campus Villa",
           shift: todaySched.shift,
           expectedEntryTime: expectedTime,
+          expectedExitTime: calculateExpectedExitTime(expectedTime, 9),
           source: "SCHEDULE",
         }
       } else {
@@ -192,10 +197,12 @@ export async function validateUserAction(dni: string, role: Role) {
           orderBy: [{ campusId: "desc" }],
         })
 
+        const expectedEntry = matchingRule?.expectedEntryTime || def.entry
         technicianAssignment = {
-          campusName: user.campus?.name || null,
+          campusName: user.campus?.name || "Campus Villa",
           shift: defaultShift,
-          expectedEntryTime: matchingRule?.expectedEntryTime || def.entry,
+          expectedEntryTime: expectedEntry,
+          expectedExitTime: calculateExpectedExitTime(expectedEntry, 9),
           source: "DEFAULT_PROFILE",
         }
       }
@@ -206,12 +213,18 @@ export async function validateUserAction(dni: string, role: Role) {
       user: {
         id: user.id,
         name: user.name,
+        role: effectiveRole,
         campusId: user.campusId,
-        campusName: user.campus?.name || null,
+        campusName:
+          technicianAssignment?.campusName ||
+          (dailyProgram?.found ? dailyProgram.campusName : null) ||
+          user.campus?.name ||
+          "Campus Villa",
         defaultShift: user.defaultShift,
       },
       lastRecordType: lastRecord?.type ?? null,
       technicianAssignment,
+      dailyProgram: dailyProgram as UserDailyProgramSummary | null,
     }
   } catch (error) {
     console.error("[validateUserAction] Error:", error)
@@ -229,6 +242,7 @@ type RegisterAttendanceData = {
   shift?: Shift
   campusId?: string
   courseId?: string
+  expectedEntryTime?: string
   isOfflineSync?: boolean
   clientTimestamp?: Date 
   location?: { lat: number; lng: number; accuracy?: number }
@@ -360,12 +374,32 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       }
     }
 
+    // Si es Docente o Paciente Simulado y no vino courseId o expectedEntryTime, consultar programación diaria
+    let resolvedCourseName = data.courseId?.trim() || ""
+    let resolvedExpectedEntryTime = data.expectedEntryTime?.trim() || ""
+
+    if ((data.role === Role.DOCENTE || data.role === Role.PACIENTE_SIMULADO) && (!resolvedCourseName || !resolvedExpectedEntryTime)) {
+      try {
+        const prog = await getDailyProgramForUser(user.name, data.role, resolvedCampusName)
+        if (prog.found) {
+          if (!resolvedCourseName && prog.courseName) {
+            resolvedCourseName = prog.courseName
+          }
+          if (!resolvedExpectedEntryTime && prog.entryTime) {
+            resolvedExpectedEntryTime = prog.entryTime
+          }
+        }
+      } catch (err) {
+        console.warn("[registerAttendanceAction] No se pudo consultar programación diaria:", err)
+      }
+    }
+
     // Resolver Course por nombre
     let finalCourseId = null
-    if (data.courseId && data.courseId.trim() !== '') {
-      let course = await prisma.course.findUnique({ where: { name: data.courseId.trim() } })
+    if (resolvedCourseName !== '') {
+      let course = await prisma.course.findUnique({ where: { name: resolvedCourseName } })
       if (!course) {
-        course = await prisma.course.create({ data: { name: data.courseId.trim() } })
+        course = await prisma.course.create({ data: { name: resolvedCourseName } })
       }
       finalCourseId = course.id
     }
@@ -495,10 +529,27 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         }
         status = calculateStatusFromRule(recordTimestamp, techRule)
       } else {
-        // Para Docentes y Pacientes Simulados: buscar regla correspondiente a su sede y rol
+        // Para Docentes y Pacientes Simulados: usar hora de su primera programación del día (o regla de sede/rol)
         const allRules = await prisma.toleranceRule.findMany()
         const matchedRule = findApplicableToleranceRule(allRules, finalCampusId || undefined, data.role)
-        if (matchedRule) {
+        if (resolvedExpectedEntryTime) {
+          const dynamicRule = {
+            expectedEntryTime: resolvedExpectedEntryTime,
+            earlyEntryToleranceMinutes: matchedRule?.earlyEntryToleranceMinutes ?? 30,
+            gracePeriodMinutes: matchedRule?.gracePeriodMinutes ?? 10,
+            lateToleranceMinutes: matchedRule?.lateToleranceMinutes ?? 30,
+            enableEarlyTolerance: matchedRule?.enableEarlyTolerance ?? false,
+            enableLateTolerance: matchedRule?.enableLateTolerance ?? true,
+          }
+          const earlyCheck = validateEarlyEntry(recordTimestamp, dynamicRule)
+          if (!earlyCheck.allowed) {
+            return {
+              success: false,
+              message: earlyCheck.message || "No se permite marcar con tanta anticipación.",
+            }
+          }
+          status = calculateStatusFromRule(recordTimestamp, dynamicRule)
+        } else if (matchedRule) {
           const earlyCheck = validateEarlyEntry(recordTimestamp, matchedRule)
           if (!earlyCheck.allowed) {
             return {

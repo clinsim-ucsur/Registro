@@ -864,6 +864,38 @@ async function main() {
     "Comisiones (EV): Sistema no exige asistencia y emite confirmación automática amigable con código EV"
   )
 
+  // =========================================================================
+  // 12. MARCACIÓN UNIFICADA SOLO CON DNI Y PROGRAMACIÓN DIARIA (DOCENTES / PACIENTES)
+  // =========================================================================
+  console.log("\n--- TEST 12: MARCACIÓN UNIFICADA SOLO CON DNI Y PROGRAMACIÓN DIARIA API ---")
+
+  const { isSamePersonName, mapSessionToCourseName, parseTimeString } = await import("../src/lib/daily-program-api")
+
+  // 12.1 Coincidencia inteligente de nombres (BD vs API Excel/JSON) sin falsos positivos entre hermanos
+  assert(
+    isSamePersonName("Leon Soto, Janet Olinda", "JANET OLINDA LEON SOTO") &&
+    isSamePersonName("Brissa Molina Martinez", "BRISSA MOLINA") &&
+    isSamePersonName("Leonora Maurial Mackee", "Leonora Maurial Mckee") &&
+    !isSamePersonName("Edwin David Puma Castillo", "Sara Elizabeth Puma Castillo"),
+    "Coincidencia de nombres: Soporta 'Apellido, Nombre', nombres abreviados y distingue homónimos/hermanos"
+  )
+
+  // 12.2 Mapeo de sesiones a cursos oficiales
+  assert(
+    mapSessionToCourseName("[MED_SBS]-EC3: Sd cushing") === "Semiología Basada en Simulación (SBS)" &&
+    mapSessionToCourseName("MED. LEGAL - VIOLENCIA SEXUAL") === "Medicina Legal" &&
+    mapSessionToCourseName("[SCI]-Depresión + gesto suicida") === "Simulación Clínica Integrada (SCI)",
+    "Mapeo de sesiones: Identifica el curso oficial a partir del código de sesión de la API"
+  )
+
+  // 12.3 Normalización de horarios y selección de primera entrada y última salida
+  const tStart = parseTimeString("7:00")
+  const tEnd = parseTimeString("16:10")
+  assert(
+    tStart?.formatted === "07:00" && tStart.minutes === 420 && tEnd?.formatted === "16:10" && tEnd.minutes === 970,
+    "Normalización de horas: Convierte '7:00' -> '07:00' (420m) y '16:10' -> '16:10' (970m)"
+  )
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")
