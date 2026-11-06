@@ -569,6 +569,131 @@ export async function revokeKioskDeviceAction(): Promise<{ success: boolean }> {
   return { success: true }
 }
 
+/**
+ * Vincula una PC como Estación Fija usando un Código de Un Solo Uso (OTP)
+ * que ya trae configurada internamente la Sede para la que fue emitido.
+ */
+export async function authorizeKioskWithOneTimeCodeAction(code: string): Promise<{
+  success: boolean
+  kioskToken?: string
+  campusName?: string
+  message: string
+}> {
+  try {
+    const { consumeKioskOneTimeCode } = await import("@/lib/kiosk-codes")
+    const result = await consumeKioskOneTimeCode(code)
+
+    if (!result.success || !result.campusName) {
+      return {
+        success: false,
+        message: result.message,
+      }
+    }
+
+    const token = `${KIOSK_TOKEN_PREFIX}${result.campusName}`
+    try {
+      const cookieStore = await cookies()
+      cookieStore.set("kiosk_authorized_token", token, {
+        httpOnly: false,
+        path: "/",
+        maxAge: 60 * 60 * 24 * 365, // 1 año en esta PC
+      })
+    } catch {}
+
+    return {
+      success: true,
+      kioskToken: token,
+      campusName: result.campusName,
+      message: result.message,
+    }
+  } catch (error) {
+    console.error("[authorizeKioskWithOneTimeCodeAction] Error:", error)
+    return {
+      success: false,
+      message: "Error al verificar el código de un solo uso.",
+    }
+  }
+}
+
+/**
+ * Genera un Código de Un Solo Uso para vincular una Estación Fija en la Sede seleccionada.
+ * Solo permitido para SUPER_ADMIN o administradores con el permiso explícito 'kiosk'.
+ */
+export async function generateKioskOneTimeCodeAction(campusName: string) {
+  try {
+    const { getAdminSession } = await import("@/lib/session")
+    const session = await getAdminSession()
+    if (!session) {
+      return { success: false, message: "No autorizado." }
+    }
+
+    const canManageKiosk =
+      session.role === "SUPER_ADMIN" || session.permissions.includes("kiosk")
+    if (!canManageKiosk) {
+      return {
+        success: false,
+        message: "No cuenta con el permiso 'Vincular Estación Fija' para generar códigos.",
+      }
+    }
+
+    // Si es un Admin por Sede, solo puede generar códigos para su propia sede
+    const finalCampusName = session.campusName || campusName || "Campus Villa"
+
+    const { createKioskOneTimeCode } = await import("@/lib/kiosk-codes")
+    const entry = await createKioskOneTimeCode({
+      campusName: finalCampusName,
+      actorName: session.name,
+      actorDni: session.dni,
+      actorRole: session.role,
+    })
+
+    try {
+      revalidatePath("/dashboard")
+    } catch {}
+
+    return {
+      success: true,
+      entry,
+      message: `Código de 1 uso [${entry.code}] generado para ${finalCampusName}.`,
+    }
+  } catch (error: any) {
+    console.error("[generateKioskOneTimeCodeAction] Error:", error)
+    return {
+      success: false,
+      message: error.message || "Error al generar el código.",
+    }
+  }
+}
+
+export async function deleteKioskOneTimeCodeAction(code: string) {
+  try {
+    const { getAdminSession } = await import("@/lib/session")
+    const session = await getAdminSession()
+    if (!session) return { success: false, message: "No autorizado." }
+
+    const canManageKiosk =
+      session.role === "SUPER_ADMIN" || session.permissions.includes("kiosk")
+    if (!canManageKiosk) {
+      return { success: false, message: "Sin permiso para eliminar códigos." }
+    }
+
+    const { deleteKioskOneTimeCode } = await import("@/lib/kiosk-codes")
+    await deleteKioskOneTimeCode(code, {
+      name: session.name,
+      dni: session.dni,
+      role: session.role,
+    })
+
+    try {
+      revalidatePath("/dashboard")
+    } catch {}
+
+    return { success: true, message: "Código eliminado." }
+  } catch (error: any) {
+    return { success: false, message: "Error al eliminar el código." }
+  }
+}
+
 // ------------------------------------------------------------------
 // 2. REEMPLAZO DE `registrarDatos(datos)`
 // ------------------------------------------------------------------

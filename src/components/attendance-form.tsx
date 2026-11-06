@@ -11,6 +11,7 @@ import {
   syncOfflineRecordsAction,
   preloadAttendanceDirectoryAction,
   authorizeKioskDeviceAction,
+  authorizeKioskWithOneTimeCodeAction,
   revokeKioskDeviceAction,
 } from "@/actions/attendance"
 import { type UserDailyProgramSummary } from "@/lib/daily-program-api"
@@ -120,9 +121,11 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const [connectionError, setConnectionError] = useState(false)
   const [pendingOfflineCount, setPendingOfflineCount] = useState(0)
 
-  // Estado Modo Híbrido: Kiosco PC (sin GPS) vs Celular Personal (con GPS + DNI recordado)
+  // Estado Modo Híbrido: Estación Fija (sin GPS) vs Celular Personal (con GPS + DNI recordado)
   const [kioskConfig, setKioskConfig] = useState<KioskConfig | null>(null)
   const [showKioskModal, setShowKioskModal] = useState(false)
+  const [kioskAuthMethod, setKioskAuthMethod] = useState<"code" | "credentials">("code")
+  const [kioskOneTimeCode, setKioskOneTimeCode] = useState("")
   const [kioskAdminUser, setKioskAdminUser] = useState("")
   const [kioskAdminPass, setKioskAdminPass] = useState("")
   const [kioskCampusSelect, setKioskCampusSelect] = useState("Campus Villa")
@@ -469,6 +472,39 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       toast.error("Error de conexión al validar. Puede reintentar o activar el Modo Local.")
     } finally {
       setIsValidating(false)
+    }
+  }
+
+  const handleAuthorizeKioskByCode = async () => {
+    const cleanCode = kioskOneTimeCode.replace(/\D/g, "").trim()
+    if (!cleanCode) {
+      toast.error("Ingrese el código de verificación de un solo uso")
+      return
+    }
+    setIsAuthorizingKiosk(true)
+    try {
+      const res = await authorizeKioskWithOneTimeCodeAction(cleanCode)
+      if (res.success && res.kioskToken && res.campusName) {
+        const cfg: KioskConfig = {
+          token: res.kioskToken,
+          campusName: res.campusName,
+          authorizedAt: new Date().toISOString(),
+        }
+        localStorage.setItem(KIOSK_STORAGE_KEY, JSON.stringify(cfg))
+        localStorage.removeItem(SAVED_DNI_STORAGE_KEY)
+        setKioskConfig(cfg)
+        setRememberDniOnDevice(false)
+        setHasRememberedDni(false)
+        setShowKioskModal(false)
+        setKioskOneTimeCode("")
+        toast.success(res.message, { duration: 6000 })
+      } else {
+        toast.error(res.message || "Código inválido o ya utilizado")
+      }
+    } catch {
+      toast.error("Error de conexión al verificar el código")
+    } finally {
+      setIsAuthorizingKiosk(false)
     }
   }
 
@@ -823,7 +859,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
         </div>
       </div>
 
-      {/* Panel desplegable de Autorización de Estación Fija (Solo Administradores) */}
+      {/* Panel desplegable de Autorización de Estación Fija (Solo Administradores Autorizados) */}
       {showKioskModal && (
         <div className="mb-4 sm:mb-6 p-3.5 sm:p-4 rounded-xl sm:rounded-2xl bg-slate-50 border-2 border-indigo-200 space-y-3 animate-fade-in-up">
           <div className="flex items-center justify-between gap-2">
@@ -831,13 +867,16 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
               <MonitorCheck size={17} className="text-indigo-600 shrink-0" />
               <h3 className="text-xs sm:text-sm font-black text-slate-800 truncate">
                 {kioskConfig
-                  ? `Estación Fija Autorizada (${kioskConfig.campusName})`
-                  : "Vincular como Estación Fija de Sede"}
+                  ? `Estación Oficial: ${kioskConfig.campusName}`
+                  : "Vincular Equipo como Estación Oficial"}
               </h3>
             </div>
             <button
               type="button"
-              onClick={() => setShowKioskModal(false)}
+              onClick={() => {
+                setShowKioskModal(false)
+                setKioskAuthMethod("code")
+              }}
               className="text-slate-400 hover:text-slate-600 cursor-pointer shrink-0 p-1"
             >
               <X size={16} />
@@ -847,7 +886,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
           {kioskConfig ? (
             <div className="space-y-3 text-xs text-slate-600">
               <p>
-                Este equipo está vinculado como <strong>Estación Fija Oficial en {kioskConfig.campusName}</strong>. No requiere permisos de GPS y limpia el DNI automáticamente tras cada registro.
+                Este equipo está vinculado como <strong>Estación Oficial en {kioskConfig.campusName}</strong>. No requiere permisos de GPS y limpia el DNI automáticamente tras cada registro.
               </p>
               <Button
                 type="button"
@@ -856,13 +895,58 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                 onClick={handleDeactivateKiosk}
                 className="h-9 rounded-xl font-bold text-rose-600 border-rose-200 hover:bg-rose-50 cursor-pointer w-full sm:w-auto"
               >
-                Desvincular Estación Fija en este equipo
+                Desvincular Estación Oficial en este equipo
               </Button>
+            </div>
+          ) : kioskAuthMethod === "code" ? (
+            <div className="space-y-3">
+              <p className="text-xs text-slate-600">
+                Ingrese el <strong>código de un solo uso</strong> generado desde el panel administrativo. La sede asignada al código se configurará automáticamente.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  placeholder="Código de 6 dígitos (ej. 482915)"
+                  maxLength={6}
+                  inputMode="numeric"
+                  value={kioskOneTimeCode}
+                  onChange={(e) => setKioskOneTimeCode(e.target.value.replace(/\D/g, ""))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault()
+                      handleAuthorizeKioskByCode()
+                    }
+                  }}
+                  className="h-10 text-sm font-black tracking-[0.3em] text-center sm:text-left bg-white flex-1"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={isAuthorizingKiosk}
+                  onClick={handleAuthorizeKioskByCode}
+                  className="h-10 px-5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs cursor-pointer shrink-0"
+                >
+                  {isAuthorizingKiosk ? (
+                    <Loader2 size={14} className="animate-spin mr-1.5" />
+                  ) : (
+                    <MonitorCheck size={14} className="mr-1.5" />
+                  )}
+                  Verificar Código
+                </Button>
+              </div>
+              <div className="flex justify-end pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => setKioskAuthMethod("credentials")}
+                  className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 underline underline-offset-2 cursor-pointer"
+                >
+                  Cambiar a Usuario y Contraseña →
+                </button>
+              </div>
             </div>
           ) : (
             <div className="space-y-3">
               <p className="text-xs text-slate-600">
-                Active esta opción <strong>únicamente en la computadora fija de la clínica/oficina</strong> donde la ubicación esté restringida por TI. Los teléfonos móviles seguirán validando ubicación GPS dentro del campus.
+                Ingrese sus credenciales de Super Admin (o administrador con permiso de Estación Fija) y elija la sede de este equipo:
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <Input
@@ -889,20 +973,27 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                   <option value="Campus Aramburú">Campus Aramburú</option>
                 </select>
               </div>
-              <div className="flex justify-end">
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => setKioskAuthMethod("code")}
+                  className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 underline underline-offset-2 cursor-pointer"
+                >
+                  ← Usar código de un solo uso
+                </button>
                 <Button
                   type="button"
                   size="sm"
                   disabled={isAuthorizingKiosk}
                   onClick={handleAuthorizeKiosk}
-                  className="h-9 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs cursor-pointer w-full sm:w-auto"
+                  className="h-9 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs cursor-pointer"
                 >
                   {isAuthorizingKiosk ? (
                     <Loader2 size={14} className="animate-spin mr-1.5" />
                   ) : (
                     <MonitorCheck size={14} className="mr-1.5" />
                   )}
-                  Vincular Estación Fija
+                  Vincular con Credenciales
                 </Button>
               </div>
             </div>

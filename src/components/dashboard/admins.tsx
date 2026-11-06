@@ -22,9 +22,17 @@ import {
   Building2,
   Lock,
   Globe,
+  MonitorCheck,
+  Copy,
+  Sparkles,
 } from "lucide-react"
 import { toast } from "sonner"
 import { editAdminAction, createAdminAction, revokeAdminAction } from "@/actions/users"
+import {
+  generateKioskOneTimeCodeAction,
+  deleteKioskOneTimeCodeAction,
+} from "@/actions/attendance"
+import type { KioskOneTimeCode } from "@/lib/kiosk-codes"
 import { Role } from "@prisma/client"
 import {
   extractAdminCampusId,
@@ -52,12 +60,16 @@ interface DashboardAdminsProps {
   admins: any[]
   campuses: { id: string; name: string }[]
   currentUserRole?: "SUPER_ADMIN" | "ADMIN_SECUNDARIO"
+  canManageKiosk?: boolean
+  initialKioskCodes?: KioskOneTimeCode[]
 }
 
 export function DashboardAdmins({
   admins,
   campuses,
   currentUserRole = "SUPER_ADMIN",
+  canManageKiosk = true,
+  initialKioskCodes = [],
 }: DashboardAdminsProps) {
   const [searchTerm, setSearchTerm] = useState("")
 
@@ -69,6 +81,40 @@ export function DashboardAdmins({
   const [showEditPass, setShowEditPass] = useState(false)
 
   const [isProcessing, setIsProcessing] = useState(false)
+
+  // Estado para Generador de Códigos de 1 Solo Uso (Estación Oficial)
+  const [kioskCodes, setKioskCodes] = useState<KioskOneTimeCode[]>(initialKioskCodes)
+  const [codeCampusName, setCodeCampusName] = useState<string>(
+    campuses[0]?.name || "Campus Villa"
+  )
+  const [isGeneratingCode, setIsGeneratingCode] = useState(false)
+
+  const handleGenerateOneTimeCode = async () => {
+    setIsGeneratingCode(true)
+    try {
+      const res = await generateKioskOneTimeCodeAction(codeCampusName)
+      if (res.success && res.entry) {
+        setKioskCodes((prev) => [res.entry!, ...prev])
+        toast.success(`Código [${res.entry.code}] generado para ${res.entry.campusName}`)
+      } else {
+        toast.error(res.message || "No se pudo generar el código")
+      }
+    } catch {
+      toast.error("Error al generar el código")
+    } finally {
+      setIsGeneratingCode(false)
+    }
+  }
+
+  const handleDeleteOneTimeCode = async (code: string) => {
+    const res = await deleteKioskOneTimeCodeAction(code)
+    if (res.success) {
+      setKioskCodes((prev) => prev.filter((c) => c.code !== code))
+      toast.info(`Código ${code} eliminado`)
+    } else {
+      toast.error(res.message)
+    }
+  }
 
   const filteredAdmins = admins.filter(
     (a) =>
@@ -193,7 +239,125 @@ export function DashboardAdmins({
 
   return (
     <>
-      <div className="animate-fade-in-up">
+      <div className="space-y-6 animate-fade-in-up">
+        {/* TARJETA DE GENERACIÓN DE CÓDIGOS DE 1 SOLO USO PARA ESTACIÓN OFICIAL */}
+        {(currentUserRole === "SUPER_ADMIN" || canManageKiosk) && (
+          <Card className="border-indigo-200/80 shadow-sm rounded-3xl bg-gradient-to-br from-indigo-50/50 via-white to-blue-50/40 overflow-hidden">
+            <CardHeader className="border-b border-indigo-100/80 flex flex-col lg:flex-row lg:items-center justify-between gap-4 py-5 px-8">
+              <div>
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-100/80 text-indigo-700 text-xs font-bold uppercase tracking-wider mb-1.5">
+                  <MonitorCheck size={13} /> Código de 1 Solo Uso &bull; Estación Oficial (PC)
+                </div>
+                <CardTitle className="text-xl font-black text-slate-800">
+                  Vincular PC de Sede mediante Código de Un Solo Uso
+                </CardTitle>
+                <CardDescription className="text-xs sm:text-sm font-medium text-slate-500 mt-0.5">
+                  Elige la sede, genera un código de 6 dígitos e ingrésalo en la PC de la oficina. Al usarse una vez, configura esa sede automáticamente y el código queda invalidado.
+                </CardDescription>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
+                <select
+                  value={codeCampusName}
+                  onChange={(e) => setCodeCampusName(e.target.value)}
+                  className="h-11 rounded-xl bg-white border border-indigo-200 px-4 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-600"
+                >
+                  {campuses.map((c) => (
+                    <option key={c.id} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  type="button"
+                  disabled={isGeneratingCode}
+                  onClick={handleGenerateOneTimeCode}
+                  className="h-11 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-black px-5 shadow-md shadow-indigo-600/20 cursor-pointer"
+                >
+                  {isGeneratingCode ? (
+                    <Loader2 size={16} className="animate-spin mr-2" />
+                  ) : (
+                    <Sparkles size={16} className="mr-2" />
+                  )}
+                  Generar Código (1 Uso)
+                </Button>
+              </div>
+            </CardHeader>
+
+            {kioskCodes.length > 0 && (
+              <CardContent className="p-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {kioskCodes.slice(0, 9).map((item) => (
+                    <div
+                      key={item.code}
+                      className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all ${
+                        item.used
+                          ? "bg-slate-50 border-slate-200 opacity-65"
+                          : "bg-white border-indigo-200 shadow-xs"
+                      }`}
+                    >
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`font-mono text-lg font-black tracking-[0.25em] ${
+                              item.used ? "line-through text-slate-400" : "text-indigo-700"
+                            }`}
+                          >
+                            {item.code}
+                          </span>
+                          <span
+                            className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${
+                              item.used
+                                ? "bg-slate-200 text-slate-600"
+                                : "bg-emerald-100 text-emerald-700"
+                            }`}
+                          >
+                            {item.used ? "Usado" : "Disponible (1 uso)"}
+                          </span>
+                        </div>
+                        <p className="text-xs font-bold text-slate-700 truncate">
+                          📍 {item.campusName}
+                        </p>
+                        <p className="text-[10px] text-slate-400 truncate">
+                          Por: {item.createdBy}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        {!item.used && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            onClick={() => {
+                              navigator.clipboard.writeText(item.code)
+                              toast.success(`Código ${item.code} copiado al portapapeles`)
+                            }}
+                            className="h-8 w-8 rounded-lg border-indigo-200 text-indigo-600 hover:bg-indigo-50 cursor-pointer"
+                            title="Copiar código"
+                          >
+                            <Copy size={14} />
+                          </Button>
+                        )}
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          onClick={() => handleDeleteOneTimeCode(item.code)}
+                          className="h-8 w-8 rounded-lg border-rose-200 text-rose-500 hover:bg-rose-50 cursor-pointer"
+                          title="Eliminar código"
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            )}
+          </Card>
+        )}
+
         <Card className="border-slate-200/60 shadow-sm rounded-3xl bg-white overflow-hidden">
           <CardHeader className="border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 py-6 px-8">
             <div>

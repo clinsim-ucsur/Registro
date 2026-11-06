@@ -31,6 +31,7 @@ import { getAdminSession } from "@/lib/session"
 import { computeAnalytics } from "@/lib/analytics"
 import { getOvertimeSettingsAction } from "@/actions/overtime"
 import { getAuditLogs } from "@/lib/audit-log"
+import { getKioskOneTimeCodesList } from "@/lib/kiosk-codes"
 
 export default async function DashboardPage() {
   const session = await getAdminSession()
@@ -63,6 +64,7 @@ export default async function DashboardPage() {
     technicianSchedules,
     overtimeSettings,
     auditLogs,
+    kioskCodes,
   ] = await Promise.all([
     prisma.attendanceRecord.findMany({
       where: scopedCampusId ? { campusId: scopedCampusId } : undefined,
@@ -134,6 +136,7 @@ export default async function DashboardPage() {
     }),
     getOvertimeSettingsAction(),
     currentUserRole === "SUPER_ADMIN" ? getAuditLogs() : Promise.resolve([]),
+    hasAccess("kiosk") ? getKioskOneTimeCodesList() : Promise.resolve([]),
   ])
 
   // Sedes visibles según el alcance del administrador logueado
@@ -255,7 +258,7 @@ export default async function DashboardPage() {
               </TabsTrigger>
             )}
             
-            {hasAccess("admins") && (
+            {(hasAccess("admins") || hasAccess("kiosk")) && (
               <TabsTrigger 
                 value="admins" 
                 className="w-full justify-start gap-4 px-5 py-3.5 text-sm md:text-base font-bold rounded-2xl text-slate-300 data-[state=active]:bg-indigo-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-indigo-900/50 hover:bg-white/5 transition-all outline-none mt-1"
@@ -378,12 +381,14 @@ export default async function DashboardPage() {
               </TabsContent>
             )}
             
-            {hasAccess("admins") && (
+            {(hasAccess("admins") || hasAccess("kiosk")) && (
               <TabsContent value="admins" className="m-0 p-0 outline-none">
                 <DashboardAdmins
                   admins={admins}
-                  campuses={allCampuses}
+                  campuses={visibleCampuses.length > 0 && scopedCampusId ? visibleCampuses : allCampuses}
                   currentUserRole={currentUserRole}
+                  canManageKiosk={hasAccess("kiosk")}
+                  initialKioskCodes={kioskCodes}
                 />
               </TabsContent>
             )}

@@ -1009,6 +1009,46 @@ async function main() {
     "BD (Administrativos Netos): Martha y Xiomara figuran como ADMIN_SECUNDARIO y ya no aparecen en la lista de Pacientes"
   )
 
+  // =========================================================================
+  // 15. CÓDIGO DE UN SOLO USO PARA VINCULAR ESTACIÓN OFICIAL (SEDE PRECONFIGURADA)
+  // =========================================================================
+  console.log("\n--- TEST 15: CÓDIGO DE UN SOLO USO PARA VINCULAR ESTACIÓN OFICIAL ---")
+
+  const { createKioskOneTimeCode, consumeKioskOneTimeCode, deleteKioskOneTimeCode } = await import("../src/lib/kiosk-codes")
+
+  // 15.1 Generación de código de 6 dígitos con Sede preconfigurada
+  const createdCode = await createKioskOneTimeCode({
+    campusName: "Campus Norte",
+    actorName: dbJean?.name || "Jean Pieer",
+    actorDni: dbJean?.dni || "72455873",
+    actorRole: "SUPER_ADMIN",
+  })
+  assert(
+    /^\d{6}$/.test(createdCode.code) && createdCode.campusName === "Campus Norte",
+    "Código 1-Uso: Genera un código de 6 dígitos con la sede 'Campus Norte' preconfigurada"
+  )
+
+  // 15.2 Primer uso del código autoriza exitosamente y devuelve la sede preconfigurada
+  const firstUse = await consumeKioskOneTimeCode(createdCode.code)
+  assert(
+    firstUse.success === true && firstUse.campusName === "Campus Norte",
+    "Código 1-Uso (1er intento): Autoriza la PC y devuelve automáticamente 'Campus Norte' para 'Estación Oficial: Campus Norte'"
+  )
+
+  // 15.3 Segundo intento con el mismo código es rechazado (un solo uso estricto)
+  const secondUse = await consumeKioskOneTimeCode(createdCode.code)
+  assert(
+    secondUse.success === false && secondUse.message.includes("ya fue utilizado"),
+    "Código 1-Uso (2do intento): Invalida el código tras el primer uso y rechaza reutilizarlo"
+  )
+
+  // Limpiar el código de prueba
+  await deleteKioskOneTimeCode(createdCode.code, {
+    name: dbJean?.name || "Jean Pieer",
+    dni: dbJean?.dni || "72455873",
+    role: "SUPER_ADMIN",
+  })
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")
