@@ -11,7 +11,8 @@ import {
   Layers,
   Calendar as CalendarIcon,
   ScrollText,
-  Globe
+  Globe,
+  BookOpen
 } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { redirect } from "next/navigation"
@@ -26,6 +27,7 @@ import { DashboardRules } from "@/components/dashboard/rules"
 import { DashboardCatalogs } from "@/components/dashboard/catalogs"
 import { DashboardSchedules } from "@/components/dashboard/schedules"
 import { DashboardAuditLogs } from "@/components/dashboard/audit-logs"
+import { DashboardManuals } from "@/components/dashboard/manuals"
 import { ForceChangePasswordModal } from "@/components/dashboard/force-change-password-modal"
 import { getAdminSession } from "@/lib/session"
 import { computeAnalytics } from "@/lib/analytics"
@@ -286,6 +288,13 @@ export default async function DashboardPage() {
                 <ScrollText size={20}/> Informe de Logs
               </TabsTrigger>
             )}
+
+            <TabsTrigger 
+              value="manuals" 
+              className="w-full justify-start gap-4 px-5 py-3.5 text-sm md:text-base font-bold rounded-2xl text-slate-300 data-[state=active]:bg-[#1967D2] data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-blue-900/50 hover:bg-white/5 transition-all outline-none"
+            >
+              <BookOpen size={20}/> Manuales PDF
+            </TabsTrigger>
             
           </TabsList>
         </div>
@@ -412,6 +421,10 @@ export default async function DashboardPage() {
                 <DashboardAuditLogs initialLogs={auditLogs} />
               </TabsContent>
             )}
+
+            <TabsContent value="manuals" className="m-0 p-0 outline-none">
+              <DashboardManuals adminTier={adminTier} />
+            </TabsContent>
             
           </div>
         </main>
