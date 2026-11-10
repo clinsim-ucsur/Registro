@@ -21,6 +21,11 @@ import {
   type UserDailyProgramSummary,
   type TodayAttendanceRecordLite,
 } from "@/lib/daily-program-api"
+import {
+  registerServiceWorker,
+  requestSystemNotificationPermission,
+  showSystemNotification,
+} from "@/lib/background-alerts"
 import { toast } from "sonner"
 import {
   Loader2,
@@ -200,9 +205,12 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     radiusMeters: c.radiusMeters ?? 500,
   }))
 
-  // 1. Cargar configuración de Kiosco o DNI recordado en celular al iniciar
+  // 1. Cargar configuración de Kiosco o DNI recordado en celular al iniciar + registrar Service Worker
   useEffect(() => {
     if (typeof window === "undefined") return
+
+    // Registrar Service Worker para permitir notificaciones flotantes con app cerrada / teléfono bloqueado
+    void registerServiceWorker()
 
     try {
       const rawKiosk = localStorage.getItem(KIOSK_STORAGE_KEY)
@@ -358,8 +366,9 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     try {
       localStorage.setItem(MOBILE_ALARM_ONBOARDED_KEY, "true")
       setMobileAlarmOnboarded(true)
-      if ("Notification" in window && Notification.permission === "default") {
-        await Notification.requestPermission()
+      const res = await requestSystemNotificationPermission()
+      if (res === "granted") {
+        toast.success("Avisos del sistema activados. Recibirá notificaciones en su pantalla incluso con la app cerrada.")
       }
     } catch {}
   }
@@ -790,16 +799,13 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       duration: 12000,
     })
 
-    // Disparar Notificación Nativa del Sistema en el celular (si tiene permiso)
-    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
-      try {
-        new Notification(mobileRotationAlert.title, {
-          body: mobileRotationAlert.message,
-          icon: "/icons/icon-192.png",
-          tag: currentRotationAlertKey,
-        })
-      } catch {}
-    }
+    // Disparar Notificación Nativa de Sistema (Heads-up / Banner flotante sobre otras apps y pantalla bloqueada)
+    void showSystemNotification({
+      title: mobileRotationAlert.title,
+      message: mobileRotationAlert.message,
+      tag: currentRotationAlertKey,
+      url: "/",
+    })
   }, [kioskConfig, mobileRotationAlert.shouldAlert, currentRotationAlertKey])
 
   const onSubmit = async (data: z.infer<typeof formSchema>, type: RecordType) => {
@@ -1409,7 +1415,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                             <div className="flex items-center gap-2 text-slate-700 font-semibold">
                               <BellRing size={14} className="text-[#1967D2] shrink-0" />
                               <span>
-                                Active por única vez las notificaciones para recibir avisos cuando deba cambiar de clase o termine su hora
+                                Active las notificaciones del sistema para recibir avisos sobre otras apps o con el teléfono bloqueado
                               </span>
                             </div>
                             <button
@@ -1417,9 +1423,6 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                               onClick={() => {
                                 void requestMobileNotificationPermission()
                                 playRotationAlertSoundAndVibrate()
-                                toast.success(
-                                  "Notificaciones activadas. Solo se le avisará cuando termine su hora o cambie de clase."
-                                )
                               }}
                               className="px-3 py-1 rounded-lg bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-[11px] cursor-pointer shrink-0"
                             >
