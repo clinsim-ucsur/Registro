@@ -1808,33 +1808,32 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
   return (
     <div className="space-y-8 animate-fade-in-up">
       {/* Header y Acciones */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
         <div>
-          <h2 className="text-3xl font-black text-slate-800 tracking-tight flex items-center gap-3">
-            <CalendarIcon className="text-[#1967D2]" size={32} />
+          <h2 className="text-2xl md:text-3xl font-black text-slate-800 tracking-tight flex items-center gap-3">
+            <CalendarIcon className="text-[#1967D2]" size={30} />
             Cronograma y Turnos de Técnicos
           </h2>
-          <p className="text-slate-500 font-medium text-sm mt-1">
+          <p className="text-slate-500 font-medium text-xs md:text-sm mt-1">
             Programación mensual de sedes (rotaciones) y horarios de entrada (Mañana, Intermedio, Tarde).
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          {/* Bloque 1: Programación y Operación */}
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             onClick={() => openCurrentMonthMatrix()}
-            className="h-11 px-4 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-extrabold rounded-xl shadow-sm flex items-center gap-2 transition-all hover:scale-[1.02]"
+            className="h-10 px-3.5 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700 text-white font-bold rounded-xl shadow-xs flex items-center gap-2 text-xs md:text-sm transition-all hover:scale-[1.02]"
           >
-            <CalendarDays size={17} />
-            Rol Mensual (Calendario)
+            <CalendarDays size={16} />
+            Rol Mensual
           </Button>
 
           <Button
             onClick={() => openSundayManager()}
-            className="h-11 px-4 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold rounded-xl shadow-sm flex items-center gap-2 transition-all hover:scale-[1.02]"
+            className="h-10 px-3.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-bold rounded-xl shadow-xs flex items-center gap-2 text-xs md:text-sm transition-all hover:scale-[1.02]"
           >
-            <Sun size={17} />
-            Turnos de Domingo
+            <Sun size={16} />
+            Turnos Domingo
           </Button>
 
           <Button
@@ -1842,15 +1841,24 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
               fetchOvertimeData()
               setIsOvertimeModalOpen(true)
             }}
-            className="h-11 px-4 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-extrabold rounded-xl shadow-sm flex items-center gap-2 transition-all hover:scale-[1.02]"
+            className="h-10 px-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-bold rounded-xl shadow-xs flex items-center gap-2 text-xs md:text-sm transition-all hover:scale-[1.02]"
           >
-            <Clock size={17} />
+            <Clock size={16} />
             Horas Extras
             {totalOvertimeHours > 0 && (
-              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white/25 text-white text-[11px] font-black">
+              <span className="ml-1 px-1.5 py-0.5 rounded-full bg-white/25 text-white text-[10px] font-black">
                 {totalOvertimeHours}h
               </span>
             )}
+          </Button>
+
+          <Button
+            onClick={() => setIsBulkOpen(true)}
+            variant="outline"
+            className="h-10 px-3.5 border-slate-200 text-slate-700 hover:bg-slate-50 font-bold rounded-xl flex items-center gap-2 text-xs md:text-sm"
+          >
+            <FileSpreadsheet size={16} className="text-emerald-600" />
+            Importar Excel
           </Button>
 
           <Button
@@ -1868,31 +1876,10 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
               })
               setIsIndividualOpen(true)
             }}
-            className="h-11 px-4 bg-[#1967D2] hover:bg-blue-800 text-white font-bold rounded-xl shadow-sm flex items-center gap-2 transition-all hover:scale-[1.02]"
+            className="h-10 px-3.5 bg-[#1967D2] hover:bg-blue-800 text-white font-bold rounded-xl shadow-xs flex items-center gap-2 text-xs md:text-sm transition-all hover:scale-[1.02]"
           >
-            <Plus size={17} />
+            <Plus size={16} />
             Asignar Turno
-          </Button>
-
-          <div className="h-6 w-px bg-slate-200 hidden sm:block" />
-
-          {/* Bloque 2: Herramientas de Carga Masiva */}
-          <Button
-            onClick={() => setIsBulkOpen(true)}
-            variant="outline"
-            className="h-11 px-3.5 border-slate-200 text-slate-700 hover:bg-slate-50 font-bold rounded-xl flex items-center gap-2"
-          >
-            <FileSpreadsheet size={16} className="text-emerald-600" />
-            Importar Excel
-          </Button>
-
-          <Button
-            onClick={() => setIsOcrOpen(true)}
-            variant="outline"
-            className="h-11 px-3.5 border-slate-200 text-slate-700 hover:bg-slate-50 font-bold rounded-xl flex items-center gap-2"
-          >
-            <ImageIcon size={16} className="text-purple-600" />
-            Cargar Foto / Rol
           </Button>
         </div>
       </div>
