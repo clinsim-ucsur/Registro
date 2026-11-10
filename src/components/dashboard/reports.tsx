@@ -12,9 +12,6 @@ import {
   Award, AlertCircle, FileCode, CheckSquare, Eye, ArrowUpDown, ArrowRight,
   Sliders, Timer, ShieldCheck, Settings, Check, X
 } from "lucide-react"
-import * as XLSX from "xlsx"
-import jsPDF from "jspdf"
-import autoTable from "jspdf-autotable"
 import { toast } from "sonner"
 import { Role, RecordType, RecordStatus, Shift } from "@prisma/client"
 import { fetchFilteredRecordsAction, type ReportFilterParams } from "@/actions/reports"
@@ -423,13 +420,14 @@ export function DashboardReports({
   // =====================================================================
   // EXPORTACIÓN 1: EXCEL MULTI-HOJA COMPLETO (.XLSX)
   // =====================================================================
-  const handleExportExcelFull = () => {
+  const handleExportExcelFull = async () => {
     if (!records || records.length === 0) {
       toast.error("No hay registros en el listado para exportar.")
       return
     }
 
     try {
+      const XLSX = await import("xlsx")
       const workbook = XLSX.utils.book_new()
 
       // HOJA 1: Marcaciones Detalladas
@@ -625,13 +623,17 @@ export function DashboardReports({
   // =====================================================================
   // EXPORTACIÓN 3: PDF INSTITUCIONAL CON REPORTE DE CONTROL
   // =====================================================================
-  const handleExportPDF = () => {
+  const handleExportPDF = async () => {
     if (!records || records.length === 0) {
       toast.error("No hay registros en el listado para exportar.")
       return
     }
 
     try {
+      const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
+        import("jspdf"),
+        import("jspdf-autotable"),
+      ])
       const doc = new jsPDF("landscape")
 
       // Encabezado Corporativo UCSUR

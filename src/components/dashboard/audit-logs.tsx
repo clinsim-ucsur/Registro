@@ -16,7 +16,6 @@ import {
   ShieldCheck,
   Activity,
 } from "lucide-react"
-import * as XLSX from "xlsx"
 import type { AuditLogEntry, AuditLogCategory } from "@/lib/audit-log"
 
 const CATEGORY_META: Record<
@@ -100,7 +99,8 @@ export function DashboardAuditLogs({ initialLogs }: { initialLogs: AuditLogEntry
     }
   }
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
+    const XLSX = await import("xlsx")
     const rows = filteredLogs.map((l) => ({
       "Fecha y Hora (Lima)": formatLimaDateTime(l.timestamp),
       "Autor / Usuario": l.actorName,

@@ -7,7 +7,6 @@ import {
   Activity, AlarmClock, BookOpen, CalendarRange, CheckCircle2, Clock, Loader2, MapPin,
   TrendingDown, TrendingUp, Trophy, UserX, Users, Briefcase, Stethoscope, Wrench, FileSpreadsheet, Timer
 } from "lucide-react"
-import * as XLSX from "xlsx"
 
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { getAnalyticsAction } from "@/actions/analytics"
@@ -164,8 +163,9 @@ export function DashboardAnalytics({ initialData, lockedCampus }: { initialData:
     })
   }
 
-  const exportAnalyticsExcel = () => {
+  const exportAnalyticsExcel = async () => {
     try {
+      const XLSX = await import("xlsx")
       const wb = XLSX.utils.book_new()
 
       // Hoja 1: Indicadores KPIs

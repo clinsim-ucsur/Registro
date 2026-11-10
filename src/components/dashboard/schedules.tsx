@@ -8,27 +8,22 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { 
   Calendar as CalendarIcon, 
-  UploadCloud, 
   Plus, 
   Trash2, 
   Edit, 
   FileSpreadsheet, 
-  Image as ImageIcon, 
   Loader2, 
-  CheckCircle2, 
   Clock, 
   MapPin, 
   Sparkles, 
   AlertCircle,
   Filter,
-  Users,
   Sun,
   CalendarDays,
   RefreshCw,
   Zap,
   ArrowRightLeft,
   Building2,
-  Check,
   X,
   Save,
   ChevronLeft,
@@ -38,7 +33,6 @@ import {
   Search,
 } from "lucide-react"
 import { toast } from "sonner"
-import * as XLSX from "xlsx"
 import { 
   upsertTechnicianScheduleAction, 
   deleteTechnicianScheduleAction, 
@@ -196,7 +190,6 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
   // Modales
   const [isIndividualOpen, setIsIndividualOpen] = useState(false)
   const [isBulkOpen, setIsBulkOpen] = useState(false)
-  const [isOcrOpen, setIsOcrOpen] = useState(false)
   const [isSundayModalOpen, setIsSundayModalOpen] = useState(false)
   const [isOvertimeModalOpen, setIsOvertimeModalOpen] = useState(false)
 
@@ -747,21 +740,6 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
 
   // Carga masiva Excel
   const [excelPreview, setExcelPreview] = useState<ScheduleItemInput[]>([])
-
-  // OCR Imagen
-  const [ocrImage, setOcrImage] = useState<File | null>(null)
-  const [ocrImagePreview, setOcrImagePreview] = useState<string | null>(null)
-  const [ocrStatus, setOcrStatus] = useState<string>("")
-  const [ocrProgress, setOcrProgress] = useState<number>(0)
-  const [ocrRawText, setOcrRawText] = useState<string>("")
-  const [ocrParsedRows, setOcrParsedRows] = useState<Array<{
-    name: string
-    dni?: string
-    date: string
-    campusName: string
-    shift: Shift
-    entryTime: string
-  }>>([])
 
   const [isPending, startTransition] = useTransition()
 
@@ -1439,8 +1417,9 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
     if (!file) return
 
     const reader = new FileReader()
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       try {
+        const XLSX = await import("xlsx")
         const bstr = evt.target?.result
         const wb = XLSX.read(bstr, { type: "binary" })
         const ws = wb.Sheets[wb.SheetNames[0]]
@@ -1640,164 +1619,6 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
         toast.success(res.message)
         setIsBulkOpen(false)
         setExcelPreview([])
-        window.location.reload()
-      } else {
-        toast.error(res.message)
-      }
-    })
-  }
-
-  // Procesar imagen con OCR (Tesseract.js)
-  const handleOcrImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    setOcrImage(file)
-    setOcrImagePreview(URL.createObjectURL(file))
-    setOcrStatus("Iniciando motor de reconocimiento óptico (OCR)...")
-    setOcrProgress(5)
-
-    try {
-      const { createWorker } = await import("tesseract.js")
-      const worker = await createWorker("spa+eng", 1, {
-        logger: (m) => {
-          if (m.status === "recognizing text") {
-            setOcrStatus(`Analizando texto de la imagen: ${Math.round((m.progress || 0) * 100)}%`)
-            setOcrProgress(Math.round((m.progress || 0) * 100))
-          } else {
-            setOcrStatus(m.status)
-          }
-        },
-      })
-
-      const ret = await worker.recognize(file)
-      await worker.terminate()
-
-      const text = ret.data.text
-      setOcrRawText(text)
-      setOcrStatus("Texto extraído con éxito. Parseando filas del cronograma...")
-      setOcrProgress(100)
-
-      // Parser inteligente del texto extraído
-      parseOcrTextToRows(text)
-    } catch (err: any) {
-      console.error("Error en OCR:", err)
-      setOcrStatus("Error al procesar la imagen.")
-      toast.error(err?.message || "No se pudo leer la imagen. Intenta con un archivo más nítido o sube un Excel.")
-    }
-  }
-
-  // Parsear texto de la imagen del rol mensual con lectura de secciones de sedes y rotaciones
-  const parseOcrTextToRows = (text: string) => {
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 1)
-    const detectedRows: any[] = []
-
-    const today = new Date()
-    let refYear = today.getFullYear()
-    let refMonth = today.getMonth() + 1
-
-    const monthMap: Record<string, number> = {
-      enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6,
-      julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12
-    }
-    for (const [mName, mNum] of Object.entries(monthMap)) {
-      if (text.toLowerCase().includes(mName)) {
-        refMonth = mNum
-        break
-      }
-    }
-    const yearMatch = text.match(/202\d/)
-    if (yearMatch) refYear = Number(yearMatch[0])
-
-    let currentCampus = "Campus Villa"
-    const matrixRows: MatrixRow[] = []
-    const daysInMonth = new Date(refYear, refMonth, 0).getDate()
-
-    for (const line of lines) {
-      const upperLine = line.toUpperCase()
-
-      // Detección de sección de sede
-      if (upperLine.includes("SEDE VILLA") || upperLine.includes("VILLA")) {
-        currentCampus = "Campus Villa"
-      } else if (upperLine.includes("SEDE NORTE") || upperLine.includes("NORTE")) {
-        currentCampus = "Campus Norte"
-      } else if (upperLine.includes("SEDE ATE") || upperLine.includes("ATE")) {
-        currentCampus = "Campus Ate"
-      } else if (upperLine.includes("ARAMBUR") || upperLine.includes("MIRAFLORES")) {
-        currentCampus = "Campus Aramburú"
-      }
-
-      // Buscar si la línea corresponde a un técnico
-      const matchedTech = matchTechFromText(line)
-      if (matchedTech) {
-        // Extraer los turnos y rotaciones en la línea (ej: EV, M, T, I, N, M(N), T(N), M(V), D, L)
-        const tokens = line.match(/(EV\b|EV\s*\([^)]*\)|[MTIN]\s*\([NVA]\)|[MTINDL]|VAC|FER)/gi) || []
-        const rowDays: Record<number, MatrixCell> = {}
-
-        for (let d = 1; d <= daysInMonth; d++) {
-          const dateStr = `${refYear}-${String(refMonth).padStart(2, "0")}-${String(d).padStart(2, "0")}`
-          const dObj = new Date(`${dateStr}T12:00:00Z`)
-          const isSunday = dObj.getUTCDay() === 0
-
-          const cellToken = tokens[d - 1] || ""
-          rowDays[d] = resolveTokenToCell(cellToken, currentCampus, isSunday)
-
-          if (cellToken) {
-            const parsed = rowDays[d]
-            detectedRows.push({
-              name: matchedTech.name,
-              dni: matchedTech.dni || "",
-              date: dateStr,
-              campusName: parsed.campusName,
-              shift: parsed.shift,
-              entryTime: parsed.entryTime,
-            })
-          }
-        }
-
-        matrixRows.push({
-          rowId: `ocr-row-${matchedTech.id || matrixRows.length}`,
-          techId: matchedTech.id,
-          name: matchedTech.name,
-          dni: matchedTech.dni || "",
-          campusName: currentCampus,
-          days: rowDays,
-        })
-      }
-    }
-
-    setOcrParsedRows(detectedRows)
-    if (matrixRows.length > 0) {
-      const preview = buildMatrixPreviewStructure(refYear, refMonth, matrixRows)
-      setMatrixPreview(preview)
-      setIsOcrOpen(false)
-      setIsMatrixPreviewOpen(true)
-      toast.success(`¡Rol reconocido por OCR (${preview.monthLabel})! Puedes revisar la vista previa tipo calendario y editar cualquier celda antes de guardar.`)
-    } else {
-      toast.warning("No se pudo estructurar el texto de la imagen automáticamente. Te recomendamos importar directamente el archivo Excel (.xlsx) del rol que se procesa al 100% con total precisión.")
-    }
-  }
-
-  // Guardar filas reconocidas de OCR
-  const handleSaveOcrRows = async () => {
-    if (ocrParsedRows.length === 0) return
-    startTransition(async () => {
-      const items: ScheduleItemInput[] = ocrParsedRows.map((r) => ({
-        dni: r.dni,
-        name: r.name,
-        date: r.date,
-        campusName: r.campusName,
-        shift: r.shift,
-        expectedEntryTime: r.entryTime,
-        notes: "Importado vía OCR Imagen",
-      })) as any
-
-      const res = await bulkUpsertTechnicianSchedulesAction(items)
-      if (res.success) {
-        toast.success(res.message)
-        setIsOcrOpen(false)
-        setOcrParsedRows([])
-        setOcrImage(null)
         window.location.reload()
       } else {
         toast.error(res.message)
@@ -2341,166 +2162,6 @@ export function DashboardSchedules({ initialSchedules = [], technicians = [], ca
               className="flex-1 h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-md"
             >
               {isPending ? <Loader2 className="animate-spin" /> : `Guardar ${excelPreview.length} Asignaciones`}
-            </Button>
-          </div>
-        </div>
-      </ScheduleModal>
-
-      {/* MODAL: CARGA DE FOTO / OCR */}
-      <ScheduleModal
-        isOpen={isOcrOpen}
-        onClose={() => setIsOcrOpen(false)}
-        title="Reconocimiento Óptico (OCR) de Imagen del Rol"
-      >
-        <div className="space-y-5">
-          <p className="text-xs text-slate-500 font-medium">
-            Sube una fotografía o captura del rol mensual de técnicos. El motor extraerá los nombres, sedes y turnos para que puedas revisarlos y confirmarlos antes de guardarlos.
-          </p>
-
-          <div className="border-2 border-dashed border-indigo-200 hover:border-indigo-500 p-6 rounded-2xl text-center bg-indigo-50/30 hover:bg-indigo-50 transition-all cursor-pointer relative">
-            <input
-              type="file"
-              accept="image/*"
-              onChange={handleOcrImageUpload}
-              className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-            />
-            <ImageIcon className="mx-auto text-indigo-600 mb-2" size={40} />
-            <p className="font-bold text-slate-700 text-sm">Selecciona o toma una foto del rol de turnos</p>
-            <p className="text-xs text-slate-400 mt-1">PNG, JPG, WEBP de alta resolución</p>
-          </div>
-
-          {ocrStatus && (
-            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs">
-              <div className="flex items-center justify-between mb-1.5 font-bold text-slate-700">
-                <span className="flex items-center gap-1.5">
-                  <Sparkles size={14} className="text-indigo-600 animate-pulse" /> {ocrStatus}
-                </span>
-                <span>{ocrProgress}%</span>
-              </div>
-              <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
-                <div
-                  className="bg-indigo-600 h-full transition-all duration-300"
-                  style={{ width: `${ocrProgress}%` }}
-                ></div>
-              </div>
-            </div>
-          )}
-
-          {ocrParsedRows.length > 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-black uppercase tracking-wider text-slate-600">
-                  Filas reconocidas ({ocrParsedRows.length}) — Puedes editarlas antes de guardar:
-                </span>
-              </div>
-              <div className="max-h-60 overflow-y-auto border border-slate-200 rounded-xl">
-                <table className="w-full text-xs">
-                  <thead className="bg-slate-100 font-bold text-slate-600 sticky top-0">
-                    <tr>
-                      <th className="p-2 text-left">Técnico</th>
-                      <th className="p-2 text-left">Fecha</th>
-                      <th className="p-2 text-left">Sede</th>
-                      <th className="p-2 text-left">Turno</th>
-                      <th className="p-2 text-center">✕</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ocrParsedRows.map((r, i) => (
-                      <tr key={i} className="border-t border-slate-100">
-                        <td className="p-2 font-medium">
-                          <input
-                            type="text"
-                            value={r.name}
-                            onChange={(e) => {
-                              const next = [...ocrParsedRows]
-                              next[i].name = e.target.value
-                              setOcrParsedRows(next)
-                            }}
-                            className="w-full bg-transparent border-b border-dashed border-slate-300 focus:outline-none"
-                          />
-                        </td>
-                        <td className="p-2">
-                          <input
-                            type="date"
-                            value={r.date}
-                            onChange={(e) => {
-                              const next = [...ocrParsedRows]
-                              next[i].date = e.target.value
-                              setOcrParsedRows(next)
-                            }}
-                            className="bg-transparent border-b border-dashed border-slate-300 focus:outline-none text-[11px]"
-                          />
-                        </td>
-                        <td className="p-2">
-                          <select
-                            value={r.campusName}
-                            onChange={(e) => {
-                              const next = [...ocrParsedRows]
-                              next[i].campusName = e.target.value
-                              setOcrParsedRows(next)
-                            }}
-                            className="bg-transparent border-b border-dashed border-slate-300 focus:outline-none font-bold"
-                          >
-                            {campuses.map((c) => (
-                              <option key={c.id} value={c.name}>{c.name}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="p-2">
-                          <select
-                            value={r.shift}
-                            onChange={(e) => {
-                              const next = [...ocrParsedRows]
-                              next[i].shift = e.target.value as Shift
-                              next[i].entryTime = DEFAULT_SHIFT_TIMES[e.target.value as Shift].entry
-                              setOcrParsedRows(next)
-                            }}
-                            className="bg-transparent border-b border-dashed border-slate-300 focus:outline-none font-black text-[10px]"
-                          >
-                            <option value={Shift.MANANA}>MANANA</option>
-                            <option value={Shift.INTERMEDIO}>INTERMEDIO</option>
-                            <option value={Shift.TARDE}>TARDE</option>
-                            <option value={Shift.DESCANSO}>DESCANSO</option>
-                            <option value={Shift.COMISION}>EV (COMISIÓN / EVENTO)</option>
-                          </select>
-                        </td>
-                        <td className="p-2 text-center">
-                          <button
-                            type="button"
-                            onClick={() => setOcrParsedRows((prev) => prev.filter((_, idx) => idx !== i))}
-                            className="text-rose-500 hover:text-rose-700 font-bold"
-                          >
-                            ✕
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          <div className="flex gap-4 pt-4 border-t border-slate-100">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setIsOcrOpen(false)
-                setOcrParsedRows([])
-                setOcrImage(null)
-              }}
-              className="flex-1 h-12 rounded-xl font-bold"
-            >
-              Cancelar
-            </Button>
-            <Button
-              type="button"
-              disabled={ocrParsedRows.length === 0 || isPending}
-              onClick={handleSaveOcrRows}
-              className="flex-1 h-12 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-md"
-            >
-              {isPending ? <Loader2 className="animate-spin" /> : `Guardar ${ocrParsedRows.length} Turnos`}
             </Button>
           </div>
         </div>

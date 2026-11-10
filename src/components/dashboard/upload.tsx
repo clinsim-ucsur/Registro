@@ -4,7 +4,6 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { UploadCloud, CheckCircle2, FileSpreadsheet, Loader2, AlertCircle } from "lucide-react"
-import * as XLSX from "xlsx"
 import { bulkUploadUsersAction } from "@/actions/users"
 import { toast } from "sonner"
 
@@ -22,8 +21,9 @@ export function DashboardUpload() {
     setIsProcessing(true)
 
     const reader = new FileReader()
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       try {
+        const XLSX = await import("xlsx")
         const bstr = evt.target?.result
         const wb = XLSX.read(bstr, { type: 'binary' })
         const wsname = wb.SheetNames[0]

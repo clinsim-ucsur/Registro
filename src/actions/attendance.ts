@@ -903,29 +903,39 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       try {
         const prog = await getDailyProgramForUser(user.name, data.role, resolvedCampusName)
         if (prog.found) {
-          // Obtener registros previos del día para saber qué módulo le corresponde marcar
-          const limaOffset = -5 * 60 * 60 * 1000
-          const limaDay = new Date(recordTimestamp.getTime() + limaOffset)
-          limaDay.setUTCHours(0, 0, 0, 0)
-          const startOfDayUTC = new Date(limaDay.getTime() - limaOffset)
-          const endOfDayUTC = new Date(startOfDayUTC.getTime() + 24 * 60 * 60 * 1000)
+          // Marcaciones previas del día para saber qué módulo le corresponde marcar:
+          // se reutilizan desde el directorio en memoria (0ms) y solo se consulta la BD si no están disponibles
+          const cachedTodayRecs: TodayAttendanceRecordLite[] | undefined =
+            cachedDirectory?.data[user.dni]?.todayRecords
+          let todayRecsForModules: TodayAttendanceRecordLite[]
 
-          const existingTodayRecs = await prisma.attendanceRecord.findMany({
-            where: {
-              userId: user.id,
-              timestamp: { gte: startOfDayUTC, lt: endOfDayUTC },
-            },
-            orderBy: { timestamp: "asc" },
-            select: { type: true, timestamp: true, course: { select: { name: true } } },
-          })
+          if (Array.isArray(cachedTodayRecs)) {
+            todayRecsForModules = cachedTodayRecs
+          } else {
+            const limaOffset = -5 * 60 * 60 * 1000
+            const limaDay = new Date(recordTimestamp.getTime() + limaOffset)
+            limaDay.setUTCHours(0, 0, 0, 0)
+            const startOfDayUTC = new Date(limaDay.getTime() - limaOffset)
+            const endOfDayUTC = new Date(startOfDayUTC.getTime() + 24 * 60 * 60 * 1000)
 
-          const modResolution = resolveUserModulesState(
-            prog.sessions,
-            existingTodayRecs.map((r) => ({
+            const existingTodayRecs = await prisma.attendanceRecord.findMany({
+              where: {
+                userId: user.id,
+                timestamp: { gte: startOfDayUTC, lt: endOfDayUTC },
+              },
+              orderBy: { timestamp: "asc" },
+              select: { type: true, timestamp: true, course: { select: { name: true } } },
+            })
+            todayRecsForModules = existingTodayRecs.map((r) => ({
               type: r.type,
               timestamp: r.timestamp.toISOString(),
               courseName: r.course?.name || null,
-            })),
+            }))
+          }
+
+          const modResolution = resolveUserModulesState(
+            prog.sessions,
+            todayRecsForModules,
             getCurrentLimaMinutes(recordTimestamp),
             data.role
           )
@@ -1172,9 +1182,9 @@ export async function syncOfflineRecordsAction(records: any[]) {
 
     const dnis = Array.from(new Set(records.map((r) => r.dni).filter(Boolean)))
     const [users, campuses, rules] = await Promise.all([
-      prisma.user.findMany({ where: { dni: { in: dnis } } }),
-      prisma.campus.findMany(),
-      prisma.toleranceRule.findMany(),
+      prisma.user.findMany({ where: { dni: { in: dnis } }, select: { id: true, dni: true, role: true } }),
+      getCachedCampusesList(),
+      getCachedToleranceRulesList(),
     ])
 
     const userMap = new Map(users.map((u) => [u.dni, u]))

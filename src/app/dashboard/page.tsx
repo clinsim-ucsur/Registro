@@ -57,8 +57,8 @@ export default async function DashboardPage() {
 
   const [
     records,
-    users,
-    admins,
+    rawUsers,
+    rawAdmins,
     initialAnalytics,
     rules,
     allCampusesWithCounts,
@@ -76,7 +76,8 @@ export default async function DashboardPage() {
       orderBy: { timestamp: 'desc' },
       take: 1000,
       include: {
-        user: true,
+        // Solo los campos necesarios (nunca enviar contraseñas al navegador y reducir el peso de la página)
+        user: { select: { id: true, name: true, dni: true, role: true, defaultShift: true } },
         campus: { select: { id: true, name: true } },
         course: { select: { id: true, name: true } },
       }
@@ -92,22 +93,26 @@ export default async function DashboardPage() {
       orderBy: { name: 'asc' },
       take: 500,
     }),
-    prisma.user.findMany({
-      where: {
-        OR: [
-          { adminRole: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } },
-          { role: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } }
-        ]
-      },
-      include: { campus: { select: { id: true, name: true } } },
-      orderBy: { name: 'asc' },
-    }),
+    hasAccess("admins") || hasAccess("kiosk")
+      ? prisma.user.findMany({
+          where: {
+            OR: [
+              { adminRole: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } },
+              { role: { in: ['SUPER_ADMIN', 'ADMIN_SECUNDARIO'] } }
+            ]
+          },
+          include: { campus: { select: { id: true, name: true } } },
+          orderBy: { name: 'asc' },
+        })
+      : Promise.resolve([]),
     computeAnalytics({ days: 30, campusId: scopedCampusId, roleFilter: scopedRole }),
-    prisma.toleranceRule.findMany({
-      where: scopedCampusId ? { OR: [{ campusId: scopedCampusId }, { campusId: null }] } : undefined,
-      include: { campus: { select: { id: true, name: true } } },
-      orderBy: { createdAt: 'desc' },
-    }),
+    hasAccess("rules")
+      ? prisma.toleranceRule.findMany({
+          where: scopedCampusId ? { OR: [{ campusId: scopedCampusId }, { campusId: null }] } : undefined,
+          include: { campus: { select: { id: true, name: true } } },
+          orderBy: { createdAt: 'desc' },
+        })
+      : Promise.resolve([]),
     prisma.campus.findMany({
       orderBy: { name: 'asc' },
       include: {
@@ -116,27 +121,35 @@ export default async function DashboardPage() {
         }
       }
     }),
-    prisma.course.findMany({
-      orderBy: { name: 'asc' },
-      include: {
-        _count: {
-          select: { records: true }
-        }
-      }
-    }),
-    prisma.technicianSchedule.findMany({
-      where: scopedCampusId ? { campusId: scopedCampusId } : undefined,
-      orderBy: [{ date: 'desc' }, { expectedEntryTime: 'asc' }],
-      include: {
-        user: { select: { id: true, name: true, dni: true } },
-        campus: { select: { id: true, name: true } },
-      },
-      take: 300,
-    }),
-    getOvertimeSettingsAction(),
+    hasAccess("catalogs")
+      ? prisma.course.findMany({
+          orderBy: { name: 'asc' },
+          include: {
+            _count: {
+              select: { records: true }
+            }
+          }
+        })
+      : Promise.resolve([]),
+    (hasAccess("rules") || hasAccess("users")) && !scopedRole
+      ? prisma.technicianSchedule.findMany({
+          where: scopedCampusId ? { campusId: scopedCampusId } : undefined,
+          orderBy: [{ date: 'desc' }, { expectedEntryTime: 'asc' }],
+          include: {
+            user: { select: { id: true, name: true, dni: true } },
+            campus: { select: { id: true, name: true } },
+          },
+          take: 300,
+        })
+      : Promise.resolve([]),
+    hasAccess("reports") ? getOvertimeSettingsAction() : Promise.resolve(undefined),
     currentUserRole === "SUPER_ADMIN" ? getAuditLogs() : Promise.resolve([]),
     hasAccess("kiosk") ? getKioskOneTimeCodesList() : Promise.resolve([]),
   ])
+
+  // Nunca enviar contraseñas (ni hashes) a los componentes cliente
+  const users = rawUsers.map(({ password: _pw, ...u }) => u)
+  const admins = rawAdmins.map(({ password: _pw, ...a }) => a)
 
   const allCampuses = allCampusesWithCounts.map((c) => ({ id: c.id, name: c.name }))
   const catalogCampuses = scopedCampusId
