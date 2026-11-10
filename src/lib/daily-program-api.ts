@@ -29,6 +29,10 @@ export interface NormalizedProgramSession {
   docenteLider: string
   docentesColaboradores: string
   pacientesEstandarizados: string
+  /** Pre-tokenización interna para búsqueda O(1) en directorios masivos */
+  _liderTokenGroups?: string[][]
+  _colabTokenGroups?: string[][]
+  _pacientesTokenGroups?: string[][]
 }
 
 export interface ProgramSessionItem {
@@ -90,6 +94,7 @@ let cachedSessions: {
   expiresAt: number
 } | null = null
 let inflightRefresh: Promise<NormalizedProgramSession[]> | null = null
+const cachedUserMatchMap = new Map<string, UserDailyProgramSummary>()
 
 const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutos fresco, luego refresca en segundo plano sin bloquear
 
@@ -218,6 +223,19 @@ function parseCsvLine(line: string): string[] {
   return result
 }
 
+function tokenizeFieldGroups(fieldValue: string): string[][] {
+  if (!fieldValue) return []
+  const trimmed = fieldValue.trim()
+  if (!trimmed || trimmed.toLowerCase() === "ninguno") return []
+  const parts = trimmed.split(/[;/\n]+/).map((p) => p.trim()).filter(Boolean)
+  const groups: string[][] = []
+  for (const part of parts) {
+    const tokens = normalizeNameTokens(part)
+    if (tokens.length > 0) groups.push(tokens)
+  }
+  return groups
+}
+
 function normalizeRawSessions(rawList: RawProgramSession[]): NormalizedProgramSession[] {
   const normalized: NormalizedProgramSession[] = []
   for (const item of rawList) {
@@ -229,6 +247,9 @@ function normalizeRawSessions(rawList: RawProgramSession[]): NormalizedProgramSe
     const rawAmbiente = (item.Ambiente || "").trim()
     const ambiente = formatAmbienteName(rawAmbiente)
     const sesion = (item["Sesión"] || "").trim()
+    const docenteLider = (item["Docente Líder"] || "").trim()
+    const docentesColaboradores = (item["Docentes Colaboradores"] || "").trim()
+    const pacientesEstandarizados = (item["Pacientes Estandarizados"] || "").trim()
 
     normalized.push({
       piso,
@@ -240,9 +261,12 @@ function normalizeRawSessions(rawList: RawProgramSession[]): NormalizedProgramSe
       horaFin: end.formatted,
       startMinutes: start.minutes,
       endMinutes: end.minutes,
-      docenteLider: (item["Docente Líder"] || "").trim(),
-      docentesColaboradores: (item["Docentes Colaboradores"] || "").trim(),
-      pacientesEstandarizados: (item["Pacientes Estandarizados"] || "").trim(),
+      docenteLider,
+      docentesColaboradores,
+      pacientesEstandarizados,
+      _liderTokenGroups: tokenizeFieldGroups(docenteLider),
+      _colabTokenGroups: tokenizeFieldGroups(docentesColaboradores),
+      _pacientesTokenGroups: tokenizeFieldGroups(pacientesEstandarizados),
     })
   }
   return normalized
@@ -250,7 +274,7 @@ function normalizeRawSessions(rawList: RawProgramSession[]): NormalizedProgramSe
 
 async function fetchFromApi2Csv(): Promise<NormalizedProgramSession[]> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 5000)
+  const timer = setTimeout(() => controller.abort(), 3500)
   try {
     const res = await fetch(API_2_CSV_URL, {
       signal: controller.signal,
@@ -286,7 +310,7 @@ async function fetchFromApi2Csv(): Promise<NormalizedProgramSession[]> {
 
 async function fetchFromApi1Json(): Promise<NormalizedProgramSession[]> {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 6000)
+  const timer = setTimeout(() => controller.abort(), 4500)
   try {
     const res = await fetch(API_1_JSON_URL, {
       signal: controller.signal,
@@ -313,6 +337,7 @@ async function refreshDailyProgramCache(): Promise<NormalizedProgramSession[]> {
         data: fastest,
         expiresAt: Date.now() + CACHE_TTL_MS,
       }
+      cachedUserMatchMap.clear()
       return fastest
     } catch (err) {
       console.warn("[daily-program-api] No se pudo actualizar desde API 1 / API 2:", err)
@@ -327,9 +352,10 @@ async function refreshDailyProgramCache(): Promise<NormalizedProgramSession[]> {
 /**
  * Obtiene las sesiones programadas del día de forma ultra-rápida:
  * - Si hay datos en caché (frescos o ligeramente vencidos), responde en 0ms y refresca en segundo plano.
- * - Si es la primera carga en frío, compite en paralelo entre API 2 (CSV rápido) y API 1 (JSON).
+ * - Si es la primera carga en frío, compite en paralelo entre API 2 (CSV rápido) y API 1 (JSON),
+ *   con un límite máximo de espera (`maxWaitMs`) para nunca bloquear una PC en redes lentas.
  */
-export async function fetchDailyProgramSessions(): Promise<NormalizedProgramSession[]> {
+export async function fetchDailyProgramSessions(maxWaitMs = 2200): Promise<NormalizedProgramSession[]> {
   const now = Date.now()
   if (cachedSessions) {
     if (cachedSessions.expiresAt <= now && !inflightRefresh) {
@@ -338,7 +364,22 @@ export async function fetchDailyProgramSessions(): Promise<NormalizedProgramSess
     }
     return cachedSessions.data
   }
-  return refreshDailyProgramCache()
+
+  const refreshPromise = refreshDailyProgramCache()
+  if (maxWaitMs <= 0) {
+    return refreshPromise
+  }
+
+  let timeoutId: ReturnType<typeof setTimeout> | null = null
+  const timeoutPromise = new Promise<NormalizedProgramSession[]>((resolve) => {
+    timeoutId = setTimeout(() => resolve([]), maxWaitMs)
+  })
+
+  try {
+    return await Promise.race([refreshPromise, timeoutPromise])
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId)
+  }
 }
 
 // ------------------------------------------------------------------
@@ -357,27 +398,78 @@ function normalizeNameTokens(name: string): string[] {
     .filter((t) => t.length > 1 && !STOP_WORDS.has(t))
 }
 
-function levenshteinDistance(a: string, b: string): number {
-  const m = a.length
-  const n = b.length
-  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
-  for (let i = 0; i <= m; i++) dp[i][0] = i
-  for (let j = 0; j <= n; j++) dp[0][j] = j
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      dp[i][j] =
-        a[i - 1] === b[j - 1]
-          ? dp[i - 1][j - 1]
-          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
+/**
+ * Evalúa en O(N) y con cero asignaciones en memoria si dos cadenas tienen
+ * distancia de edición (Levenshtein) <= 1.
+ */
+function isEditDistanceAtMostOne(a: string, b: string): boolean {
+  const lenA = a.length
+  const lenB = b.length
+  const diff = lenA - lenB
+  if (diff > 1 || diff < -1) return false
+  if (a === b) return true
+
+  let i = 0
+  let j = 0
+  let edits = 0
+
+  while (i < lenA && j < lenB) {
+    if (a.charCodeAt(i) === b.charCodeAt(j)) {
+      i++
+      j++
+    } else {
+      edits++
+      if (edits > 1) return false
+      if (lenA > lenB) {
+        i++
+      } else if (lenB > lenA) {
+        j++
+      } else {
+        i++
+        j++
+      }
     }
   }
-  return dp[m][n]
+
+  if (i < lenA || j < lenB) {
+    edits++
+  }
+
+  return edits <= 1
 }
 
 function tokensAreEquivalent(t1: string, t2: string): boolean {
   if (t1 === t2) return true
-  if (t1.length >= 4 && t2.length >= 4 && levenshteinDistance(t1, t2) <= 1) return true
+  if (t1.length >= 4 && t2.length >= 4 && isEditDistanceAtMostOne(t1, t2)) return true
   return false
+}
+
+function tokenArraysMatchPerson(tokA: string[], tokB: string[]): boolean {
+  if (tokA.length === 0 || tokB.length === 0) return false
+
+  const shorter = tokA.length <= tokB.length ? tokA : tokB
+  const longer = tokA.length <= tokB.length ? tokB : tokA
+  const requiredMatches = shorter.length <= 3 ? shorter.length : 3
+
+  let usedMask = 0
+  let matchedCount = 0
+
+  for (let s = 0; s < shorter.length; s++) {
+    const sToken = shorter[s]
+    for (let l = 0; l < longer.length; l++) {
+      if ((usedMask & (1 << l)) === 0 && tokensAreEquivalent(sToken, longer[l])) {
+        usedMask |= 1 << l
+        matchedCount++
+        break
+      }
+    }
+    // Salida temprana si incluso acertando todos los tokens restantes no alcanzaría el mínimo requerido
+    if (matchedCount + (shorter.length - 1 - s) < requiredMatches) {
+      return false
+    }
+  }
+
+  return matchedCount >= requiredMatches
 }
 
 /**
@@ -394,42 +486,37 @@ export function isSamePersonName(nameA: string, nameB: string): boolean {
 
   const tokA = normalizeNameTokens(cleanA)
   const tokB = normalizeNameTokens(cleanB)
-  if (tokA.length === 0 || tokB.length === 0) return false
-
-  const shorter = tokA.length <= tokB.length ? tokA : tokB
-  const longer = tokA.length <= tokB.length ? tokB : tokA
-
-  const usedIndices = new Set<number>()
-  let matchedCount = 0
-
-  for (const sToken of shorter) {
-    const idx = longer.findIndex((lToken, i) => !usedIndices.has(i) && tokensAreEquivalent(sToken, lToken))
-    if (idx !== -1) {
-      usedIndices.add(idx)
-      matchedCount++
-    }
-  }
-
-  if (shorter.length <= 2) {
-    return matchedCount === shorter.length
-  }
-  if (shorter.length === 3) {
-    return matchedCount === 3
-  }
-  return matchedCount >= 3
+  return tokenArraysMatchPerson(tokA, tokB)
 }
 
-/**
- * Verifica si el nombre del usuario coincide con un campo de la sesión
- * (que puede contener un nombre o varios separados por "/", ";", "\n").
- */
-function matchesSessionField(userName: string, fieldValue: string): boolean {
-  if (!fieldValue || fieldValue.trim().toLowerCase() === "ninguno") return false
-  if (isSamePersonName(userName, fieldValue)) return true
+function matchesPreTokenizedField(
+  userTokens: string[],
+  session: NormalizedProgramSession,
+  fieldKey: "docenteLider" | "docentesColaboradores" | "pacientesEstandarizados"
+): boolean {
+  if (userTokens.length === 0) return false
 
-  const parts = fieldValue.split(/[;/\n]+/).map((p) => p.trim()).filter(Boolean)
-  if (parts.length > 1) {
-    return parts.some((part) => isSamePersonName(userName, part))
+  let groups: string[][] | undefined
+  if (fieldKey === "docenteLider") {
+    if (!session._liderTokenGroups) {
+      session._liderTokenGroups = tokenizeFieldGroups(session.docenteLider)
+    }
+    groups = session._liderTokenGroups
+  } else if (fieldKey === "docentesColaboradores") {
+    if (!session._colabTokenGroups) {
+      session._colabTokenGroups = tokenizeFieldGroups(session.docentesColaboradores)
+    }
+    groups = session._colabTokenGroups
+  } else {
+    if (!session._pacientesTokenGroups) {
+      session._pacientesTokenGroups = tokenizeFieldGroups(session.pacientesEstandarizados)
+    }
+    groups = session._pacientesTokenGroups
+  }
+
+  if (!groups || groups.length === 0) return false
+  for (let i = 0; i < groups.length; i++) {
+    if (tokenArraysMatchPerson(userTokens, groups[i])) return true
   }
   return false
 }
@@ -440,27 +527,40 @@ export function matchDailyProgramFromSessions(
   userRole: Role,
   fallbackCampusName?: string | null
 ): UserDailyProgramSummary {
+  const isUsingLiveCache = cachedSessions !== null && allSessions === cachedSessions.data
+  const cacheKey = isUsingLiveCache
+    ? `${userRole}|${(userName || "").trim().toLowerCase()}|${fallbackCampusName || ""}`
+    : ""
+
+  if (isUsingLiveCache) {
+    const cachedResult = cachedUserMatchMap.get(cacheKey)
+    if (cachedResult) return cachedResult
+  }
+
+  const userTokens = normalizeNameTokens((userName || "").trim())
   const matchedSessions: {
     session: NormalizedProgramSession
     roleInSession: "DOCENTE_LIDER" | "DOCENTE_COLABORADOR" | "PACIENTE_ESTANDARIZADO"
   }[] = []
 
-  for (const s of allSessions) {
-    if (userRole === Role.PACIENTE_SIMULADO) {
-      if (matchesSessionField(userName, s.pacientesEstandarizados)) {
-        matchedSessions.push({ session: s, roleInSession: "PACIENTE_ESTANDARIZADO" })
-      }
-    } else if (userRole === Role.DOCENTE || userRole === Role.SUPER_ADMIN || userRole === Role.ADMIN_SECUNDARIO) {
-      if (matchesSessionField(userName, s.docenteLider)) {
-        matchedSessions.push({ session: s, roleInSession: "DOCENTE_LIDER" })
-      } else if (matchesSessionField(userName, s.docentesColaboradores)) {
-        matchedSessions.push({ session: s, roleInSession: "DOCENTE_COLABORADOR" })
+  if (userTokens.length > 0) {
+    for (const s of allSessions) {
+      if (userRole === Role.PACIENTE_SIMULADO) {
+        if (matchesPreTokenizedField(userTokens, s, "pacientesEstandarizados")) {
+          matchedSessions.push({ session: s, roleInSession: "PACIENTE_ESTANDARIZADO" })
+        }
+      } else if (userRole === Role.DOCENTE || userRole === Role.SUPER_ADMIN || userRole === Role.ADMIN_SECUNDARIO) {
+        if (matchesPreTokenizedField(userTokens, s, "docenteLider")) {
+          matchedSessions.push({ session: s, roleInSession: "DOCENTE_LIDER" })
+        } else if (matchesPreTokenizedField(userTokens, s, "docentesColaboradores")) {
+          matchedSessions.push({ session: s, roleInSession: "DOCENTE_COLABORADOR" })
+        }
       }
     }
   }
 
   if (matchedSessions.length === 0) {
-    return {
+    const emptySummary: UserDailyProgramSummary = {
       found: false,
       entryTime: "",
       exitTime: "",
@@ -472,6 +572,8 @@ export function matchDailyProgramFromSessions(
       totalSessions: 0,
       sessions: [],
     }
+    if (isUsingLiveCache) cachedUserMatchMap.set(cacheKey, emptySummary)
+    return emptySummary
   }
 
   // Ordenar por hora de inicio ascendente (y luego por hora de fin) para obtener cada módulo en orden cronológico
@@ -518,7 +620,7 @@ export function matchDailyProgramFromSessions(
       ? mergeContinuousSessionsForPatient(rawMappedSessions)
       : rawMappedSessions
 
-  return {
+  const summary: UserDailyProgramSummary = {
     found: true,
     matchedRoleInSession: earliest.roleInSession,
     entryTime: earliest.session.horaInicio,
@@ -531,6 +633,8 @@ export function matchDailyProgramFromSessions(
     totalSessions: mappedSessions.length,
     sessions: mappedSessions,
   }
+  if (isUsingLiveCache) cachedUserMatchMap.set(cacheKey, summary)
+  return summary
 }
 
 /**

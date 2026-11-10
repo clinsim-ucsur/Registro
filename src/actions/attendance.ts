@@ -4,8 +4,8 @@ import { revalidatePath } from "next/cache"
 import { cookies } from "next/headers"
 import { Role, RecordType, RecordStatus, Shift } from "@prisma/client"
 import prisma from "@/lib/prisma"
-import { limaMinutesOfDay, limaDayOfWeek } from "@/lib/timezone"
-import { detectAndValidateCampus, validateHybridLocation } from "@/lib/geofence"
+import { limaDayOfWeek } from "@/lib/timezone"
+import { validateHybridLocation } from "@/lib/geofence"
 import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
 import {
   getDailyProgramForUser,
@@ -17,23 +17,34 @@ import {
   type TodayAttendanceRecordLite,
 } from "@/lib/daily-program-api"
 import { calculateExpectedExitTime } from "@/lib/overtime"
+import {
+  findApplicableToleranceRule,
+  getShiftDiffInMinutes,
+  validateEarlyEntry,
+  calculateStatusFromRule,
+} from "@/lib/tolerance"
 
-// Cachés en memoria (TTL: 60s) para acelerar tiempos de respuesta de validación y marcación
+// Cachés en memoria para acelerar tiempos de respuesta de validación y marcación en PCs y móviles
 let cachedCampuses: { data: any[]; expiresAt: number } | null = null
 let cachedCourses: { data: { id: string; name: string }[]; expiresAt: number } | null = null
 let cachedToleranceRules: { data: any[]; expiresAt: number } | null = null
 let cachedDirectory: { data: Record<string, any>; expiresAt: number } | null = null
+let inflightDirectoryBuild: Promise<Record<string, any>> | null = null
 
-async function getCachedCampusesList() {
+const CATALOG_CACHE_TTL_MS = 120_000 // 2 minutos
+const DIRECTORY_CACHE_TTL_MS = 120_000 // 2 minutos (se actualiza en caliente al marcar asistencia)
+
+export async function getCachedCampusesList() {
   const now = Date.now()
   if (cachedCampuses && cachedCampuses.expiresAt > now) {
     return cachedCampuses.data
   }
   try {
     const list = await prisma.campus.findMany({
+      orderBy: { name: "asc" },
       select: { id: true, name: true, geoEnforced: true, latitude: true, longitude: true, radiusMeters: true },
     })
-    cachedCampuses = { data: list, expiresAt: now + 60_000 }
+    cachedCampuses = { data: list, expiresAt: now + CATALOG_CACHE_TTL_MS }
     return list
   } catch (err) {
     console.warn("No se pudo consultar sedes desde BD para geocerca, usando catálogo oficial:", err)
@@ -50,7 +61,7 @@ async function getCachedCoursesList() {
     const list = await prisma.course.findMany({
       select: { id: true, name: true },
     })
-    cachedCourses = { data: list, expiresAt: now + 60_000 }
+    cachedCourses = { data: list, expiresAt: now + CATALOG_CACHE_TTL_MS }
     return list
   } catch {
     return cachedCourses ? cachedCourses.data : []
@@ -64,11 +75,180 @@ async function getCachedToleranceRulesList() {
   }
   try {
     const list = await prisma.toleranceRule.findMany()
-    cachedToleranceRules = { data: list, expiresAt: now + 60_000 }
+    cachedToleranceRules = { data: list, expiresAt: now + CATALOG_CACHE_TTL_MS }
     return list
   } catch {
     return cachedToleranceRules ? cachedToleranceRules.data : []
   }
+}
+
+async function buildAttendanceDirectory(): Promise<Record<string, any>> {
+  if (inflightDirectoryBuild) return inflightDirectoryBuild
+  inflightDirectoryBuild = (async () => {
+    try {
+      const now = new Date()
+      const limaOffset = -5 * 60 * 60 * 1000
+      const limaToday = new Date(now.getTime() + limaOffset)
+      limaToday.setUTCHours(0, 0, 0, 0)
+      const startOfDayUTC = new Date(limaToday.getTime() - limaOffset)
+      const endOfDayUTC = new Date(startOfDayUTC.getTime() + 24 * 60 * 60 * 1000)
+
+      const limaDateStr = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Lima",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(now)
+
+      const [users, todayRecords, todaySchedules, allRules, dailySessions] = await Promise.all([
+        prisma.user.findMany({
+          select: {
+            id: true,
+            name: true,
+            dni: true,
+            role: true,
+            campusId: true,
+            defaultShift: true,
+            campus: { select: { id: true, name: true } },
+          },
+        }),
+        prisma.attendanceRecord.findMany({
+          where: { timestamp: { gte: startOfDayUTC, lt: endOfDayUTC } },
+          orderBy: { timestamp: "asc" },
+          select: { userId: true, type: true, timestamp: true, course: { select: { name: true } } },
+        }),
+        prisma.technicianSchedule.findMany({
+          where: { date: limaDateStr },
+          include: { campus: true },
+        }),
+        getCachedToleranceRulesList(),
+        fetchDailyProgramSessions(),
+      ])
+
+      const lastRecordByUserId = new Map<string, RecordType>()
+      const todayRecordsByUserId = new Map<string, TodayAttendanceRecordLite[]>()
+      for (const r of todayRecords) {
+        lastRecordByUserId.set(r.userId, r.type)
+        const list = todayRecordsByUserId.get(r.userId) || []
+        list.push({
+          type: r.type,
+          timestamp: r.timestamp.toISOString(),
+          courseName: r.course?.name || null,
+        })
+        todayRecordsByUserId.set(r.userId, list)
+      }
+
+      const scheduleByUserId = new Map<string, any>()
+      for (const s of todaySchedules) {
+        scheduleByUserId.set(s.userId, s)
+      }
+
+      const techRules = allRules.filter((r: any) => r.role === Role.TECNICO)
+      const directory: Record<string, any> = {}
+
+      for (const user of users) {
+        const dniKey = user.dni.trim()
+        const isAdmin = user.role === Role.SUPER_ADMIN || user.role === Role.ADMIN_SECUNDARIO
+        const effectiveRole: Role = isAdmin ? Role.DOCENTE : user.role
+        const todaySched = effectiveRole === Role.TECNICO ? scheduleByUserId.get(user.id) : null
+
+        if (effectiveRole === Role.TECNICO && todaySched?.shift === Shift.DESCANSO) {
+          directory[dniKey] = {
+            success: false,
+            message: `🏖️ Hola ${user.name}, hoy tienes asignado tu DÍA DE DESCANSO según el cronograma oficial. No requieres registrar asistencia.`,
+          }
+          continue
+        }
+
+        if (
+          effectiveRole === Role.TECNICO &&
+          (todaySched?.shift === Shift.COMISION || (!todaySched && user.defaultShift === Shift.COMISION))
+        ) {
+          directory[dniKey] = {
+            success: false,
+            isComision: true,
+            message: `✈️ Hola ${user.name}, hoy estás en COMISIÓN DE SERVICIO / EVENTO ESPECIAL (EV) en provincia según el cronograma oficial. No es necesario marcar asistencia.`,
+          }
+          continue
+        }
+
+        let technicianAssignment: any = null
+        let dailyProgram: UserDailyProgramSummary | null = null
+
+        if (effectiveRole === Role.TECNICO) {
+          if (todaySched) {
+            let expectedTime = todaySched.expectedEntryTime
+            const def = DEFAULT_SHIFT_TIMES[todaySched.shift as Shift] || DEFAULT_SHIFT_TIMES.MANANA
+            if (todaySched.shift === Shift.INTERMEDIO && expectedTime === "13:00") expectedTime = def.entry
+            else if (todaySched.shift === Shift.MANANA && expectedTime === "13:00") expectedTime = def.entry
+            else if (
+              todaySched.shift === Shift.TARDE &&
+              ["06:00", "07:00", "08:00", "09:00", "10:00"].includes(expectedTime)
+            ) {
+              expectedTime = "13:00"
+            }
+            technicianAssignment = {
+              campusName: todaySched.campus?.name || user.campus?.name || "Campus Villa",
+              shift: todaySched.shift,
+              expectedEntryTime: expectedTime,
+              expectedExitTime: calculateExpectedExitTime(expectedTime, 9),
+              source: "SCHEDULE",
+            }
+          } else {
+            const defaultShift = user.defaultShift || Shift.MANANA
+            const def = DEFAULT_SHIFT_TIMES[defaultShift] || DEFAULT_SHIFT_TIMES.MANANA
+            const matchingRule =
+              techRules.find(
+                (r: any) =>
+                  (r.shift === defaultShift || r.shift === null) &&
+                  (r.campusId === user.campusId || r.campusId === null)
+              ) || null
+            const expectedEntry = matchingRule?.expectedEntryTime || def.entry
+            technicianAssignment = {
+              campusName: user.campus?.name || "Campus Villa",
+              shift: defaultShift,
+              expectedEntryTime: expectedEntry,
+              expectedExitTime: calculateExpectedExitTime(expectedEntry, 9),
+              source: "DEFAULT_PROFILE",
+            }
+          }
+        } else {
+          dailyProgram = matchDailyProgramFromSessions(
+            dailySessions,
+            user.name,
+            effectiveRole,
+            user.campus?.name || "Campus Villa"
+          )
+        }
+
+        directory[dniKey] = {
+          success: true,
+          user: {
+            id: user.id,
+            name: user.name,
+            role: effectiveRole,
+            campusId: user.campusId,
+            campusName:
+              technicianAssignment?.campusName ||
+              (dailyProgram?.found ? dailyProgram.campusName : null) ||
+              user.campus?.name ||
+              "Campus Villa",
+            defaultShift: user.defaultShift,
+          },
+          lastRecordType: lastRecordByUserId.get(user.id) ?? null,
+          todayRecords: todayRecordsByUserId.get(user.id) ?? [],
+          technicianAssignment,
+          dailyProgram,
+        }
+      }
+
+      cachedDirectory = { data: directory, expiresAt: Date.now() + DIRECTORY_CACHE_TTL_MS }
+      return directory
+    } finally {
+      inflightDirectoryBuild = null
+    }
+  })()
+  return inflightDirectoryBuild
 }
 
 // ------------------------------------------------------------------
@@ -80,171 +260,19 @@ export async function preloadAttendanceDirectoryAction(): Promise<{
 }> {
   try {
     const nowMs = Date.now()
-    if (cachedDirectory && cachedDirectory.expiresAt > nowMs) {
+    if (cachedDirectory) {
+      if (cachedDirectory.expiresAt <= nowMs && !inflightDirectoryBuild) {
+        // Stale-while-revalidate: devolver al instante sin hacer esperar a la PC y actualizar en segundo plano
+        void buildAttendanceDirectory()
+      }
       return { success: true, directory: cachedDirectory.data }
     }
 
-    const now = new Date()
-    const limaOffset = -5 * 60 * 60 * 1000
-    const limaToday = new Date(now.getTime() + limaOffset)
-    limaToday.setUTCHours(0, 0, 0, 0)
-    const startOfDayUTC = new Date(limaToday.getTime() - limaOffset)
-    const endOfDayUTC = new Date(startOfDayUTC.getTime() + 24 * 60 * 60 * 1000)
-
-    const limaDateStr = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "America/Lima",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(now)
-
-    const [users, todayRecords, todaySchedules, allRules, dailySessions] = await Promise.all([
-      prisma.user.findMany({
-        select: {
-          id: true,
-          name: true,
-          dni: true,
-          role: true,
-          campusId: true,
-          defaultShift: true,
-          campus: { select: { id: true, name: true } },
-        },
-      }),
-      prisma.attendanceRecord.findMany({
-        where: { timestamp: { gte: startOfDayUTC, lt: endOfDayUTC } },
-        orderBy: { timestamp: "asc" },
-        select: { userId: true, type: true, timestamp: true, course: { select: { name: true } } },
-      }),
-      prisma.technicianSchedule.findMany({
-        where: { date: limaDateStr },
-        include: { campus: true },
-      }),
-      getCachedToleranceRulesList(),
-      fetchDailyProgramSessions(),
-    ])
-
-    const lastRecordByUserId = new Map<string, RecordType>()
-    const todayRecordsByUserId = new Map<string, TodayAttendanceRecordLite[]>()
-    for (const r of todayRecords) {
-      lastRecordByUserId.set(r.userId, r.type)
-      const list = todayRecordsByUserId.get(r.userId) || []
-      list.push({
-        type: r.type,
-        timestamp: r.timestamp.toISOString(),
-        courseName: r.course?.name || null,
-      })
-      todayRecordsByUserId.set(r.userId, list)
-    }
-
-    const scheduleByUserId = new Map<string, any>()
-    for (const s of todaySchedules) {
-      scheduleByUserId.set(s.userId, s)
-    }
-
-    const techRules = allRules.filter((r: any) => r.role === Role.TECNICO)
-    const directory: Record<string, any> = {}
-
-    for (const user of users) {
-      const dniKey = user.dni.trim()
-      const isAdmin = user.role === Role.SUPER_ADMIN || user.role === Role.ADMIN_SECUNDARIO
-      const effectiveRole: Role = isAdmin ? Role.DOCENTE : user.role
-      const todaySched = effectiveRole === Role.TECNICO ? scheduleByUserId.get(user.id) : null
-
-      if (effectiveRole === Role.TECNICO && todaySched?.shift === Shift.DESCANSO) {
-        directory[dniKey] = {
-          success: false,
-          message: `🏖️ Hola ${user.name}, hoy tienes asignado tu DÍA DE DESCANSO según el cronograma oficial. No requieres registrar asistencia.`,
-        }
-        continue
-      }
-
-      if (
-        effectiveRole === Role.TECNICO &&
-        (todaySched?.shift === Shift.COMISION || (!todaySched && user.defaultShift === Shift.COMISION))
-      ) {
-        directory[dniKey] = {
-          success: false,
-          isComision: true,
-          message: `✈️ Hola ${user.name}, hoy estás en COMISIÓN DE SERVICIO / EVENTO ESPECIAL (EV) en provincia según el cronograma oficial. No es necesario marcar asistencia.`,
-        }
-        continue
-      }
-
-      let technicianAssignment: any = null
-      let dailyProgram: UserDailyProgramSummary | null = null
-
-      if (effectiveRole === Role.TECNICO) {
-        if (todaySched) {
-          let expectedTime = todaySched.expectedEntryTime
-          const def = DEFAULT_SHIFT_TIMES[todaySched.shift as Shift] || DEFAULT_SHIFT_TIMES.MANANA
-          if (todaySched.shift === Shift.INTERMEDIO && expectedTime === "13:00") expectedTime = def.entry
-          else if (todaySched.shift === Shift.MANANA && expectedTime === "13:00") expectedTime = def.entry
-          else if (
-            todaySched.shift === Shift.TARDE &&
-            ["06:00", "07:00", "08:00", "09:00", "10:00"].includes(expectedTime)
-          ) {
-            expectedTime = "13:00"
-          }
-          technicianAssignment = {
-            campusName: todaySched.campus?.name || user.campus?.name || "Campus Villa",
-            shift: todaySched.shift,
-            expectedEntryTime: expectedTime,
-            expectedExitTime: calculateExpectedExitTime(expectedTime, 9),
-            source: "SCHEDULE",
-          }
-        } else {
-          const defaultShift = user.defaultShift || Shift.MANANA
-          const def = DEFAULT_SHIFT_TIMES[defaultShift] || DEFAULT_SHIFT_TIMES.MANANA
-          const matchingRule =
-            techRules.find(
-              (r: any) =>
-                (r.shift === defaultShift || r.shift === null) &&
-                (r.campusId === user.campusId || r.campusId === null)
-            ) || null
-          const expectedEntry = matchingRule?.expectedEntryTime || def.entry
-          technicianAssignment = {
-            campusName: user.campus?.name || "Campus Villa",
-            shift: defaultShift,
-            expectedEntryTime: expectedEntry,
-            expectedExitTime: calculateExpectedExitTime(expectedEntry, 9),
-            source: "DEFAULT_PROFILE",
-          }
-        }
-      } else {
-        dailyProgram = matchDailyProgramFromSessions(
-          dailySessions,
-          user.name,
-          effectiveRole,
-          user.campus?.name || "Campus Villa"
-        )
-      }
-
-      directory[dniKey] = {
-        success: true,
-        user: {
-          id: user.id,
-          name: user.name,
-          role: effectiveRole,
-          campusId: user.campusId,
-          campusName:
-            technicianAssignment?.campusName ||
-            (dailyProgram?.found ? dailyProgram.campusName : null) ||
-            user.campus?.name ||
-            "Campus Villa",
-          defaultShift: user.defaultShift,
-        },
-        lastRecordType: lastRecordByUserId.get(user.id) ?? null,
-        todayRecords: todayRecordsByUserId.get(user.id) ?? [],
-        technicianAssignment,
-        dailyProgram,
-      }
-    }
-
-    cachedDirectory = { data: directory, expiresAt: Date.now() + 15_000 }
+    const directory = await buildAttendanceDirectory()
     return { success: true, directory }
   } catch (error) {
     console.error("[preloadAttendanceDirectoryAction] Error:", error)
-    return { success: false, directory: {} }
+    return { success: false, directory: cachedDirectory ? cachedDirectory.data : {} }
   }
 }
 
@@ -286,8 +314,11 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
   try {
     const cleanDni = dni.trim()
 
-    // Respuesta en 0ms si el directorio en memoria está caliente
-    if (cachedDirectory && cachedDirectory.expiresAt > Date.now() && !roleOverride) {
+    // Respuesta en 0ms si el usuario ya está en el directorio en memoria (incluso con Stale-While-Revalidate)
+    if (cachedDirectory && !roleOverride) {
+      if (cachedDirectory.expiresAt <= Date.now() && !inflightDirectoryBuild) {
+        void buildAttendanceDirectory()
+      }
       const hit = cachedDirectory.data[cleanDni]
       if (hit) return hit
     }
@@ -306,8 +337,8 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
       day: "2-digit",
     }).format(now)
 
-    // 1 solo lote en paralelo (evita esperas secuenciales BD -> BD -> API)
-    const [user, userTodayRecords, todaySched, allRules, dailySessions] = await Promise.all([
+    // 1er lote rápido desde BD local/remota (sin bloquear por Google Sheets si es Técnico o DNI inválido)
+    const [user, userTodayRecords, todaySched, allRules] = await Promise.all([
       prisma.user.findUnique({
         where: { dni: cleanDni },
         select: {
@@ -340,7 +371,6 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
         include: { campus: true },
       }),
       getCachedToleranceRulesList(),
-      fetchDailyProgramSessions(),
     ])
 
     if (!user) {
@@ -416,6 +446,7 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
         }
       }
     } else if (effectiveRole === Role.DOCENTE || effectiveRole === Role.PACIENTE_SIMULADO) {
+      const dailySessions = await fetchDailyProgramSessions()
       dailyProgram = matchDailyProgramFromSessions(
         dailySessions,
         user.name,
@@ -1114,115 +1145,14 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
 }
 
 // ------------------------------------------------------------------
-// 3. LÓGICA DE NEGOCIO: CÁLCULO DE REGLAS DE TOLERANCIA
+// 3. LÓGICA DE NEGOCIO: CÁLCULO DE REGLAS DE TOLERANCIA (vía @/lib/tolerance)
 // ------------------------------------------------------------------
-function findApplicableToleranceRule(
-  rules: any[],
+export async function calculateToleranceStatus(
+  recordTime: Date,
   campusId?: string,
   role?: Role
-) {
-  if (rules.length === 0) return null
-  return (
-    (campusId && role ? rules.find(r => r.campusId === campusId && r.role === role) : null) ||
-    (campusId ? rules.find(r => r.campusId === campusId && !r.role) : null) ||
-    (role ? rules.find(r => !r.campusId && r.role === role) : null) ||
-    rules.find(r => !r.campusId && !r.role) ||
-    null
-  )
-}
-
-function getShiftDiffInMinutes(recordTime: Date, expectedEntryTime: string): { diffInMinutes: number; recordMinutes: number; expectedMinutes: number } {
-  const [expectedHour, expectedMinute] = expectedEntryTime.split(':').map(Number)
-  const expectedMinutes = (isNaN(expectedHour) ? 8 : expectedHour) * 60 + (isNaN(expectedMinute) ? 0 : expectedMinute)
-  const recordMinutes = limaMinutesOfDay(recordTime)
-
-  // Diferencia horaria considerando el ciclo de 24 horas (720 min = 12 horas)
-  let diffInMinutes = recordMinutes - expectedMinutes
-  if (diffInMinutes < -720) {
-    diffInMinutes += 1440
-  } else if (diffInMinutes > 720) {
-    diffInMinutes -= 1440
-  }
-
-  return { diffInMinutes, recordMinutes, expectedMinutes }
-}
-
-function validateEarlyEntry(
-  recordTime: Date,
-  rule: {
-    expectedEntryTime: string
-    earlyEntryToleranceMinutes: number
-    lateToleranceMinutes?: number
-    enableEarlyTolerance?: boolean
-  }
-): { allowed: boolean; message?: string } {
-  // Si la restricción de hora anticipada de ingreso está desactivada: permitir el ingreso libremente
-  if (rule.enableEarlyTolerance === false) {
-    return { allowed: true }
-  }
-
-  const { diffInMinutes, expectedMinutes } = getShiftDiffInMinutes(recordTime, rule.expectedEntryTime)
-  const earlyAllowed = rule.earlyEntryToleranceMinutes ?? 15
-  // Ventana máxima permitida para registrar entrada: 240 minutos (4 horas) después de la hora oficial
-  const maxLateAllowed = Math.max(rule.lateToleranceMinutes ?? 30, 240)
-
-  // 1. Si intenta marcar antes de la ventana de anticipación permitida (ej: la noche anterior o 1 hora antes)
-  if (diffInMinutes < -earlyAllowed) {
-    const allowedStartMinutes = (expectedMinutes - earlyAllowed + 1440) % 1440
-    const startHour = Math.floor(allowedStartMinutes / 60)
-    const startMinute = allowedStartMinutes % 60
-    const startPeriod = startHour >= 12 ? "PM" : "AM"
-    const displayH = startHour % 12 === 0 ? 12 : startHour % 12
-    const allowedStartTimeStr = `${String(displayH).padStart(2, "0")}:${String(startMinute).padStart(2, "0")} ${startPeriod}`
-
-    return {
-      allowed: false,
-      message: `No se permite marcar fuera de horario. Su turno oficial es a las ${rule.expectedEntryTime}. Podrá registrar su entrada a partir de las ${allowedStartTimeStr} (máximo ${earlyAllowed} minutos antes).`,
-    }
-  }
-
-  // 2. Si intenta marcar como "Entrada" muchas horas después de haber concluido el inicio de su turno
-  if (diffInMinutes > maxLateAllowed) {
-    return {
-      allowed: false,
-      message: `Su horario de entrada (${rule.expectedEntryTime}) ya venció hace más de 4 horas. No corresponde registrar entrada en este momento.`,
-    }
-  }
-
-  return { allowed: true }
-}
-
-function calculateStatusFromRule(
-  recordTime: Date,
-  rule: {
-    expectedEntryTime: string
-    gracePeriodMinutes: number
-    lateToleranceMinutes: number
-    enableLateTolerance?: boolean
-  }
-): RecordStatus {
-  // Si el control de tardanzas está desactivado: todas las entradas marcan A_TIEMPO sin penalización
-  if (rule.enableLateTolerance === false) {
-    return RecordStatus.A_TIEMPO
-  }
-
-  const { diffInMinutes } = getShiftDiffInMinutes(recordTime, rule.expectedEntryTime)
-
-  if (diffInMinutes <= rule.gracePeriodMinutes) {
-    return RecordStatus.A_TIEMPO
-  } else if (diffInMinutes <= rule.lateToleranceMinutes) {
-    return RecordStatus.TARDANZA
-  } else {
-    return RecordStatus.FALTA
-  }
-}
-
-export async function calculateToleranceStatus(
-  recordTime: Date, 
-  campusId?: string, 
-  role?: Role
 ): Promise<RecordStatus> {
-  const rules = await prisma.toleranceRule.findMany()
+  const rules = await getCachedToleranceRulesList()
   if (rules.length === 0) return RecordStatus.A_TIEMPO
 
   const rule = findApplicableToleranceRule(rules, campusId, role)

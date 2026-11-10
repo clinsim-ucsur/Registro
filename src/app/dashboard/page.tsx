@@ -31,6 +31,7 @@ import { DashboardManuals } from "@/components/dashboard/manuals"
 import { ForceChangePasswordModal } from "@/components/dashboard/force-change-password-modal"
 import { getAdminSession } from "@/lib/session"
 import { computeAnalytics } from "@/lib/analytics"
+import { formatDayLabel } from "@/lib/timezone"
 import { getOvertimeSettingsAction } from "@/actions/overtime"
 import { getAuditLogs } from "@/lib/audit-log"
 import { getKioskOneTimeCodesList } from "@/lib/kiosk-codes"
@@ -58,11 +59,9 @@ export default async function DashboardPage() {
     records,
     users,
     admins,
-    weeklyAnalytics,
     initialAnalytics,
     rules,
-    allCampuses,
-    catalogCampuses,
+    allCampusesWithCounts,
     catalogCourses,
     technicianSchedules,
     overtimeSettings,
@@ -103,7 +102,6 @@ export default async function DashboardPage() {
       include: { campus: { select: { id: true, name: true } } },
       orderBy: { name: 'asc' },
     }),
-    computeAnalytics({ days: 7, campusId: scopedCampusId, roleFilter: scopedRole }),
     computeAnalytics({ days: 30, campusId: scopedCampusId, roleFilter: scopedRole }),
     prisma.toleranceRule.findMany({
       where: scopedCampusId ? { OR: [{ campusId: scopedCampusId }, { campusId: null }] } : undefined,
@@ -111,11 +109,6 @@ export default async function DashboardPage() {
       orderBy: { createdAt: 'desc' },
     }),
     prisma.campus.findMany({
-      select: { id: true, name: true },
-      orderBy: { name: 'asc' },
-    }),
-    prisma.campus.findMany({
-      where: scopedCampusId ? { id: scopedCampusId } : undefined,
       orderBy: { name: 'asc' },
       include: {
         _count: {
@@ -144,6 +137,16 @@ export default async function DashboardPage() {
     currentUserRole === "SUPER_ADMIN" ? getAuditLogs() : Promise.resolve([]),
     hasAccess("kiosk") ? getKioskOneTimeCodesList() : Promise.resolve([]),
   ])
+
+  const allCampuses = allCampusesWithCounts.map((c) => ({ id: c.id, name: c.name }))
+  const catalogCampuses = scopedCampusId
+    ? allCampusesWithCounts.filter((c) => c.id === scopedCampusId)
+    : allCampusesWithCounts
+
+  const weeklySeries = initialAnalytics.daily.slice(-7).map((d) => ({
+    ...d,
+    label: formatDayLabel(d.day),
+  }))
 
   // Sedes visibles según el alcance del administrador logueado
   const visibleCampuses = scopedCampusId
@@ -342,7 +345,7 @@ export default async function DashboardPage() {
             
             {hasAccess("overview") && (
               <TabsContent value="overview" className="m-0 p-0 outline-none">
-                <DashboardOverview records={records} weekly={weeklyAnalytics.daily} />
+                <DashboardOverview records={records} weekly={weeklySeries} />
               </TabsContent>
             )}
 

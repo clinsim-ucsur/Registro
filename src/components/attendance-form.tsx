@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, memo } from "react"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import * as z from "zod"
@@ -102,6 +102,35 @@ interface AttendanceFormProps {
   courses?: { id: string; name: string }[]
 }
 
+const LiveMarkingTimeSpan = memo(function LiveMarkingTimeSpan({ className }: { className?: string }) {
+  const [timeStr, setTimeStr] = useState<string>(() =>
+    new Intl.DateTimeFormat("es-PE", {
+      timeZone: "America/Lima",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(new Date())
+  )
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTimeStr(
+        new Intl.DateTimeFormat("es-PE", {
+          timeZone: "America/Lima",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        }).format(new Date())
+      )
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  return <span className={className}>{timeStr}</span>
+})
+
 export default function AttendanceForm({ campuses: propCampuses }: AttendanceFormProps = {}) {
   const [isValidating, setIsValidating] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState<RecordType | null>(null)
@@ -125,7 +154,6 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const [isOffline, setIsOffline] = useState(false)
   const [todayLastRecord, setTodayLastRecord] = useState<RecordType | null | "loading">(null)
   const [todayRecords, setTodayRecords] = useState<TodayAttendanceRecordLite[]>([])
-  const [markingTimeStr, setMarkingTimeStr] = useState<string>("")
   const [currentLimaMins, setCurrentLimaMins] = useState<number>(() => getCurrentLimaMinutes())
   const [dismissedRotationAlertKey, setDismissedRotationAlertKey] = useState<string | null>(null)
   const [mobileAlarmOnboarded, setMobileAlarmOnboarded] = useState<boolean>(true)
@@ -155,6 +183,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const [gpsCampusDetected, setGpsCampusDetected] = useState<string | null>(null)
 
   const directoryRef = useRef<Record<string, any> | null>(null)
+  const warmDirectoryPromiseRef = useRef<Promise<Record<string, any> | null> | null>(null)
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -252,43 +281,46 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   useEffect(() => {
     let mounted = true
     const warmDirectory = async () => {
-      try {
-        const res = await preloadAttendanceDirectoryAction()
-        if (mounted && res.success && res.directory) {
-          directoryRef.current = res.directory
-          const currentDni = form.getValues("dni")
-          if (currentDni?.length === 8 && res.directory[currentDni]) {
-            applyValidationResult(res.directory[currentDni], currentDni)
+      if (warmDirectoryPromiseRef.current) return warmDirectoryPromiseRef.current
+      const p = (async () => {
+        try {
+          const res = await preloadAttendanceDirectoryAction()
+          if (mounted && res.success && res.directory) {
+            directoryRef.current = res.directory
+            const currentDni = form.getValues("dni")
+            if (currentDni?.length === 8 && res.directory[currentDni] && !validatedUser) {
+              applyValidationResult(res.directory[currentDni], currentDni)
+            }
+            return res.directory
           }
+          return null
+        } catch {
+          // Si falla la precarga silenciosa, validateDni consultará bajo demanda
+          return null
+        } finally {
+          warmDirectoryPromiseRef.current = null
         }
-      } catch {
-        // Si falla la precarga silenciosa, validateDni consultará bajo demanda
-      }
+      })()
+      warmDirectoryPromiseRef.current = p
+      return p
     }
-    warmDirectory()
-    const refreshInterval = setInterval(warmDirectory, 60_000)
+    void warmDirectory()
+    const refreshInterval = setInterval(() => {
+      void warmDirectory()
+    }, 90_000)
     return () => {
       mounted = false
       clearInterval(refreshInterval)
     }
   }, [])
 
-  // Reloj en vivo para mostrar la hora exacta en que está marcando el usuario en el resumen
+  // Actualizar los minutos actuales en Lima cada 30 segundos (sin re-renderizar todo el formulario cada segundo)
   useEffect(() => {
-    const updateClock = () => {
-      const now = new Date()
-      const formatted = new Intl.DateTimeFormat("es-PE", {
-        timeZone: "America/Lima",
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        hour12: false,
-      }).format(now)
-      setMarkingTimeStr(formatted)
-      setCurrentLimaMins(getCurrentLimaMinutes(now))
+    const updateMins = () => {
+      setCurrentLimaMins(getCurrentLimaMinutes(new Date()))
     }
-    updateClock()
-    const timer = setInterval(updateClock, 1000)
+    updateMins()
+    const timer = setInterval(updateMins, 30_000)
     return () => clearInterval(timer)
   }, [])
 
@@ -506,6 +538,19 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     setDailyProgram(null)
 
     try {
+      // Si la precarga inicial del directorio ya está en vuelo, esperar hasta 700ms para reutilizarla sin lanzar petición duplicada
+      if (warmDirectoryPromiseRef.current && !directoryRef.current) {
+        const dir = await Promise.race([
+          warmDirectoryPromiseRef.current,
+          new Promise<null>((r) => setTimeout(() => r(null), 700)),
+        ])
+        if (dir && dir[dni]) {
+          setIsValidating(false)
+          setConnectionError(false)
+          applyValidationResult(dir[dni], dni)
+          return
+        }
+      }
       let res: any = null
       let lastError: any = null
 
@@ -1325,7 +1370,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                               Hora de Marcación y Turno
                             </p>
                             <p className="text-xs sm:text-sm font-black text-slate-800">
-                              Marcando: <span className="text-indigo-700">{markingTimeStr}</span>
+                              Marcando: <LiveMarkingTimeSpan className="text-indigo-700" />
                             </p>
                             {technicianAssignment && (
                               <p className="text-[11px] sm:text-xs font-semibold text-slate-600 mt-0.5">
@@ -1445,7 +1490,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                                 Hora y Turno de Hoy
                               </p>
                               <p className="text-xs sm:text-sm font-black text-slate-800">
-                                Marcando: <span className="text-[#1967D2]">{markingTimeStr}</span>
+                                Marcando: <LiveMarkingTimeSpan className="text-[#1967D2]" />
                               </p>
                               {effectiveActiveModule ? (
                                 <p className="text-[11px] sm:text-xs font-semibold text-slate-600 mt-0.5">

@@ -1246,6 +1246,87 @@ async function main() {
     "Docente (Varios módulos seguidos): Mantiene cada módulo separado y suena alarma a las 08:40 recordando fin de hora con esa sección de alumnos"
   )
 
+  // =========================================================================
+  // TEST 17: RENDIMIENTO, CACHÉ DE DIRECTORIO Y RESPUESTA ULTRA-RÁPIDA EN PCs
+  // =========================================================================
+  console.log("\n[TEST 17] Probando Rendimiento, Caché en Memoria y Latencia en PCs...")
+
+  const { preloadAttendanceDirectoryAction, validateUserAction } = await import("../src/actions/attendance")
+  const { matchDailyProgramFromSessions } = await import("../src/lib/daily-program-api")
+  const { validateEarlyEntry, calculateStatusFromRule } = await import("../src/lib/tolerance")
+
+  // 17.1 Precarga inicial del directorio y medición de respuesta en caliente (< 10ms)
+  await preloadAttendanceDirectoryAction()
+  const tWarmDirStart = performance.now()
+  const warmDirRes = await preloadAttendanceDirectoryAction()
+  const warmDirMs = performance.now() - tWarmDirStart
+  const sampleDnis = Object.keys(warmDirRes.directory)
+
+  assert(
+    warmDirRes.success === true && sampleDnis.length > 0 && warmDirMs < 15,
+    `Caché de Directorio en Memoria: Respuesta instantánea en ${warmDirMs.toFixed(2)}ms (< 15ms) con ${sampleDnis.length} usuarios precargados`
+  )
+
+  // 17.2 Validación de DNI desde caché en memoria (< 10ms)
+  const testDni = sampleDnis[0]
+  const tValStart = performance.now()
+  const fastValRes = await validateUserAction(testDni)
+  const fastValMs = performance.now() - tValStart
+
+  assert(
+    fastValRes !== undefined && fastValMs < 15,
+    `Validación DNI en Caliente (PC/Móvil): Respondió en ${fastValMs.toFixed(2)}ms (< 15ms) sin bloquear por red ni API externa`
+  )
+
+  // 17.3 Benchmark de emparejamiento masivo de nombres (300 usuarios × 80 sesiones) en < 50ms
+  const benchmarkSessions = Array.from({ length: 80 }, (_, idx) => ({
+    piso: "Piso 2",
+    ambiente: `CONSULTORIO ${(idx % 12) + 1}`,
+    sesion: "[MED_SBS]-Semiología General",
+    courseName: "Semiología Basada en Simulación (SBS)",
+    campusName: "Campus Villa",
+    horaInicio: "07:00",
+    horaFin: "08:40",
+    startMinutes: 420,
+    endMinutes: 520,
+    docenteLider: `DOCENTE APELLIDO${idx}, NOMBRE${idx}`,
+    docentesColaboradores: `COLABORADOR UNO${idx} / COLABORADOR DOS${idx}`,
+    pacientesEstandarizados: `PACIENTE SIMULADO${idx} / BRISSA MOLINA MARTINEZ`,
+  }))
+
+  const tMatchStart = performance.now()
+  for (let u = 0; u < 300; u++) {
+    matchDailyProgramFromSessions(
+      benchmarkSessions,
+      u % 10 === 0 ? "Brissa Molina" : `Usuario Prueba ${u}`,
+      u % 2 === 0 ? Role.PACIENTE_SIMULADO : Role.DOCENTE,
+      "Campus Villa"
+    )
+  }
+  const matchElapsedMs = performance.now() - tMatchStart
+
+  assert(
+    matchElapsedMs < 80,
+    `Motor de Coincidencia de Nombres Optimizado: 300 usuarios × 80 sesiones procesados en ${matchElapsedMs.toFixed(2)}ms (< 80ms)`
+  )
+
+  // 17.4 Verificación del módulo desacoplado de tolerancia (@/lib/tolerance)
+  const sampleRule = {
+    expectedEntryTime: "08:00",
+    earlyEntryToleranceMinutes: 30,
+    gracePeriodMinutes: 5,
+    lateToleranceMinutes: 30,
+    enableEarlyTolerance: true,
+    enableLateTolerance: true,
+  }
+  const onTimeDate = new Date("2026-10-15T08:03:00-05:00")
+  const earlyCheck = validateEarlyEntry(onTimeDate, sampleRule)
+  const calcStatus = calculateStatusFromRule(onTimeDate, sampleRule)
+  assert(
+    earlyCheck.allowed === true && calcStatus === RecordStatus.A_TIEMPO,
+    "Módulo @/lib/tolerance: Evalúa ventana de anticipación y estado de puntualidad sin consultas redundantes"
+  )
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")
