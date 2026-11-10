@@ -11,7 +11,10 @@ import {
   getDailyProgramForUser,
   fetchDailyProgramSessions,
   matchDailyProgramFromSessions,
+  resolveUserModulesState,
+  getCurrentLimaMinutes,
   type UserDailyProgramSummary,
+  type TodayAttendanceRecordLite,
 } from "@/lib/daily-program-api"
 import { calculateExpectedExitTime } from "@/lib/overtime"
 
@@ -109,8 +112,8 @@ export async function preloadAttendanceDirectoryAction(): Promise<{
       }),
       prisma.attendanceRecord.findMany({
         where: { timestamp: { gte: startOfDayUTC, lt: endOfDayUTC } },
-        orderBy: { timestamp: "desc" },
-        select: { userId: true, type: true },
+        orderBy: { timestamp: "asc" },
+        select: { userId: true, type: true, timestamp: true, course: { select: { name: true } } },
       }),
       prisma.technicianSchedule.findMany({
         where: { date: limaDateStr },
@@ -121,10 +124,16 @@ export async function preloadAttendanceDirectoryAction(): Promise<{
     ])
 
     const lastRecordByUserId = new Map<string, RecordType>()
+    const todayRecordsByUserId = new Map<string, TodayAttendanceRecordLite[]>()
     for (const r of todayRecords) {
-      if (!lastRecordByUserId.has(r.userId)) {
-        lastRecordByUserId.set(r.userId, r.type)
-      }
+      lastRecordByUserId.set(r.userId, r.type)
+      const list = todayRecordsByUserId.get(r.userId) || []
+      list.push({
+        type: r.type,
+        timestamp: r.timestamp.toISOString(),
+        courseName: r.course?.name || null,
+      })
+      todayRecordsByUserId.set(r.userId, list)
     }
 
     const scheduleByUserId = new Map<string, any>()
@@ -225,6 +234,7 @@ export async function preloadAttendanceDirectoryAction(): Promise<{
           defaultShift: user.defaultShift,
         },
         lastRecordType: lastRecordByUserId.get(user.id) ?? null,
+        todayRecords: todayRecordsByUserId.get(user.id) ?? [],
         technicianAssignment,
         dailyProgram,
       }
@@ -297,7 +307,7 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
     }).format(now)
 
     // 1 solo lote en paralelo (evita esperas secuenciales BD -> BD -> API)
-    const [user, lastRecord, todaySched, allRules, dailySessions] = await Promise.all([
+    const [user, userTodayRecords, todaySched, allRules, dailySessions] = await Promise.all([
       prisma.user.findUnique({
         where: { dni: cleanDni },
         select: {
@@ -314,13 +324,13 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
           },
         },
       }),
-      prisma.attendanceRecord.findFirst({
+      prisma.attendanceRecord.findMany({
         where: {
           user: { dni: cleanDni },
           timestamp: { gte: startOfDayUTC, lt: endOfDayUTC },
         },
-        orderBy: { timestamp: "desc" },
-        select: { type: true },
+        orderBy: { timestamp: "asc" },
+        select: { type: true, timestamp: true, course: { select: { name: true } } },
       }),
       prisma.technicianSchedule.findFirst({
         where: {
@@ -414,6 +424,14 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
       )
     }
 
+    const formattedTodayRecords: TodayAttendanceRecordLite[] = userTodayRecords.map((r) => ({
+      type: r.type,
+      timestamp: r.timestamp.toISOString(),
+      courseName: r.course?.name || null,
+    }))
+    const lastRecord =
+      userTodayRecords.length > 0 ? userTodayRecords[userTodayRecords.length - 1] : null
+
     const result = {
       success: true,
       user: {
@@ -429,6 +447,7 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
         defaultShift: user.defaultShift,
       },
       lastRecordType: lastRecord?.type ?? null,
+      todayRecords: formattedTodayRecords,
       technicianAssignment,
       dailyProgram,
     }
@@ -853,11 +872,38 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       try {
         const prog = await getDailyProgramForUser(user.name, data.role, resolvedCampusName)
         if (prog.found) {
-          if (!resolvedCourseName && prog.courseName) {
-            resolvedCourseName = prog.courseName
+          // Obtener registros previos del día para saber qué módulo le corresponde marcar
+          const limaOffset = -5 * 60 * 60 * 1000
+          const limaDay = new Date(recordTimestamp.getTime() + limaOffset)
+          limaDay.setUTCHours(0, 0, 0, 0)
+          const startOfDayUTC = new Date(limaDay.getTime() - limaOffset)
+          const endOfDayUTC = new Date(startOfDayUTC.getTime() + 24 * 60 * 60 * 1000)
+
+          const existingTodayRecs = await prisma.attendanceRecord.findMany({
+            where: {
+              userId: user.id,
+              timestamp: { gte: startOfDayUTC, lt: endOfDayUTC },
+            },
+            orderBy: { timestamp: "asc" },
+            select: { type: true, timestamp: true, course: { select: { name: true } } },
+          })
+
+          const modResolution = resolveUserModulesState(
+            prog.sessions,
+            existingTodayRecs.map((r) => ({
+              type: r.type,
+              timestamp: r.timestamp.toISOString(),
+              courseName: r.course?.name || null,
+            })),
+            getCurrentLimaMinutes(recordTimestamp)
+          )
+
+          const targetMod = modResolution.activeModule
+          if (!resolvedCourseName) {
+            resolvedCourseName = targetMod?.courseName || prog.courseName || ""
           }
-          if (!resolvedExpectedEntryTime && prog.entryTime) {
-            resolvedExpectedEntryTime = prog.entryTime
+          if (!resolvedExpectedEntryTime) {
+            resolvedExpectedEntryTime = targetMod?.horaInicio || prog.entryTime || ""
           }
         }
       } catch (err) {
@@ -1034,8 +1080,18 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
       }
     })
 
+    const createdRecordEntry: TodayAttendanceRecordLite = {
+      type: data.type,
+      timestamp: recordTimestamp.toISOString(),
+      courseName: resolvedCourseName || null,
+    }
+
     if (cachedDirectory && user.dni && cachedDirectory.data[user.dni]) {
       cachedDirectory.data[user.dni].lastRecordType = data.type
+      const prevRecs = Array.isArray(cachedDirectory.data[user.dni].todayRecords)
+        ? cachedDirectory.data[user.dni].todayRecords
+        : []
+      cachedDirectory.data[user.dni].todayRecords = [...prevRecs, createdRecordEntry]
     }
 
     try {
@@ -1046,6 +1102,7 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
 
     return { 
       success: true, 
+      newRecord: createdRecordEntry,
       message: `✓ Se registró exitosamente su ${data.type.toLowerCase()}: ${user.name} (${resolvedCampusName})`
     }
     

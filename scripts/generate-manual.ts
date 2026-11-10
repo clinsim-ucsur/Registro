@@ -312,14 +312,18 @@ function buildEndUserManual(outputDirs: string[]) {
   )
 
   m.addSectionTitle("5. Informacion Especifica segun tu Perfil")
-  m.addSubTitle("A) Pacientes Simulados y Docentes")
+  m.addSubTitle("A) Pacientes Simulados y Docentes: Marcacion por Modulo y Aviso de Rotacion")
   m.addBullet(
     "Sincronizacion con la Programacion Diaria",
-    "El sistema consulta automaticamente la programacion oficial del dia y te muestra en pantalla el Curso y el Nombre exacto del Consultorio o Sala de Alta Fidelidad donde debes presentarte (por ejemplo: 'CONSULTORIO 1 - L 107' o 'SALA ALTA FIDELIDAD 1 - OPERACIONES L 112')."
+    "El sistema consulta automaticamente la programacion oficial del dia (JSON / Excel) y te muestra en pantalla el desglose de todos tus modulos programados (Modulo 1, Modulo 2, Modulo 3, etc.), indicando para cada uno su horario de inicio y fin, el Curso y el Nombre exacto del Consultorio o Sala de Alta Fidelidad donde debes presentarte."
   )
   m.addBullet(
-    "Multiples Sesiones en el Mismo Dia",
-    "Si tienes varias sesiones programadas en el dia, el sistema toma como hora de ingreso tu primera sesion y como hora de salida el cierre de tu ultima sesion."
+    "Ingreso y Salida Obligatorio por Cada Modulo",
+    "Debes registrar tu ENTRADA y tu SALIDA por cada modulo de tu programacion diaria. Al iniciar tu primera clase presionas 'MARCAR ENTRADA - MODULO 1'. Al concluir la hora de esa sesion, presionas 'MARCAR SALIDA - MODULO 1', y el sistema cambiara automaticamente al 'MODULO 2' mostrando tu nuevo ambiente para que registres tu 'ENTRADA - MODULO 2' apenas rotes de salon."
+  )
+  m.addBullet(
+    "Aviso Automatico de Fin de Clase y Rotacion (Exclusivo en Celulares)",
+    "Cuando utilizas el portal desde tu telefono celular, el sistema activa una alerta inteligente que te avisa con sonido, vibracion y notificacion en pantalla apenas termina la hora de tu modulo actual. El aviso te recuerda marcar la SALIDA de tu clase finalizada y te indica a que consultorio o ambiente debes rotar para tu siguiente modulo (esta funcion es exclusiva para telefonos moviles y no se activa en las computadoras fijas de sede)."
   )
 
   m.addSubTitle("B) Tecnicos de Simulacion")

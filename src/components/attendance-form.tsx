@@ -14,7 +14,13 @@ import {
   authorizeKioskWithOneTimeCodeAction,
   revokeKioskDeviceAction,
 } from "@/actions/attendance"
-import { type UserDailyProgramSummary } from "@/lib/daily-program-api"
+import {
+  resolveUserModulesState,
+  getCurrentLimaMinutes,
+  buildMobileRotationAlertPayload,
+  type UserDailyProgramSummary,
+  type TodayAttendanceRecordLite,
+} from "@/lib/daily-program-api"
 import { toast } from "sonner"
 import {
   Loader2,
@@ -37,6 +43,10 @@ import {
   X,
   UserX,
   Navigation,
+  BellRing,
+  CheckCircle2,
+  ArrowRight,
+  Layers,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -115,7 +125,13 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const [selectedShift, setSelectedShift] = useState<Shift | null>(null)
   const [isOffline, setIsOffline] = useState(false)
   const [todayLastRecord, setTodayLastRecord] = useState<RecordType | null | "loading">(null)
+  const [todayRecords, setTodayRecords] = useState<TodayAttendanceRecordLite[]>([])
+  const [selectedModuleOverride, setSelectedModuleOverride] = useState<number | null>(null)
   const [markingTimeStr, setMarkingTimeStr] = useState<string>("")
+  const [currentLimaMins, setCurrentLimaMins] = useState<number>(() => getCurrentLimaMinutes())
+  const [dismissedRotationAlertKey, setDismissedRotationAlertKey] = useState<string | null>(null)
+  const [notifPermission, setNotifPermission] = useState<string>("default")
+  const firedNotificationsRef = useRef<Set<string>>(new Set())
 
   const [isContingencyMode, setIsContingencyMode] = useState(false)
   const [connectionError, setConnectionError] = useState(false)
@@ -256,6 +272,9 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
 
   // Reloj en vivo para mostrar la hora exacta en que está marcando el usuario en el resumen
   useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setNotifPermission(Notification.permission)
+    }
     const updateClock = () => {
       const now = new Date()
       const formatted = new Intl.DateTimeFormat("es-PE", {
@@ -266,11 +285,53 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
         hour12: false,
       }).format(now)
       setMarkingTimeStr(formatted)
+      setCurrentLimaMins(getCurrentLimaMinutes(now))
     }
     updateClock()
     const timer = setInterval(updateClock, 1000)
     return () => clearInterval(timer)
   }, [])
+
+  // Alerta sonora (Web Audio API) + vibración para aviso de fin de módulo y rotación en celulares
+  const playRotationAlertSoundAndVibrate = () => {
+    if (typeof window === "undefined" || kioskConfig) return
+    try {
+      if (navigator.vibrate) {
+        navigator.vibrate([350, 150, 350, 150, 500])
+      }
+    } catch {}
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext
+      if (!AudioCtx) return
+      const ctx = new AudioCtx()
+      const notes = [587.33, 783.99, 1046.5] // D5 -> G5 -> C6
+      notes.forEach((freq, idx) => {
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.type = "sine"
+        osc.frequency.setValueAtTime(freq, ctx.currentTime + idx * 0.22)
+        gain.gain.setValueAtTime(0.001, ctx.currentTime + idx * 0.22)
+        gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + idx * 0.22 + 0.04)
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + idx * 0.22 + 0.2)
+        osc.connect(gain)
+        gain.connect(ctx.destination)
+        osc.start(ctx.currentTime + idx * 0.22)
+        osc.stop(ctx.currentTime + idx * 0.22 + 0.21)
+      })
+    } catch {}
+  }
+
+  const requestMobileNotificationPermission = async () => {
+    if (typeof window === "undefined" || kioskConfig || !("Notification" in window)) return
+    try {
+      if (Notification.permission === "default") {
+        const perm = await Notification.requestPermission()
+        setNotifPermission(perm)
+      } else {
+        setNotifPermission(Notification.permission)
+      }
+    } catch {}
+  }
 
   // Detección y Sincronización Offline
   const syncOfflineRecords = async () => {
@@ -352,6 +413,8 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       form.reset({ dni: "" })
       setValidatedUser(null)
       setTodayLastRecord(null)
+      setTodayRecords([])
+      setSelectedModuleOverride(null)
       setTechnicianAssignment(null)
       setDailyProgram(null)
       setSelectedShift(null)
@@ -365,6 +428,8 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     } else {
       setValidatedUser(null)
       setTodayLastRecord(null)
+      setTodayRecords([])
+      setSelectedModuleOverride(null)
       setTechnicianAssignment(null)
       setDailyProgram(null)
       setSelectedShift(null)
@@ -375,6 +440,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const applyValidationResult = (res: any, dni: string) => {
     if (res.success && res.user) {
       setValidatedUser(res.user)
+      setSelectedModuleOverride(null)
 
       // Si es un celular/dispositivo personal y está activado "Recordar mi DNI", guardarlo en localStorage
       if (!kioskConfig && rememberDniOnDevice && typeof window !== "undefined") {
@@ -397,10 +463,13 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       }
 
       setTodayLastRecord(res.lastRecordType ?? null)
+      setTodayRecords(Array.isArray(res.todayRecords) ? res.todayRecords : [])
       setConnectionError(false)
     } else {
       setValidatedUser(null)
       setTodayLastRecord(null)
+      setTodayRecords([])
+      setSelectedModuleOverride(null)
       setTechnicianAssignment(null)
       setDailyProgram(null)
       setSelectedShift(null)
@@ -632,27 +701,104 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       )
     })
 
+  // Resolución por módulo para Docentes y Pacientes Simulados
+  const isModuleRole =
+    validatedUser?.role === Role.DOCENTE || validatedUser?.role === Role.PACIENTE_SIMULADO
+
+  const moduleResolution =
+    isModuleRole && dailyProgram?.found && dailyProgram.sessions.length > 0
+      ? resolveUserModulesState(dailyProgram.sessions, todayRecords, currentLimaMins)
+      : null
+
+  const effectiveActiveModule = (() => {
+    if (!moduleResolution || !moduleResolution.activeModule) return null
+    if (
+      moduleResolution.nextAction === "ENTRADA" &&
+      selectedModuleOverride !== null &&
+      moduleResolution.modules[selectedModuleOverride]?.status === "PENDIENTE"
+    ) {
+      return moduleResolution.modules[selectedModuleOverride]
+    }
+    return moduleResolution.activeModule
+  })()
+
+  const effectiveNextModule = (() => {
+    if (!moduleResolution || !effectiveActiveModule) return null
+    return moduleResolution.modules[effectiveActiveModule.moduleNumber] || null
+  })()
+
+  // Aviso de fin de módulo y rotación EXCLUSIVO para teléfonos (!kioskConfig), nunca en Estaciones Oficiales (PC fijas)
+  const mobileRotationAlert = buildMobileRotationAlertPayload(
+    moduleResolution,
+    Boolean(kioskConfig)
+  )
+
+  const currentRotationAlertKey =
+    mobileRotationAlert.shouldAlert && validatedUser && mobileRotationAlert.currentModule
+      ? `${validatedUser.id}_${mobileRotationAlert.reason}_${mobileRotationAlert.currentModule.moduleNumber}_${mobileRotationAlert.nextModule?.moduleNumber ?? 0}`
+      : null
+
+  useEffect(() => {
+    if (
+      kioskConfig ||
+      !mobileRotationAlert.shouldAlert ||
+      !currentRotationAlertKey ||
+      firedNotificationsRef.current.has(currentRotationAlertKey)
+    ) {
+      return
+    }
+
+    firedNotificationsRef.current.add(currentRotationAlertKey)
+
+    // Disparar sonido + vibración en el teléfono
+    playRotationAlertSoundAndVibrate()
+
+    // Mostrar notificación toast persistente en el teléfono
+    toast.warning(mobileRotationAlert.title, {
+      description: mobileRotationAlert.message,
+      duration: 12000,
+    })
+
+    // Disparar Notificación Nativa del Sistema en el celular (si tiene permiso)
+    if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+      try {
+        new Notification(mobileRotationAlert.title, {
+          body: mobileRotationAlert.message,
+          icon: "/icons/icon-192.png",
+          tag: currentRotationAlertKey,
+        })
+      } catch {}
+    }
+  }, [kioskConfig, mobileRotationAlert.shouldAlert, currentRotationAlertKey])
+
   const onSubmit = async (data: z.infer<typeof formSchema>, type: RecordType) => {
     if (!validatedUser && !isOffline && !isContingencyMode) {
       toast.error("Debe ingresar un DNI válido primero")
       return
     }
 
+    // Si marca desde su celular personal y es Docente o Paciente Simulado, solicitar permiso de notificación para avisos de rotación
+    if (!kioskConfig && isModuleRole) {
+      void requestMobileNotificationPermission()
+    }
+
     const isKioskAuthorized = Boolean(kioskConfig?.token)
     const detectedRole = validatedUser?.role || Role.TECNICO
     const resolvedCampus =
       technicianAssignment?.campusName ||
+      effectiveActiveModule?.campusName ||
       (dailyProgram?.found ? dailyProgram.campusName : null) ||
       validatedUser?.campusName ||
       kioskConfig?.campusName ||
       "Campus Villa"
-    const resolvedCourse = dailyProgram?.found ? dailyProgram.courseName : undefined
+    const resolvedCourse =
+      effectiveActiveModule?.courseName ||
+      (dailyProgram?.found ? dailyProgram.courseName : undefined)
     const resolvedExpectedEntry =
       detectedRole === Role.TECNICO
         ? technicianAssignment?.expectedEntryTime
-        : dailyProgram?.found
-          ? dailyProgram.entryTime
-          : undefined
+        : effectiveActiveModule?.horaInicio ||
+          (dailyProgram?.found ? dailyProgram.entryTime : undefined)
 
     setIsSubmitting(type)
 
@@ -720,18 +866,32 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     const currentUser = validatedUser!
     const currentShift = selectedShift || undefined
     const previousLastRecord = directoryRef.current?.[data.dni]?.lastRecordType ?? null
+    const previousTodayRecords = [...todayRecords]
+    const activeModLabel = effectiveActiveModule
+      ? ` — Módulo ${effectiveActiveModule.moduleNumber} (${effectiveActiveModule.horaInicio} a ${effectiveActiveModule.horaFin})`
+      : ""
+
+    const optimisticEntry: TodayAttendanceRecordLite = {
+      type,
+      timestamp: new Date().toISOString(),
+      courseName: resolvedCourse || null,
+    }
+    const updatedTodayRecords = [...todayRecords, optimisticEntry]
 
     if (directoryRef.current && directoryRef.current[data.dni]) {
       directoryRef.current[data.dni] = {
         ...directoryRef.current[data.dni],
         lastRecordType: type,
+        todayRecords: updatedTodayRecords,
       }
     }
     setTodayLastRecord(type)
+    setTodayRecords(updatedTodayRecords)
+    setSelectedModuleOverride(null)
 
     toast.success(
-      `✓ Se registró exitosamente su ${type.toLowerCase()}: ${currentUser.name} (${targetCampusName})`,
-      { duration: 4500 }
+      `✓ Se registró exitosamente su ${type.toLowerCase()}${activeModLabel}: ${currentUser.name} (${targetCampusName})`,
+      { duration: 5000 }
     )
     clearOrResetForm()
     setIsSubmitting(null)
@@ -757,9 +917,11 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
             directoryRef.current[data.dni] = {
               ...directoryRef.current[data.dni],
               lastRecordType: previousLastRecord,
+              todayRecords: previousTodayRecords,
             }
           }
           setTodayLastRecord(previousLastRecord)
+          setTodayRecords(previousTodayRecords)
           toast.error(res.message, { duration: 7000 })
         }
       } catch (error) {
@@ -1211,86 +1373,294 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                       </div>
                     )}
 
-                    {/* CASO 2: Resumen para DOCENTES y PACIENTES SIMULADOS */}
+                    {/* CASO 2: Resumen por Módulos para DOCENTES y PACIENTES SIMULADOS */}
                     {(validatedUser.role === Role.DOCENTE || validatedUser.role === Role.PACIENTE_SIMULADO) && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
-                        {/* Hora de marcación y Horario (1er ingreso -> última salida del día) */}
-                        <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
-                          <Clock size={16} className="text-[#1967D2] mt-0.5 shrink-0" />
-                          <div className="min-w-0">
-                            <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                              Hora y Turno de Hoy
-                            </p>
-                            <p className="text-xs sm:text-sm font-black text-slate-800">
-                              Marcando: <span className="text-[#1967D2]">{markingTimeStr}</span>
-                            </p>
-                            {dailyProgram?.found ? (
-                              <p className="text-[11px] sm:text-xs font-semibold text-slate-600 mt-0.5">
-                                Turno:{" "}
-                                <span className="font-black text-slate-900">
-                                  {dailyProgram.entryTime} a {dailyProgram.exitTime}
+                      <div className="space-y-2.5 sm:space-y-3.5">
+                        {/* AVISO DE FIN DE CLASE Y ROTACIÓN (EXCLUSIVO EN CELULARES, NUNCA EN ESTACIÓN FIJA PC) */}
+                        {!kioskConfig &&
+                          mobileRotationAlert.shouldAlert &&
+                          dismissedRotationAlertKey !== currentRotationAlertKey && (
+                            <div className="rounded-xl sm:rounded-2xl border-2 border-amber-400 bg-gradient-to-r from-amber-50 via-orange-50 to-amber-50 p-3 sm:p-4 shadow-sm space-y-2 animate-fade-in-up">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 animate-bounce">
+                                    <BellRing size={17} />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <span className="inline-block text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-200/80 text-amber-950 mb-0.5">
+                                      Aviso Móvil de Rotación de Clase
+                                    </span>
+                                    <h4 className="text-xs sm:text-sm font-black text-amber-950 leading-snug">
+                                      {mobileRotationAlert.title}
+                                    </h4>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setDismissedRotationAlertKey(currentRotationAlertKey)}
+                                  className="text-amber-700 hover:text-amber-950 p-1 cursor-pointer shrink-0"
+                                  title="Ocultar aviso"
+                                >
+                                  <X size={15} />
+                                </button>
+                              </div>
+
+                              <p className="text-[11px] sm:text-xs font-semibold text-amber-900 leading-relaxed">
+                                {mobileRotationAlert.message}
+                              </p>
+
+                              {mobileRotationAlert.nextModule && (
+                                <div className="bg-white/95 rounded-xl p-2.5 sm:p-3 border border-amber-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                  <div className="space-y-0.5 min-w-0">
+                                    <p className="text-[10px] font-black uppercase tracking-wider text-amber-700 flex items-center gap-1">
+                                      <ArrowRight size={12} /> Siguiente Ambiente de Rotación (Módulo{" "}
+                                      {mobileRotationAlert.nextModule.moduleNumber})
+                                    </p>
+                                    <p className="text-xs sm:text-sm font-black text-slate-900">
+                                      {mobileRotationAlert.nextAmbiente}
+                                      {mobileRotationAlert.nextModule.piso
+                                        ? ` • ${mobileRotationAlert.nextModule.piso}`
+                                        : ""}
+                                    </p>
+                                    <p className="text-[11px] font-bold text-slate-600">
+                                      Horario: {mobileRotationAlert.nextHorario} •{" "}
+                                      {mobileRotationAlert.nextModule.courseName}
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                        {/* Indicador de Aviso Móvil Activo (SOLO EN TELÉFONOS, NO EN PC FIJAS) */}
+                        {!kioskConfig && dailyProgram?.found && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-xl bg-blue-50/90 border border-blue-200/80 text-[11px] sm:text-xs">
+                            <div className="flex items-center gap-1.5 text-slate-700 font-semibold">
+                              <BellRing size={13} className="text-[#1967D2] shrink-0" />
+                              <span>
+                                Aviso automático al terminar cada módulo y rotar de ambiente activo en su celular
+                              </span>
+                            </div>
+                            {notifPermission !== "granted" && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  void requestMobileNotificationPermission()
+                                  playRotationAlertSoundAndVibrate()
+                                  toast.info("Alertas sonoras y notificaciones móviles de rotación activadas.")
+                                }}
+                                className="font-black text-[#1967D2] hover:text-blue-800 underline underline-offset-2 cursor-pointer shrink-0"
+                              >
+                                Activar sonido/aviso
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Tarjetas del Módulo Activo */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+                          {/* Hora de marcación y Horario del Módulo Activo */}
+                          <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
+                            <Clock size={16} className="text-[#1967D2] mt-0.5 shrink-0" />
+                            <div className="min-w-0">
+                              <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                                {effectiveActiveModule
+                                  ? `Módulo ${effectiveActiveModule.moduleNumber} de ${dailyProgram?.totalSessions || 1}`
+                                  : "Hora y Turno de Hoy"}
+                              </p>
+                              <p className="text-xs sm:text-sm font-black text-slate-800">
+                                Marcando: <span className="text-[#1967D2]">{markingTimeStr}</span>
+                              </p>
+                              {effectiveActiveModule ? (
+                                <p className="text-[11px] sm:text-xs font-semibold text-slate-600 mt-0.5">
+                                  Horario Módulo {effectiveActiveModule.moduleNumber}:{" "}
+                                  <span className="font-black text-slate-900">
+                                    {effectiveActiveModule.horaInicio} a {effectiveActiveModule.horaFin}
+                                  </span>
+                                </p>
+                              ) : dailyProgram?.found ? (
+                                <p className="text-[11px] sm:text-xs font-semibold text-slate-600 mt-0.5">
+                                  Turno:{" "}
+                                  <span className="font-black text-slate-900">
+                                    {dailyProgram.entryTime} a {dailyProgram.exitTime}
+                                  </span>
+                                </p>
+                              ) : (
+                                <p className="text-[11px] sm:text-xs font-medium text-amber-700 mt-0.5">
+                                  Sin horario en lista de hoy
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Sede */}
+                          <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
+                            <MapPin size={16} className="text-[#1967D2] mt-0.5 shrink-0" />
+                            <div className="min-w-0">
+                              <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                                Sede Asignada
+                              </p>
+                              <p className="text-xs sm:text-sm font-black text-slate-800">
+                                {effectiveActiveModule?.campusName ||
+                                  (dailyProgram?.found ? dailyProgram.campusName : null) ||
+                                  validatedUser.campusName ||
+                                  "Campus Villa"}
+                              </p>
+                              {(effectiveActiveModule?.piso || (dailyProgram?.found && dailyProgram.piso)) && (
+                                <p className="text-[11px] sm:text-xs font-medium text-slate-500 mt-0.5 truncate">
+                                  {effectiveActiveModule?.piso || dailyProgram?.piso}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Ambiente del Módulo Activo (solo nombre después de ':') */}
+                          <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
+                            <DoorOpen size={16} className="text-emerald-600 mt-0.5 shrink-0" />
+                            <div className="min-w-0">
+                              <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                                {effectiveActiveModule
+                                  ? `Ambiente — Módulo ${effectiveActiveModule.moduleNumber}`
+                                  : "Ambiente Asignado"}
+                              </p>
+                              <p className="text-xs sm:text-sm font-black text-slate-800 break-words leading-snug">
+                                {effectiveActiveModule
+                                  ? effectiveActiveModule.ambiente.replace(/^[^:]+:\s*/, "")
+                                  : dailyProgram?.found
+                                    ? dailyProgram.ambiente.replace(/^[^:]+:\s*/, "")
+                                    : "Por asignar en sede"}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Curso / Sesión del Módulo Activo */}
+                          <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
+                            <BookOpen size={16} className="text-emerald-600 mt-0.5 shrink-0" />
+                            <div className="min-w-0">
+                              <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                                {effectiveActiveModule
+                                  ? `Curso / Sesión — Módulo ${effectiveActiveModule.moduleNumber}`
+                                  : "Curso / Sesión de Ingreso"}
+                              </p>
+                              <p className="text-xs sm:text-sm font-black text-slate-800 break-words leading-snug">
+                                {effectiveActiveModule
+                                  ? effectiveActiveModule.courseName
+                                  : dailyProgram?.found
+                                    ? dailyProgram.courseName
+                                    : "General"}
+                              </p>
+                              {(effectiveActiveModule?.sesion || (dailyProgram?.found && dailyProgram.sesion)) && (
+                                <p
+                                  className="text-[11px] sm:text-xs font-medium text-slate-500 mt-0.5 truncate"
+                                  title={effectiveActiveModule?.sesion || dailyProgram?.sesion}
+                                >
+                                  {effectiveActiveModule?.sesion || dailyProgram?.sesion}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Vista previa de la siguiente rotación si tiene más módulos después del actual */}
+                        {effectiveNextModule && (
+                          <div className="bg-white/95 rounded-xl p-2.5 sm:p-3 border border-indigo-200/90 flex items-center justify-between gap-2 text-xs">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <ArrowRight size={15} className="text-indigo-600 shrink-0" />
+                              <div className="min-w-0">
+                                <span className="font-black text-indigo-900">
+                                  Próxima rotación al terminar ({effectiveActiveModule?.horaFin}):{" "}
                                 </span>
-                              </p>
-                            ) : (
-                              <p className="text-[11px] sm:text-xs font-medium text-amber-700 mt-0.5">
-                                Sin horario en lista de hoy
-                              </p>
-                            )}
+                                <span className="font-bold text-slate-800">
+                                  Módulo {effectiveNextModule.moduleNumber} ({effectiveNextModule.horaInicio} a{" "}
+                                  {effectiveNextModule.horaFin}) →{" "}
+                                  {effectiveNextModule.ambiente.replace(/^[^:]+:\s*/, "")}
+                                </span>
+                              </div>
+                            </div>
                           </div>
-                        </div>
+                        )}
 
-                        {/* Sede */}
-                        <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
-                          <MapPin size={16} className="text-[#1967D2] mt-0.5 shrink-0" />
-                          <div className="min-w-0">
-                            <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                              Sede Asignada
-                            </p>
-                            <p className="text-xs sm:text-sm font-black text-slate-800">
-                              {dailyProgram?.found
-                                ? dailyProgram.campusName
-                                : validatedUser.campusName || "Campus Villa"}
-                            </p>
-                            {dailyProgram?.found && dailyProgram.piso && (
-                              <p className="text-[11px] sm:text-xs font-medium text-slate-500 mt-0.5 truncate">
-                                {dailyProgram.piso}
+                        {/* Lista Desglosada de Módulos del Día (Ingreso y Salida por Módulo) */}
+                        {moduleResolution && moduleResolution.modules.length > 0 && (
+                          <div className="bg-white/95 rounded-xl p-2.5 sm:p-3.5 border border-slate-200/80 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-[10px] sm:text-[11px] font-black uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                                <Layers size={13} className="text-[#1967D2]" />
+                                Módulos Programados Hoy (Marcar Ingreso y Salida por Módulo)
                               </p>
-                            )}
-                          </div>
-                        </div>
+                              <span className="text-[10px] font-bold text-slate-500">
+                                {moduleResolution.modules.filter((m) => m.status === "COMPLETADO").length}/
+                                {moduleResolution.modules.length} completados
+                              </span>
+                            </div>
 
-                        {/* Ambiente donde ingresa (solo nombre después de ':') */}
-                        <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
-                          <DoorOpen size={16} className="text-emerald-600 mt-0.5 shrink-0" />
-                          <div className="min-w-0">
-                            <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                              Ambiente Asignado
-                            </p>
-                            <p className="text-xs sm:text-sm font-black text-slate-800 break-words leading-snug">
-                              {dailyProgram?.found
-                                ? dailyProgram.ambiente.replace(/^[^:]+:\s*/, "")
-                                : "Por asignar en sede"}
-                            </p>
-                          </div>
-                        </div>
+                            <div className="space-y-1.5">
+                              {moduleResolution.modules.map((mod, idx) => {
+                                const isSelected = effectiveActiveModule?.moduleNumber === mod.moduleNumber
+                                const canSelectManually =
+                                  moduleResolution.nextAction === "ENTRADA" && mod.status === "PENDIENTE"
 
-                        {/* Curso / Sesión donde ingresa */}
-                        <div className="bg-white/90 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5 border border-slate-200/70 flex items-start gap-2.5 sm:gap-3">
-                          <BookOpen size={16} className="text-emerald-600 mt-0.5 shrink-0" />
-                          <div className="min-w-0">
-                            <p className="text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                              Curso / Sesión de Ingreso
-                            </p>
-                            <p className="text-xs sm:text-sm font-black text-slate-800 break-words leading-snug">
-                              {dailyProgram?.found ? dailyProgram.courseName : "General"}
-                            </p>
-                            {dailyProgram?.found && dailyProgram.sesion && (
-                              <p className="text-[11px] sm:text-xs font-medium text-slate-500 mt-0.5 truncate" title={dailyProgram.sesion}>
-                                {dailyProgram.sesion}
-                              </p>
-                            )}
+                                return (
+                                  <div
+                                    key={`${mod.moduleNumber}-${mod.horaInicio}-${mod.ambiente}`}
+                                    onClick={() => {
+                                      if (canSelectManually) {
+                                        setSelectedModuleOverride(idx)
+                                      }
+                                    }}
+                                    className={`rounded-lg p-2 sm:p-2.5 border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 ${
+                                      mod.status === "COMPLETADO"
+                                        ? "bg-emerald-50/70 border-emerald-200 text-slate-700"
+                                        : mod.status === "EN_CURSO"
+                                          ? "bg-amber-50/90 border-amber-300 ring-1 ring-amber-300"
+                                          : isSelected
+                                            ? "bg-blue-50/90 border-[#1967D2] ring-1 ring-[#1967D2]"
+                                            : "bg-slate-50/80 border-slate-200/80 opacity-85"
+                                    } ${canSelectManually ? "cursor-pointer hover:border-[#1967D2]" : ""}`}
+                                  >
+                                    <div className="min-w-0 space-y-0.5">
+                                      <div className="flex flex-wrap items-center gap-1.5">
+                                        <span className="text-xs font-black text-slate-900">
+                                          Módulo {mod.moduleNumber}: {mod.horaInicio} — {mod.horaFin}
+                                        </span>
+                                        <span className="text-[11px] font-bold text-slate-700 truncate">
+                                          • {mod.ambiente.replace(/^[^:]+:\s*/, "")}
+                                        </span>
+                                      </div>
+                                      <p className="text-[11px] text-slate-500 font-medium truncate">
+                                        {mod.courseName}
+                                        {mod.piso ? ` (${mod.piso})` : ""}
+                                      </p>
+                                    </div>
+
+                                    <div className="shrink-0 flex items-center">
+                                      {mod.status === "COMPLETADO" && (
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                          <CheckCircle2 size={11} /> Completado
+                                        </span>
+                                      )}
+                                      {mod.status === "EN_CURSO" && (
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-amber-500 text-white shadow-2xs">
+                                          ● En Curso — Marcar Salida
+                                        </span>
+                                      )}
+                                      {mod.status === "PENDIENTE" && isSelected && (
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-[#1967D2] text-white shadow-2xs">
+                                          → Activo — Marcar Ingreso
+                                        </span>
+                                      )}
+                                      {mod.status === "PENDIENTE" && !isSelected && (
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded-full bg-slate-200/80 text-slate-600">
+                                          Pendiente
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
                           </div>
-                        </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1301,15 +1671,23 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
             )}
           />
 
-          {/* Botón de Marcación ENTRADA / SALIDA según el estado del día */}
+          {/* Botón de Marcación ENTRADA / SALIDA según el estado del día o del módulo activo */}
           {(() => {
             const isLoadingState = todayLastRecord === "loading" || isValidating
             const lastType = isLoadingState ? null : (todayLastRecord as RecordType | null)
-            const showEntrada = lastType !== RecordType.ENTRADA
-            const showSalida = lastType === RecordType.ENTRADA
+            const showEntrada = moduleResolution
+              ? moduleResolution.nextAction === "ENTRADA"
+              : lastType !== RecordType.ENTRADA
+            const showSalida = moduleResolution
+              ? moduleResolution.nextAction === "SALIDA"
+              : lastType === RecordType.ENTRADA
 
             const isButtonDisabled =
               (!validatedUser && !isOffline && !isContingencyMode) || isSubmitting !== null || isLoadingState
+
+            const activeModSuffix = effectiveActiveModule
+              ? ` — MÓDULO ${effectiveActiveModule.moduleNumber} (${effectiveActiveModule.horaInicio} - ${effectiveActiveModule.horaFin})`
+              : ""
 
             return (
               <div className="grid grid-cols-1 gap-3 sm:gap-4 pt-1 sm:pt-2">
@@ -1318,16 +1696,18 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                     type="button"
                     disabled={isButtonDisabled}
                     onClick={form.handleSubmit((d) => onSubmit(d, RecordType.ENTRADA))}
-                    className="h-14 sm:h-16 md:h-20 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-base sm:text-lg md:text-xl shadow-[0_10px_20px_-5px_rgba(25,103,210,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(25,103,210,0.7)] transition-all hover:-translate-y-0.5 active:scale-[0.99] disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none cursor-pointer"
+                    className="h-14 sm:h-16 md:h-20 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-sm sm:text-base md:text-xl shadow-[0_10px_20px_-5px_rgba(25,103,210,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(25,103,210,0.7)] transition-all hover:-translate-y-0.5 active:scale-[0.99] disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none cursor-pointer px-3"
                   >
                     {isLoadingState ? (
-                      <Loader2 size={22} className="animate-spin mr-2" />
+                      <Loader2 size={22} className="animate-spin mr-2 shrink-0" />
                     ) : isSubmitting === RecordType.ENTRADA ? (
-                      <Loader2 size={22} className="animate-spin mr-2" />
+                      <Loader2 size={22} className="animate-spin mr-2 shrink-0" />
                     ) : (
-                      <LogIn size={22} className="mr-2" />
+                      <LogIn size={22} className="mr-2 shrink-0" />
                     )}
-                    {isLoadingState ? "ANALIZANDO..." : "MARCAR ENTRADA"}
+                    <span className="truncate">
+                      {isLoadingState ? "ANALIZANDO..." : `MARCAR ENTRADA${activeModSuffix}`}
+                    </span>
                   </Button>
                 )}
 
@@ -1336,14 +1716,14 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                     type="button"
                     disabled={isButtonDisabled}
                     onClick={form.handleSubmit((d) => onSubmit(d, RecordType.SALIDA))}
-                    className="h-14 sm:h-16 md:h-20 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-black text-base sm:text-lg md:text-xl shadow-[0_10px_20px_-5px_rgba(15,23,42,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(15,23,42,0.7)] transition-all hover:-translate-y-0.5 active:scale-[0.99] disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none cursor-pointer"
+                    className="h-14 sm:h-16 md:h-20 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-black text-sm sm:text-base md:text-xl shadow-[0_10px_20px_-5px_rgba(15,23,42,0.5)] hover:shadow-[0_15px_25px_-5px_rgba(15,23,42,0.7)] transition-all hover:-translate-y-0.5 active:scale-[0.99] disabled:opacity-50 disabled:hover:translate-y-0 disabled:shadow-none cursor-pointer px-3"
                   >
                     {isSubmitting === RecordType.SALIDA ? (
-                      <Loader2 size={22} className="animate-spin mr-2" />
+                      <Loader2 size={22} className="animate-spin mr-2 shrink-0" />
                     ) : (
-                      <LogOut size={22} className="mr-2" />
+                      <LogOut size={22} className="mr-2 shrink-0" />
                     )}
-                    MARCAR SALIDA
+                    <span className="truncate">MARCAR SALIDA{activeModSuffix}</span>
                   </Button>
                 )}
               </div>

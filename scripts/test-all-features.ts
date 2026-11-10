@@ -1064,6 +1064,96 @@ async function main() {
     role: "SUPER_ADMIN",
   })
 
+  // =========================================================================
+  // 16. MARCACIÓN POR CADA MÓDULO Y AVISO DE ROTACIÓN EXCLUSIVO EN TELÉFONOS
+  // =========================================================================
+  console.log("\n--- TEST 16: MARCACIÓN POR MÓDULO (INGRESO/SALIDA) Y AVISO DE ROTACIÓN EN CELULARES ---")
+
+  const {
+    resolveUserModulesState,
+    buildMobileRotationAlertPayload,
+  } = await import("../src/lib/daily-program-api")
+
+  const mockUserModules = [
+    {
+      moduleNumber: 1,
+      horaInicio: "07:00",
+      horaFin: "08:40",
+      startMinutes: 420,
+      endMinutes: 520,
+      ambiente: "SL02TA21: CONSULTORIO 101",
+      piso: "Piso 1",
+      sesion: "[MED_SBS]-Caso 1",
+      courseName: "Semiología Basada en Simulación (SBS)",
+      campusName: "Campus Villa",
+    },
+    {
+      moduleNumber: 2,
+      horaInicio: "08:40",
+      horaFin: "10:20",
+      startMinutes: 520,
+      endMinutes: 620,
+      ambiente: "SL02TA22: CONSULTORIO 204",
+      piso: "Piso 2",
+      sesion: "[SCI]-Caso 2",
+      courseName: "Simulación Clínica Integrada (SCI)",
+      campusName: "Campus Villa",
+    },
+  ]
+
+  // 16.1 Inicio del día (06:50 AM = 410m): Módulo 1 activo para ENTRADA
+  const stateStart = resolveUserModulesState(mockUserModules, [], 410)
+  assert(
+    stateStart.activeModule?.moduleNumber === 1 &&
+      stateStart.nextAction === "ENTRADA" &&
+      stateStart.nextModule?.moduleNumber === 2,
+    "Módulos (Inicio): Selecciona Módulo 1 (07:00 - 08:40) para marcar ENTRADA y prevé rotación a Módulo 2"
+  )
+
+  // 16.2 Tras marcar ENTRADA del Módulo 1 (06:55 AM) y llegar las 08:40 AM (520m): Módulo 1 EN_CURSO exige SALIDA y dispara alerta
+  const stateMod1End = resolveUserModulesState(
+    mockUserModules,
+    [{ type: "ENTRADA", timestamp: "2026-10-15T06:55:00-05:00" }],
+    520
+  )
+  assert(
+    stateMod1End.activeModule?.moduleNumber === 1 &&
+      stateMod1End.nextAction === "SALIDA" &&
+      stateMod1End.shouldTriggerRotationAlert === true &&
+      stateMod1End.rotationAlertReason === "MODULE_TIME_ENDED",
+    "Módulos (Fin de Módulo 1 a las 08:40): Exige marcar SALIDA del Módulo 1 y activa bandera de fin de clase/rotación"
+  )
+
+  // 16.3 El aviso de rotación SE ACTIVA en teléfonos (!isKioskStation) pero NO en Estación Fija (PC de sede)
+  const mobileAlert = buildMobileRotationAlertPayload(stateMod1End, false)
+  const kioskAlert = buildMobileRotationAlertPayload(stateMod1End, true)
+  assert(
+    mobileAlert.enabled === true &&
+      mobileAlert.shouldAlert === true &&
+      mobileAlert.nextAmbiente === "CONSULTORIO 204" &&
+      kioskAlert.enabled === false &&
+      kioskAlert.shouldAlert === false,
+    "Aviso de Rotación: Se emite en celulares indicando el nuevo ambiente ('CONSULTORIO 204') y se bloquea en PCs fijas"
+  )
+
+  // 16.4 Tras marcar SALIDA del Módulo 1 (08:40 AM): Módulo 1 pasa a COMPLETADO y avanza a Módulo 2 para marcar nueva ENTRADA
+  const stateAfterMod1Exit = resolveUserModulesState(
+    mockUserModules,
+    [
+      { type: "ENTRADA", timestamp: "2026-10-15T06:55:00-05:00" },
+      { type: "SALIDA", timestamp: "2026-10-15T08:40:00-05:00" },
+    ],
+    521
+  )
+  assert(
+    stateAfterMod1Exit.modules[0].status === "COMPLETADO" &&
+      stateAfterMod1Exit.activeModule?.moduleNumber === 2 &&
+      stateAfterMod1Exit.activeModule?.horaInicio === "08:40" &&
+      stateAfterMod1Exit.activeModule?.courseName === "Simulación Clínica Integrada (SCI)" &&
+      stateAfterMod1Exit.nextAction === "ENTRADA",
+    "Módulos (Rotación a Módulo 2): Cierra Módulo 1 como COMPLETADO y habilita ENTRADA del Módulo 2 (08:40 - 10:20)"
+  )
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")

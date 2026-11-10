@@ -31,6 +31,45 @@ export interface NormalizedProgramSession {
   pacientesEstandarizados: string
 }
 
+export interface ProgramSessionItem {
+  moduleNumber: number // 1, 2, 3...
+  horaInicio: string // "HH:mm"
+  horaFin: string // "HH:mm"
+  startMinutes: number
+  endMinutes: number
+  ambiente: string
+  piso: string
+  sesion: string
+  courseName: string
+  campusName: string
+}
+
+export type ModuleAttendanceStatus = "PENDIENTE" | "EN_CURSO" | "COMPLETADO"
+
+export interface ResolvedModuleStatus extends ProgramSessionItem {
+  status: ModuleAttendanceStatus
+  entryTimestamp?: string
+  exitTimestamp?: string
+}
+
+export interface TodayAttendanceRecordLite {
+  type: "ENTRADA" | "SALIDA"
+  timestamp: string
+  courseName?: string | null
+}
+
+export interface UserModulesResolution {
+  modules: ResolvedModuleStatus[]
+  activeModuleIndex: number
+  activeModule: ResolvedModuleStatus | null
+  nextModule: ResolvedModuleStatus | null
+  completedModuleBeforeActive: ResolvedModuleStatus | null
+  nextAction: "ENTRADA" | "SALIDA"
+  allCompleted: boolean
+  shouldTriggerRotationAlert: boolean
+  rotationAlertReason: "MODULE_TIME_ENDED" | "READY_FOR_NEXT_MODULE" | null
+}
+
 export interface UserDailyProgramSummary {
   found: boolean
   matchedRoleInSession?: "DOCENTE_LIDER" | "DOCENTE_COLABORADOR" | "PACIENTE_ESTANDARIZADO"
@@ -42,14 +81,7 @@ export interface UserDailyProgramSummary {
   courseName: string // Curso oficial mapeado de la programación más temprana
   campusName: string // Sede detectada (ej. "Campus Villa")
   totalSessions: number
-  sessions: {
-    horaInicio: string
-    horaFin: string
-    ambiente: string
-    piso: string
-    sesion: string
-    courseName: string
-  }[]
+  sessions: ProgramSessionItem[]
 }
 
 // Caché en memoria con Stale-While-Revalidate para respuesta instantánea (0ms cuando está caliente)
@@ -442,17 +474,41 @@ export function matchDailyProgramFromSessions(
     }
   }
 
-  // Ordenar por hora de inicio ascendente para obtener la programación más temprana del día
+  // Ordenar por hora de inicio ascendente (y luego por hora de fin) para obtener cada módulo en orden cronológico
   const byEarliestStart = [...matchedSessions].sort(
-    (a, b) => a.session.startMinutes - b.session.startMinutes
+    (a, b) => a.session.startMinutes - b.session.startMinutes || a.session.endMinutes - b.session.endMinutes
   )
   // Ordenar por hora de fin descendente para obtener la última programación del día (fin de turno)
   const byLatestEnd = [...matchedSessions].sort(
     (a, b) => b.session.endMinutes - a.session.endMinutes
   )
 
-  const earliest = byEarliestStart[0]
+  // Deduplicar filas que tengan exactamente el mismo bloque horario y ambiente
+  const seenKeys = new Set<string>()
+  const uniqueOrdered: typeof byEarliestStart = []
+  for (const item of byEarliestStart) {
+    const key = `${item.session.horaInicio}|${item.session.horaFin}|${item.session.ambiente.trim().toLowerCase()}`
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key)
+      uniqueOrdered.push(item)
+    }
+  }
+
+  const earliest = uniqueOrdered[0] || byEarliestStart[0]
   const latest = byLatestEnd[0]
+
+  const mappedSessions: ProgramSessionItem[] = uniqueOrdered.map((m, idx) => ({
+    moduleNumber: idx + 1,
+    horaInicio: m.session.horaInicio,
+    horaFin: m.session.horaFin,
+    startMinutes: m.session.startMinutes,
+    endMinutes: m.session.endMinutes,
+    ambiente: m.session.ambiente,
+    piso: m.session.piso,
+    sesion: m.session.sesion,
+    courseName: m.session.courseName,
+    campusName: m.session.campusName || fallbackCampusName || "Campus Villa",
+  }))
 
   return {
     found: true,
@@ -464,15 +520,288 @@ export function matchDailyProgramFromSessions(
     sesion: earliest.session.sesion,
     courseName: earliest.session.courseName,
     campusName: earliest.session.campusName || fallbackCampusName || "Campus Villa",
-    totalSessions: matchedSessions.length,
-    sessions: byEarliestStart.map((m) => ({
-      horaInicio: m.session.horaInicio,
-      horaFin: m.session.horaFin,
-      ambiente: m.session.ambiente,
-      piso: m.session.piso,
-      sesion: m.session.sesion,
-      courseName: m.session.courseName,
-    })),
+    totalSessions: mappedSessions.length,
+    sessions: mappedSessions,
+  }
+}
+
+/**
+ * Obtiene los minutos transcurridos del día en hora oficial de Lima (UTC-5).
+ */
+export function getCurrentLimaMinutes(now: Date = new Date()): number {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Lima",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(now)
+  const h = parseInt(parts.find((p) => p.type === "hour")?.value || "0", 10)
+  const m = parseInt(parts.find((p) => p.type === "minute")?.value || "0", 10)
+  return (isNaN(h) ? 0 : h) * 60 + (isNaN(m) ? 0 : m)
+}
+
+/**
+ * Resuelve el estado por módulo (PENDIENTE, EN_CURSO, COMPLETADO) de un Docente o Paciente Simulado
+ * a partir de su programación del día, sus marcaciones de hoy y la hora actual en Lima.
+ */
+export function resolveUserModulesState(
+  sessions: ProgramSessionItem[],
+  todayRecords: TodayAttendanceRecordLite[] = [],
+  currentLimaMinutes: number = getCurrentLimaMinutes()
+): UserModulesResolution {
+  if (!sessions || sessions.length === 0) {
+    const lastRec = todayRecords.length > 0 ? todayRecords[todayRecords.length - 1] : null
+    return {
+      modules: [],
+      activeModuleIndex: -1,
+      activeModule: null,
+      nextModule: null,
+      completedModuleBeforeActive: null,
+      nextAction: lastRec?.type === "ENTRADA" ? "SALIDA" : "ENTRADA",
+      allCompleted: false,
+      shouldTriggerRotationAlert: false,
+      rotationAlertReason: null,
+    }
+  }
+
+  // Agrupar las marcaciones cronológicas del día en pares [ENTRADA, SALIDA?]
+  const cycles: { entryTimestamp: string; exitTimestamp?: string }[] = []
+  for (const rec of todayRecords) {
+    if (rec.type === "ENTRADA") {
+      cycles.push({ entryTimestamp: rec.timestamp })
+    } else if (rec.type === "SALIDA") {
+      const openCycle = cycles.length > 0 ? cycles[cycles.length - 1] : null
+      if (openCycle && !openCycle.exitTimestamp) {
+        openCycle.exitTimestamp = rec.timestamp
+      } else {
+        // Si hubo una SALIDA huérfana sin ENTRADA previa, cerramos un ciclo sintético
+        cycles.push({ entryTimestamp: rec.timestamp, exitTimestamp: rec.timestamp })
+      }
+    }
+  }
+
+  // Emparejar cada ciclo con su módulo correspondiente en orden
+  // Si el primer ciclo se registró cuando ya habían terminado los primeros módulos (ej. llegó al Módulo 2),
+  // asignamos respetando la ventana horaria cuando no hay ciclos previos.
+  const moduleStates: ResolvedModuleStatus[] = sessions.map((s) => ({
+    ...s,
+    status: "PENDIENTE" as ModuleAttendanceStatus,
+  }))
+
+  let nextAvailableModIdx = 0
+  for (const cycle of cycles) {
+    if (nextAvailableModIdx >= moduleStates.length) break
+    const entryDate = new Date(cycle.entryTimestamp)
+    const entryMins = !isNaN(entryDate.getTime()) ? getCurrentLimaMinutes(entryDate) : null
+
+    // Si este ciclo empezó después de que el módulo actual ya había terminado y hay un módulo posterior disponible,
+    // avanzamos hasta el módulo cuya hora de fin sea posterior al ingreso (siempre que queden módulos suficientes)
+    if (entryMins !== null) {
+      while (
+        nextAvailableModIdx < moduleStates.length - 1 &&
+        entryMins >= moduleStates[nextAvailableModIdx].endMinutes
+      ) {
+        nextAvailableModIdx++
+      }
+    }
+
+    const targetMod = moduleStates[nextAvailableModIdx]
+    targetMod.entryTimestamp = cycle.entryTimestamp
+    if (cycle.exitTimestamp) {
+      targetMod.exitTimestamp = cycle.exitTimestamp
+      targetMod.status = "COMPLETADO"
+      nextAvailableModIdx++
+    } else {
+      targetMod.status = "EN_CURSO"
+      nextAvailableModIdx++
+    }
+  }
+
+  // Verificar si hay un módulo actualmente EN_CURSO (con ENTRADA marcada y pendiente de SALIDA)
+  const inProgressIdx = moduleStates.findIndex((m) => m.status === "EN_CURSO")
+
+  if (inProgressIdx !== -1) {
+    const activeModule = moduleStates[inProgressIdx]
+    const nextModule = moduleStates[inProgressIdx + 1] || null
+    const completedModuleBeforeActive = inProgressIdx > 0 ? moduleStates[inProgressIdx - 1] : null
+    const timeEnded = currentLimaMinutes >= activeModule.endMinutes
+
+    return {
+      modules: moduleStates,
+      activeModuleIndex: inProgressIdx,
+      activeModule,
+      nextModule,
+      completedModuleBeforeActive,
+      nextAction: "SALIDA",
+      allCompleted: false,
+      shouldTriggerRotationAlert: timeEnded,
+      rotationAlertReason: timeEnded ? "MODULE_TIME_ENDED" : null,
+    }
+  }
+
+  // Buscar el último módulo completado
+  let lastCompletedIdx = -1
+  for (let i = moduleStates.length - 1; i >= 0; i--) {
+    if (moduleStates[i].status === "COMPLETADO") {
+      lastCompletedIdx = i
+      break
+    }
+  }
+
+  // Buscar el siguiente módulo PENDIENTE después del último completado
+  const pendingAfterLastCompleted: number[] = []
+  for (let i = lastCompletedIdx + 1; i < moduleStates.length; i++) {
+    if (moduleStates[i].status === "PENDIENTE") {
+      pendingAfterLastCompleted.push(i)
+    }
+  }
+
+  if (pendingAfterLastCompleted.length > 0) {
+    // Si ya completó un módulo previo (ej. acaba de marcar SALIDA del Módulo 1), el siguiente módulo inmediato
+    // es el que le toca marcar ENTRADA para su rotación.
+    // Si aún no ha marcado nada hoy (lastCompletedIdx === -1), elegimos el primer módulo que aún no haya terminado.
+    let chosenIdx = pendingAfterLastCompleted[0]
+    if (lastCompletedIdx === -1) {
+      const notEndedIdx = pendingAfterLastCompleted.find(
+        (idx) => moduleStates[idx].endMinutes > currentLimaMinutes
+      )
+      if (notEndedIdx !== undefined) {
+        chosenIdx = notEndedIdx
+      }
+    }
+
+    const activeModule = moduleStates[chosenIdx]
+    const nextModule = moduleStates[chosenIdx + 1] || null
+    const completedModuleBeforeActive =
+      lastCompletedIdx !== -1 ? moduleStates[lastCompletedIdx] : null
+
+    // Si acaba de completar el módulo anterior y ya estamos en (o cerca de) la rotación hacia el nuevo módulo
+    const readyForNext =
+      completedModuleBeforeActive !== null &&
+      currentLimaMinutes >= completedModuleBeforeActive.endMinutes - 15
+
+    return {
+      modules: moduleStates,
+      activeModuleIndex: chosenIdx,
+      activeModule,
+      nextModule,
+      completedModuleBeforeActive,
+      nextAction: "ENTRADA",
+      allCompleted: false,
+      shouldTriggerRotationAlert: readyForNext,
+      rotationAlertReason: readyForNext ? "READY_FOR_NEXT_MODULE" : null,
+    }
+  }
+
+  // Todos los módulos posteriores ya fueron completados
+  const lastIdx = moduleStates.length - 1
+  const lastRec = todayRecords.length > 0 ? todayRecords[todayRecords.length - 1] : null
+
+  return {
+    modules: moduleStates,
+    activeModuleIndex: lastIdx,
+    activeModule: moduleStates[lastIdx],
+    nextModule: null,
+    completedModuleBeforeActive: lastIdx > 0 ? moduleStates[lastIdx - 1] : null,
+    nextAction: lastRec?.type === "ENTRADA" ? "SALIDA" : "ENTRADA",
+    allCompleted: true,
+    shouldTriggerRotationAlert: false,
+    rotationAlertReason: null,
+  }
+}
+
+export interface MobileRotationAlertPayload {
+  enabled: boolean
+  shouldAlert: boolean
+  reason: "MODULE_TIME_ENDED" | "READY_FOR_NEXT_MODULE" | null
+  title: string
+  message: string
+  currentModule: ResolvedModuleStatus | null
+  nextModule: ResolvedModuleStatus | null
+  nextAmbiente: string | null
+  nextHorario: string | null
+}
+
+/**
+ * Construye el aviso de término de módulo y rotación de clase EXCLUSIVAMENTE para celulares (!isKioskStation).
+ * Si el dispositivo es una Estación Oficial (PC fija de sede), esta función está deshabilitada.
+ */
+export function buildMobileRotationAlertPayload(
+  resolution: UserModulesResolution | null,
+  isKioskStation: boolean
+): MobileRotationAlertPayload {
+  if (isKioskStation || !resolution || !resolution.shouldTriggerRotationAlert || !resolution.activeModule) {
+    return {
+      enabled: !isKioskStation,
+      shouldAlert: false,
+      reason: null,
+      title: "",
+      message: "",
+      currentModule: null,
+      nextModule: null,
+      nextAmbiente: null,
+      nextHorario: null,
+    }
+  }
+
+  const cleanAmb = (raw?: string | null) =>
+    raw ? raw.replace(/^[^:]+:\s*/, "").trim() : "Por asignar"
+
+  if (resolution.rotationAlertReason === "MODULE_TIME_ENDED") {
+    const cur = resolution.activeModule
+    const nxt = resolution.nextModule
+    const curAmb = cleanAmb(cur.ambiente)
+    const nxtAmb = nxt ? cleanAmb(nxt.ambiente) : null
+
+    const title = nxt
+      ? `⏰ Fin del Módulo ${cur.moduleNumber} (${cur.horaFin}) — ¡Hora de Rotar!`
+      : `⏰ Fin del Módulo ${cur.moduleNumber} (${cur.horaFin}) — Clase Finalizada`
+
+    const message = nxt
+      ? `La hora de su clase en ${curAmb} ha terminado (${cur.horaFin}). Marque su SALIDA del Módulo ${cur.moduleNumber} y rote al ambiente ${nxtAmb} para el Módulo ${nxt.moduleNumber} (${nxt.horaInicio} a ${nxt.horaFin} — ${nxt.courseName}).`
+      : `La hora de su clase en ${curAmb} (${cur.courseName}) ha terminado (${cur.horaFin}). Por favor, marque su SALIDA del Módulo ${cur.moduleNumber}.`
+
+    return {
+      enabled: true,
+      shouldAlert: true,
+      reason: "MODULE_TIME_ENDED",
+      title,
+      message,
+      currentModule: cur,
+      nextModule: nxt,
+      nextAmbiente: nxtAmb,
+      nextHorario: nxt ? `${nxt.horaInicio} a ${nxt.horaFin}` : null,
+    }
+  }
+
+  if (resolution.rotationAlertReason === "READY_FOR_NEXT_MODULE") {
+    const prev = resolution.completedModuleBeforeActive
+    const nxt = resolution.activeModule
+    const nxtAmb = cleanAmb(nxt.ambiente)
+
+    return {
+      enabled: true,
+      shouldAlert: true,
+      reason: "READY_FOR_NEXT_MODULE",
+      title: `🔄 Rotación Activa → Módulo ${nxt.moduleNumber} (${nxt.horaInicio} - ${nxt.horaFin})`,
+      message: `Salida del Módulo ${prev?.moduleNumber ?? ""} completada. Diríjase al ambiente ${nxtAmb}${nxt.piso ? ` (${nxt.piso})` : ""} y marque su ENTRADA al Módulo ${nxt.moduleNumber} (${nxt.courseName}).`,
+      currentModule: prev,
+      nextModule: nxt,
+      nextAmbiente: nxtAmb,
+      nextHorario: `${nxt.horaInicio} a ${nxt.horaFin}`,
+    }
+  }
+
+  return {
+    enabled: true,
+    shouldAlert: false,
+    reason: null,
+    title: "",
+    message: "",
+    currentModule: null,
+    nextModule: null,
+    nextAmbiente: null,
+    nextHorario: null,
   }
 }
 
