@@ -312,18 +312,18 @@ function buildEndUserManual(outputDirs: string[]) {
   )
 
   m.addSectionTitle("5. Informacion Especifica segun tu Perfil")
-  m.addSubTitle("A) Pacientes Simulados y Docentes: Marcacion por Modulo y Aviso de Rotacion")
+  m.addSubTitle("A) Pacientes Simulados y Docentes")
   m.addBullet(
-    "Sincronizacion con la Programacion Diaria",
-    "El sistema consulta automaticamente la programacion oficial del dia (JSON / Excel) y te muestra en pantalla el desglose de todos tus modulos programados (Modulo 1, Modulo 2, Modulo 3, etc.), indicando para cada uno su horario de inicio y fin, el Curso y el Nombre exacto del Consultorio o Sala de Alta Fidelidad donde debes presentarte."
+    "Deteccion Automatica de tu Ambiente, Curso y Horario Actual",
+    "El sistema consulta automaticamente la programacion oficial del dia (JSON / Excel) y te muestra unicamente la informacion necesaria del momento: la Sede, la Hora de Marcacion, el Curso y el Ambiente exacto donde te toca ingresar o salir."
   )
   m.addBullet(
-    "Ingreso y Salida Obligatorio por Cada Modulo",
-    "Debes registrar tu ENTRADA y tu SALIDA por cada modulo de tu programacion diaria. Al iniciar tu primera clase presionas 'MARCAR ENTRADA - MODULO 1'. Al concluir la hora de esa sesion, presionas 'MARCAR SALIDA - MODULO 1', y el sistema cambiara automaticamente al 'MODULO 2' mostrando tu nuevo ambiente para que registres tu 'ENTRADA - MODULO 2' apenas rotes de salon."
+    "Marcacion de Ingreso y Salida en Cada Clase",
+    "Al llegar a tu ambiente asignado presionas 'MARCAR ENTRADA'. Al concluir tu clase presionas 'MARCAR SALIDA', e internamente el sistema actualiza de forma automatica los datos de tu siguiente ambiente y curso para que registres tu nueva entrada al rotar de salon, guardando cada registro en la base de datos."
   )
   m.addBullet(
     "Aviso Automatico de Fin de Clase y Rotacion (Exclusivo en Celulares)",
-    "Cuando utilizas el portal desde tu telefono celular, el sistema activa una alerta inteligente que te avisa con sonido, vibracion y notificacion en pantalla apenas termina la hora de tu modulo actual. El aviso te recuerda marcar la SALIDA de tu clase finalizada y te indica a que consultorio o ambiente debes rotar para tu siguiente modulo (esta funcion es exclusiva para telefonos moviles y no se activa en las computadoras fijas de sede)."
+    "Cuando utilizas el portal desde tu telefono celular, el sistema emite un aviso automatico (con sonido, vibracion y alerta en pantalla) cuando termina la hora de tu clase actual, recordandote marcar tu salida e indicandote a que nuevo ambiente debes dirigirte (disponible solo en telefonos moviles y no en las computadoras fijas de sede)."
   )
 
   m.addSubTitle("B) Tecnicos de Simulacion")

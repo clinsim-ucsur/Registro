@@ -754,12 +754,12 @@ export function buildMobileRotationAlertPayload(
     const nxtAmb = nxt ? cleanAmb(nxt.ambiente) : null
 
     const title = nxt
-      ? `⏰ Fin del Módulo ${cur.moduleNumber} (${cur.horaFin}) — ¡Hora de Rotar!`
-      : `⏰ Fin del Módulo ${cur.moduleNumber} (${cur.horaFin}) — Clase Finalizada`
+      ? `⏰ Fin de clase (${cur.horaFin}) — ¡Hora de rotar!`
+      : `⏰ Fin de clase (${cur.horaFin})`
 
     const message = nxt
-      ? `La hora de su clase en ${curAmb} ha terminado (${cur.horaFin}). Marque su SALIDA del Módulo ${cur.moduleNumber} y rote al ambiente ${nxtAmb} para el Módulo ${nxt.moduleNumber} (${nxt.horaInicio} a ${nxt.horaFin} — ${nxt.courseName}).`
-      : `La hora de su clase en ${curAmb} (${cur.courseName}) ha terminado (${cur.horaFin}). Por favor, marque su SALIDA del Módulo ${cur.moduleNumber}.`
+      ? `La hora de su clase en ${curAmb} ha terminado (${cur.horaFin}). Marque su SALIDA y rote al ambiente ${nxtAmb} (${nxt.horaInicio} a ${nxt.horaFin} — ${nxt.courseName}).`
+      : `La hora de su clase en ${curAmb} (${cur.courseName}) ha terminado (${cur.horaFin}). Por favor, marque su SALIDA.`
 
     return {
       enabled: true,
@@ -783,8 +783,8 @@ export function buildMobileRotationAlertPayload(
       enabled: true,
       shouldAlert: true,
       reason: "READY_FOR_NEXT_MODULE",
-      title: `🔄 Rotación Activa → Módulo ${nxt.moduleNumber} (${nxt.horaInicio} - ${nxt.horaFin})`,
-      message: `Salida del Módulo ${prev?.moduleNumber ?? ""} completada. Diríjase al ambiente ${nxtAmb}${nxt.piso ? ` (${nxt.piso})` : ""} y marque su ENTRADA al Módulo ${nxt.moduleNumber} (${nxt.courseName}).`,
+      title: `🔄 Siguiente clase (${nxt.horaInicio} a ${nxt.horaFin})`,
+      message: `Diríjase a su nuevo ambiente ${nxtAmb}${nxt.piso ? ` (${nxt.piso})` : ""} y marque su ENTRADA (${nxt.courseName}).`,
       currentModule: prev,
       nextModule: nxt,
       nextAmbiente: nxtAmb,
