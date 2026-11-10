@@ -89,6 +89,7 @@ const SHIFT_LABELS: Record<string, string> = {
 
 const KIOSK_STORAGE_KEY = "clinsim_kiosk_config"
 const SAVED_DNI_STORAGE_KEY = "clinsim_saved_personal_dni"
+const MOBILE_ALARM_ONBOARDED_KEY = "clinsim_mobile_alarm_onboarded"
 
 interface KioskConfig {
   token: string
@@ -127,6 +128,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const [markingTimeStr, setMarkingTimeStr] = useState<string>("")
   const [currentLimaMins, setCurrentLimaMins] = useState<number>(() => getCurrentLimaMinutes())
   const [dismissedRotationAlertKey, setDismissedRotationAlertKey] = useState<string | null>(null)
+  const [mobileAlarmOnboarded, setMobileAlarmOnboarded] = useState<boolean>(true)
   const firedNotificationsRef = useRef<Set<string>>(new Set())
 
   const [isContingencyMode, setIsContingencyMode] = useState(false)
@@ -185,8 +187,13 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       }
     } catch {}
 
-    // Si NO es PC Kiosco (es celular/dispositivo personal), recuperar DNI guardado
+    // Si NO es PC Kiosco (es celular/dispositivo personal), recuperar DNI guardado y estado de primera activación de alarma
     try {
+      const onboarded = localStorage.getItem(MOBILE_ALARM_ONBOARDED_KEY) === "true"
+      const alreadyGranted =
+        typeof Notification !== "undefined" && Notification.permission === "granted"
+      setMobileAlarmOnboarded(onboarded || alreadyGranted)
+
       const savedDni = localStorage.getItem(SAVED_DNI_STORAGE_KEY)
       if (savedDni && /^\d{8}$/.test(savedDni)) {
         setHasRememberedDni(true)
@@ -315,9 +322,11 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   }
 
   const requestMobileNotificationPermission = async () => {
-    if (typeof window === "undefined" || kioskConfig || !("Notification" in window)) return
+    if (typeof window === "undefined" || kioskConfig) return
     try {
-      if (Notification.permission === "default") {
+      localStorage.setItem(MOBILE_ALARM_ONBOARDED_KEY, "true")
+      setMobileAlarmOnboarded(true)
+      if ("Notification" in window && Notification.permission === "default") {
         await Notification.requestPermission()
       }
     } catch {}
@@ -693,7 +702,12 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
 
   const moduleResolution =
     isModuleRole && dailyProgram?.found && dailyProgram.sessions.length > 0
-      ? resolveUserModulesState(dailyProgram.sessions, todayRecords, currentLimaMins)
+      ? resolveUserModulesState(
+          dailyProgram.sessions,
+          todayRecords,
+          currentLimaMins,
+          validatedUser?.role
+        )
       : null
 
   const effectiveActiveModule = moduleResolution?.activeModule ?? null
@@ -701,7 +715,8 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   // Aviso de fin de clase y rotación EXCLUSIVO para teléfonos (!kioskConfig), nunca en Estaciones Oficiales (PC fijas)
   const mobileRotationAlert = buildMobileRotationAlertPayload(
     moduleResolution,
-    Boolean(kioskConfig)
+    Boolean(kioskConfig),
+    validatedUser?.role
   )
 
   const currentRotationAlertKey =
@@ -1343,6 +1358,31 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                     {/* CASO 2: Resumen para DOCENTES y PACIENTES SIMULADOS */}
                     {(validatedUser.role === Role.DOCENTE || validatedUser.role === Role.PACIENTE_SIMULADO) && (
                       <div className="space-y-2.5 sm:space-y-3.5">
+                        {/* AVISO DE ACTIVACIÓN SOLO LA PRIMERA VEZ EN EL CELULAR */}
+                        {!kioskConfig && dailyProgram?.found && !mobileAlarmOnboarded && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 rounded-xl bg-blue-50 border border-blue-200 text-[11px] sm:text-xs animate-fade-in-up">
+                            <div className="flex items-center gap-2 text-slate-700 font-semibold">
+                              <BellRing size={14} className="text-[#1967D2] shrink-0" />
+                              <span>
+                                Active por única vez las notificaciones para recibir avisos cuando deba cambiar de clase o termine su hora
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                void requestMobileNotificationPermission()
+                                playRotationAlertSoundAndVibrate()
+                                toast.success(
+                                  "Notificaciones activadas. Solo se le avisará cuando termine su hora o cambie de clase."
+                                )
+                              }}
+                              className="px-3 py-1 rounded-lg bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-[11px] cursor-pointer shrink-0"
+                            >
+                              Activar avisos
+                            </button>
+                          </div>
+                        )}
+
                         {/* AVISO DE FIN DE CLASE Y ROTACIÓN (EXCLUSIVO EN CELULARES, NUNCA EN ESTACIÓN FIJA PC) */}
                         {!kioskConfig &&
                           mobileRotationAlert.shouldAlert &&

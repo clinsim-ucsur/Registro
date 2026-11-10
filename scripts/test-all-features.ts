@@ -1154,6 +1154,98 @@ async function main() {
     "Módulos (Rotación a Módulo 2): Cierra Módulo 1 como COMPLETADO y habilita ENTRADA del Módulo 2 (08:40 - 10:20)"
   )
 
+  // 16.5 Paciente Simulado con 3 bloques seguidos (07:00 a 12:00) del mismo tema y salón + cambio a las 12:00:
+  //      NO suena alarma a las 08:40 ni 10:20; SOLO notifica a las 12:00 cuando cambia de tema y salón.
+  const threeConsecutiveSameRoomModules = [
+    {
+      moduleNumber: 1,
+      horaInicio: "07:00",
+      horaFin: "08:40",
+      startMinutes: 420,
+      endMinutes: 520,
+      ambiente: "SL02TA21: CONSULTORIO 101",
+      piso: "Piso 1",
+      sesion: "[MED_SBS]-Sd cushing",
+      courseName: "Semiología Basada en Simulación (SBS)",
+      campusName: "Campus Villa",
+    },
+    {
+      moduleNumber: 2,
+      horaInicio: "08:40",
+      horaFin: "10:20",
+      startMinutes: 520,
+      endMinutes: 620,
+      ambiente: "SL02TA21: CONSULTORIO 101",
+      piso: "Piso 1",
+      sesion: "[MED_SBS]-Sd cushing",
+      courseName: "Semiología Basada en Simulación (SBS)",
+      campusName: "Campus Villa",
+    },
+    {
+      moduleNumber: 3,
+      horaInicio: "10:20",
+      horaFin: "12:00",
+      startMinutes: 620,
+      endMinutes: 720,
+      ambiente: "SL02TA21: CONSULTORIO 101",
+      piso: "Piso 1",
+      sesion: "[MED_SBS]-Sd cushing",
+      courseName: "Semiología Basada en Simulación (SBS)",
+      campusName: "Campus Villa",
+    },
+    {
+      moduleNumber: 4,
+      horaInicio: "12:00",
+      horaFin: "13:40",
+      startMinutes: 720,
+      endMinutes: 820,
+      ambiente: "SL02TA22: CONSULTORIO 204",
+      piso: "Piso 2",
+      sesion: "[SCI]-Depresión",
+      courseName: "Simulación Clínica Integrada (SCI)",
+      campusName: "Campus Villa",
+    },
+  ]
+
+  const patientAt0840 = resolveUserModulesState(
+    threeConsecutiveSameRoomModules,
+    [{ type: "ENTRADA", timestamp: "2026-10-15T06:55:00-05:00" }],
+    520, // 08:40 AM
+    Role.PACIENTE_SIMULADO
+  )
+  const patientAt1200 = resolveUserModulesState(
+    threeConsecutiveSameRoomModules,
+    [{ type: "ENTRADA", timestamp: "2026-10-15T06:55:00-05:00" }],
+    720, // 12:00 PM
+    Role.PACIENTE_SIMULADO
+  )
+  assert(
+    patientAt0840.modules.length === 2 &&
+      patientAt0840.activeModule?.horaInicio === "07:00" &&
+      patientAt0840.activeModule?.horaFin === "12:00" &&
+      patientAt0840.shouldTriggerRotationAlert === false &&
+      patientAt1200.shouldTriggerRotationAlert === true &&
+      Boolean(patientAt1200.nextModule?.ambiente.includes("CONSULTORIO 204")),
+    "Paciente Simulado (De corrido 07:00-12:00): Une los 3 bloques iguales sin sonar a las 08:40/10:20 y solo avisa a las 12:00 al cambiar de tema y salón"
+  )
+
+  // 16.6 Docente con los mismos 3 bloques seguidos (07:00-08:40, 08:40-10:20, 10:20-12:00):
+  //      SÍ suena alarma al terminar cada módulo (08:40) para avisar que terminó la hora con esa sección de alumnos.
+  const docenteAt0840 = resolveUserModulesState(
+    threeConsecutiveSameRoomModules,
+    [{ type: "ENTRADA", timestamp: "2026-10-15T06:55:00-05:00" }],
+    520, // 08:40 AM
+    Role.DOCENTE
+  )
+  const docenteAlert0840 = buildMobileRotationAlertPayload(docenteAt0840, false, Role.DOCENTE)
+  assert(
+    docenteAt0840.modules.length === 4 &&
+      docenteAt0840.shouldTriggerRotationAlert === true &&
+      docenteAlert0840.shouldAlert === true &&
+      docenteAlert0840.message.includes("sección de alumnos"),
+    "Docente (Varios módulos seguidos): Mantiene cada módulo separado y suena alarma a las 08:40 recordando fin de hora con esa sección de alumnos"
+  )
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")

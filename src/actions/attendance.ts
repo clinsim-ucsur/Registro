@@ -895,7 +895,8 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
               timestamp: r.timestamp.toISOString(),
               courseName: r.course?.name || null,
             })),
-            getCurrentLimaMinutes(recordTimestamp)
+            getCurrentLimaMinutes(recordTimestamp),
+            data.role
           )
 
           const targetMod = modResolution.activeModule

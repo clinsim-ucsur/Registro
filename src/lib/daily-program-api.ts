@@ -497,7 +497,7 @@ export function matchDailyProgramFromSessions(
   const earliest = uniqueOrdered[0] || byEarliestStart[0]
   const latest = byLatestEnd[0]
 
-  const mappedSessions: ProgramSessionItem[] = uniqueOrdered.map((m, idx) => ({
+  const rawMappedSessions: ProgramSessionItem[] = uniqueOrdered.map((m, idx) => ({
     moduleNumber: idx + 1,
     horaInicio: m.session.horaInicio,
     horaFin: m.session.horaFin,
@@ -509,6 +509,14 @@ export function matchDailyProgramFromSessions(
     courseName: m.session.courseName,
     campusName: m.session.campusName || fallbackCampusName || "Campus Villa",
   }))
+
+  // Si es PACIENTE_SIMULADO y tiene varios módulos seguidos (de corrido) del mismo tema y en el mismo salón,
+  // se unifican en un solo bloque continuo para no interrumpirlo con alarmas intermedias mientras no cambie de tema/salón.
+  // Si es DOCENTE, cada módulo se mantiene individual para que la alarma le avise cada vez que termina la hora con su sección de alumnos.
+  const mappedSessions =
+    userRole === Role.PACIENTE_SIMULADO
+      ? mergeContinuousSessionsForPatient(rawMappedSessions)
+      : rawMappedSessions
 
   return {
     found: true,
@@ -523,6 +531,54 @@ export function matchDailyProgramFromSessions(
     totalSessions: mappedSessions.length,
     sessions: mappedSessions,
   }
+}
+
+/**
+ * Une bloques horarios consecutivos (de corrido) para Pacientes Simulados cuando permanecen
+ * en el mismo salón (ambiente) y con el mismo tema (sesión/curso). Solo separa bloques cuando
+ * el paciente debe cambiar de tema o cambiar de salón.
+ */
+export function mergeContinuousSessionsForPatient(
+  sessions: ProgramSessionItem[]
+): ProgramSessionItem[] {
+  if (!sessions || sessions.length <= 1) return sessions || []
+
+  const normText = (s?: string | null) =>
+    (s || "")
+      .replace(/^[^:]+:\s*/, "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+
+  const merged: ProgramSessionItem[] = []
+
+  for (const item of sessions) {
+    if (merged.length === 0) {
+      merged.push({ ...item, moduleNumber: 1 })
+      continue
+    }
+
+    const prev = merged[merged.length - 1]
+    const sameAmbiente = normText(prev.ambiente) === normText(item.ambiente)
+    const sameTema =
+      normText(prev.sesion || prev.courseName) === normText(item.sesion || item.courseName)
+    // Consideramos "de corrido" si el siguiente módulo inicia inmediatamente al terminar el anterior (o con <= 15 min de receso)
+    const isContinuous = item.startMinutes <= prev.endMinutes + 15
+
+    if (sameAmbiente && sameTema && isContinuous) {
+      if (item.endMinutes > prev.endMinutes) {
+        prev.horaFin = item.horaFin
+        prev.endMinutes = item.endMinutes
+      }
+    } else {
+      merged.push({
+        ...item,
+        moduleNumber: merged.length + 1,
+      })
+    }
+  }
+
+  return merged
 }
 
 /**
@@ -547,9 +603,15 @@ export function getCurrentLimaMinutes(now: Date = new Date()): number {
 export function resolveUserModulesState(
   sessions: ProgramSessionItem[],
   todayRecords: TodayAttendanceRecordLite[] = [],
-  currentLimaMinutes: number = getCurrentLimaMinutes()
+  currentLimaMinutes: number = getCurrentLimaMinutes(),
+  userRole?: Role
 ): UserModulesResolution {
-  if (!sessions || sessions.length === 0) {
+  const effectiveSessions =
+    userRole === Role.PACIENTE_SIMULADO
+      ? mergeContinuousSessionsForPatient(sessions)
+      : sessions
+
+  if (!effectiveSessions || effectiveSessions.length === 0) {
     const lastRec = todayRecords.length > 0 ? todayRecords[todayRecords.length - 1] : null
     return {
       modules: [],
@@ -583,7 +645,7 @@ export function resolveUserModulesState(
   // Emparejar cada ciclo con su módulo correspondiente en orden
   // Si el primer ciclo se registró cuando ya habían terminado los primeros módulos (ej. llegó al Módulo 2),
   // asignamos respetando la ventana horaria cuando no hay ciclos previos.
-  const moduleStates: ResolvedModuleStatus[] = sessions.map((s) => ({
+  const moduleStates: ResolvedModuleStatus[] = effectiveSessions.map((s) => ({
     ...s,
     status: "PENDIENTE" as ModuleAttendanceStatus,
   }))
@@ -728,7 +790,8 @@ export interface MobileRotationAlertPayload {
  */
 export function buildMobileRotationAlertPayload(
   resolution: UserModulesResolution | null,
-  isKioskStation: boolean
+  isKioskStation: boolean,
+  userRole?: Role
 ): MobileRotationAlertPayload {
   if (isKioskStation || !resolution || !resolution.shouldTriggerRotationAlert || !resolution.activeModule) {
     return {
@@ -752,9 +815,36 @@ export function buildMobileRotationAlertPayload(
     const nxt = resolution.nextModule
     const curAmb = cleanAmb(cur.ambiente)
     const nxtAmb = nxt ? cleanAmb(nxt.ambiente) : null
+    const isDocente = userRole === Role.DOCENTE
 
+    if (isDocente) {
+      const sameRoom = nxtAmb && curAmb.toLowerCase() === nxtAmb.toLowerCase()
+      const title = nxt
+        ? `⏰ Fin de hora (${cur.horaFin}) — Cambio de sección de alumnos`
+        : `⏰ Fin de hora (${cur.horaFin}) — Sección concluida`
+
+      const message = nxt
+        ? sameRoom
+          ? `Ya terminó la hora con esta sección de alumnos en ${curAmb} (${cur.horaFin}). Marque su SALIDA y registre su ENTRADA para la siguiente sección (${nxt.horaInicio} a ${nxt.horaFin}).`
+          : `Ya terminó la hora con esta sección de alumnos en ${curAmb} (${cur.horaFin}). Marque su SALIDA y cambie al ambiente ${nxtAmb} (${nxt.horaInicio} a ${nxt.horaFin} — ${nxt.courseName}).`
+        : `Ya terminó la hora con su sección de alumnos en ${curAmb} (${cur.horaFin}). Por favor, marque su SALIDA.`
+
+      return {
+        enabled: true,
+        shouldAlert: true,
+        reason: "MODULE_TIME_ENDED",
+        title,
+        message,
+        currentModule: cur,
+        nextModule: nxt,
+        nextAmbiente: nxtAmb,
+        nextHorario: nxt ? `${nxt.horaInicio} a ${nxt.horaFin}` : null,
+      }
+    }
+
+    // PACIENTE_SIMULADO: solo recibe aviso cuando cambia de tema y/o salón (los bloques seguidos iguales ya fueron unificados)
     const title = nxt
-      ? `⏰ Fin de clase (${cur.horaFin}) — ¡Hora de rotar!`
+      ? `⏰ Fin de clase (${cur.horaFin}) — ¡Cambio de tema y salón!`
       : `⏰ Fin de clase (${cur.horaFin})`
 
     const message = nxt
@@ -784,7 +874,7 @@ export function buildMobileRotationAlertPayload(
       shouldAlert: true,
       reason: "READY_FOR_NEXT_MODULE",
       title: `🔄 Siguiente clase (${nxt.horaInicio} a ${nxt.horaFin})`,
-      message: `Diríjase a su nuevo ambiente ${nxtAmb}${nxt.piso ? ` (${nxt.piso})` : ""} y marque su ENTRADA (${nxt.courseName}).`,
+      message: `Diríjase a su ambiente ${nxtAmb}${nxt.piso ? ` (${nxt.piso})` : ""} y marque su ENTRADA (${nxt.courseName}).`,
       currentModule: prev,
       nextModule: nxt,
       nextAmbiente: nxtAmb,
