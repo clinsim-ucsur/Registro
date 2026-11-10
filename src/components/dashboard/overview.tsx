@@ -110,8 +110,8 @@ export function DashboardOverview({ records, weekly }: { records: any[]; weekly:
       <div className="grid grid-cols-1 gap-6 animate-fade-in-up" style={{animationDelay: '0.2s'}}>
         <Card className="shadow-sm shadow-slate-200/50 border-slate-200/60 rounded-2xl bg-white overflow-hidden">
           <CardHeader className="border-b border-slate-100 bg-white py-5 px-6">
-            <CardTitle className="text-lg font-extrabold text-slate-800">Listado General de Atención</CardTitle>
-            <CardDescription className="text-sm font-medium">Historial completo de los últimos registros procesados.</CardDescription>
+            <CardTitle className="text-lg font-extrabold text-slate-800">Marcaciones del Día</CardTitle>
+            <CardDescription className="text-sm font-medium">Registros de asistencia procesados durante la jornada de hoy.</CardDescription>
           </CardHeader>
           <CardContent className="p-0">
             <Table>
@@ -124,14 +124,14 @@ export function DashboardOverview({ records, weekly }: { records: any[]; weekly:
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {records.length === 0 ? (
+                {todayRecords.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={4} className="text-center py-10 text-slate-500 font-medium">
-                      Aún no hay registros en la base de datos.
+                      Aún no se han registrado marcaciones el día de hoy.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  records.map((record) => (
+                  todayRecords.map((record) => (
                     <TableRow key={record.id} className="border-slate-100 transition-colors hover:bg-slate-50/80">
                       <TableCell className="px-6 py-3">
                         <p className="font-bold text-slate-800">{record.user.name}</p>
