@@ -1327,6 +1327,65 @@ async function main() {
     "Módulo @/lib/tolerance: Evalúa ventana de anticipación y estado de puntualidad sin consultas redundantes"
   )
 
+  // =========================================================================
+  // TEST 18: ACTUALIZACIÓN EN VIVO DEL EXCEL, NUEVOS MÓDULOS DE ÚLTIMO MINUTO Y WEB PUSH
+  // =========================================================================
+  console.log("\n[TEST 18] Probando Sincronización en Vivo del Excel, Módulos de Último Minuto y Web Push...")
+
+  const { getOrCreateVapidKeys } = await import("../src/lib/push-notifications")
+  const { getLiveDailyProgramOverviewAction } = await import("../src/actions/daily-program")
+
+  // 18.1 Si el usuario ya completó un módulo en la mañana (07:00-08:40), tenía otro módulo vencido (08:40-10:20)
+  //      y se le agrega en el Excel un nuevo módulo a las 14:00-16:00 siendo las 13:50 (830m),
+  //      el sistema prioriza el nuevo módulo vigente (14:00-16:00) y NO se queda atascado en el anterior.
+  const modulesWithLastMinuteAddition = [
+    ...mockUserModules,
+    {
+      moduleNumber: 3,
+      horaInicio: "14:00",
+      horaFin: "16:00",
+      startMinutes: 840,
+      endMinutes: 960,
+      ambiente: "SL02TA25: SALA ALTA FIDELIDAD 3",
+      piso: "Piso 3",
+      sesion: "[UCI]-Shock Séptico",
+      courseName: "Unidad de Cuidados Intensivos",
+      campusName: "Campus Villa",
+    },
+  ]
+  const stateWithNewAfternoonMod = resolveUserModulesState(
+    modulesWithLastMinuteAddition,
+    [
+      { type: "ENTRADA", timestamp: "2026-10-15T06:55:00-05:00" },
+      { type: "SALIDA", timestamp: "2026-10-15T08:40:00-05:00" },
+    ],
+    830, // 13:50 PM
+    Role.PACIENTE_SIMULADO
+  )
+  assert(
+    stateWithNewAfternoonMod.activeModule?.horaInicio === "14:00" &&
+      stateWithNewAfternoonMod.activeModule?.horaFin === "16:00" &&
+      stateWithNewAfternoonMod.activeModule?.ambiente.includes("SALA ALTA FIDELIDAD 3"),
+    "Modificación de Último Minuto en Excel: Selecciona el nuevo módulo vigente (14:00-16:00) sin quedarse en horarios anteriores ya vencidos"
+  )
+
+  // 18.2 Verificación de llaves VAPID para notificaciones Web Push con app cerrada / teléfono bloqueado
+  const vapidKeys = await getOrCreateVapidKeys()
+  assert(
+    Boolean(vapidKeys.publicKey && vapidKeys.privateKey && vapidKeys.publicKey.length > 40),
+    "Web Push (App Cerrada / Teléfono Bloqueado): Llaves VAPID generadas y persistidas correctamente para despacho en segundo plano"
+  )
+
+  // 18.3 Verificación del visor administrativo en vivo de horarios del día (Excel -> Admin)
+  const liveOverview = await getLiveDailyProgramOverviewAction(true)
+  assert(
+    liveOverview.success === true &&
+      Array.isArray(liveOverview.patients) &&
+      Array.isArray(liveOverview.rawSessions) &&
+      Boolean(liveOverview.syncedAtIso),
+    `Visor Admin de Horarios del Día en Vivo: Sincronizado (${liveOverview.patients.length} pacientes y ${liveOverview.totalRawSessions} sesiones leídas en directo del Excel)`
+  )
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")

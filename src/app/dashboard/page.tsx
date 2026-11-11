@@ -10,6 +10,7 @@ import {
   Clock,
   Layers,
   Calendar as CalendarIcon,
+  CalendarClock,
   ScrollText,
   Globe,
   BookOpen
@@ -26,6 +27,7 @@ import { DashboardAnalytics } from "@/components/dashboard/analytics"
 import { DashboardRules } from "@/components/dashboard/rules"
 import { DashboardCatalogs } from "@/components/dashboard/catalogs"
 import { DashboardSchedules } from "@/components/dashboard/schedules"
+import { DashboardDailyProgram } from "@/components/dashboard/daily-program"
 import { DashboardAuditLogs } from "@/components/dashboard/audit-logs"
 import { DashboardManuals } from "@/components/dashboard/manuals"
 import { ForceChangePasswordModal } from "@/components/dashboard/force-change-password-modal"
@@ -267,6 +269,16 @@ export default async function DashboardPage() {
               </TabsTrigger>
             )}
 
+            {(hasAccess("users") || hasAccess("overview") || hasAccess("rules")) && (
+              <TabsTrigger 
+                id="trigger-daily-program"
+                value="daily-program" 
+                className="w-full justify-start gap-4 px-5 py-3.5 text-sm md:text-base font-bold rounded-2xl text-emerald-200/95 data-[state=active]:bg-emerald-600 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-emerald-900/50 hover:bg-white/5 transition-all outline-none"
+              >
+                <CalendarClock size={20}/> Horarios del Día (Excel)
+              </TabsTrigger>
+            )}
+
             <div className="h-px w-full bg-white/5 my-1"></div>
 
             {hasAccess("users") && (
@@ -399,6 +411,15 @@ export default async function DashboardPage() {
                   initialSchedules={technicianSchedules as any}
                   technicians={users.filter((u) => u.role === "TECNICO") as any}
                   campuses={visibleCampuses}
+                />
+              </TabsContent>
+            )}
+
+            {(hasAccess("users") || hasAccess("overview") || hasAccess("rules")) && (
+              <TabsContent value="daily-program" className="m-0 p-0 outline-none">
+                <DashboardDailyProgram
+                  scopedCampusName={session.campusName}
+                  lockedOperationalRole={scopedRole}
                 />
               </TabsContent>
             )}

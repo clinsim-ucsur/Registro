@@ -88,15 +88,17 @@ export interface UserDailyProgramSummary {
   sessions: ProgramSessionItem[]
 }
 
-// Caché en memoria con Stale-While-Revalidate para respuesta instantánea (0ms cuando está caliente)
+// Caché en memoria con refresco rápido (15s) y soporte de lectura en vivo forzada para reflejar cambios al instante
 let cachedSessions: {
   data: NormalizedProgramSession[]
   expiresAt: number
+  syncedAt: string
+  source: "API_1_JSON_LIVE" | "API_2_CSV_BACKUP"
 } | null = null
 let inflightRefresh: Promise<NormalizedProgramSession[]> | null = null
 const cachedUserMatchMap = new Map<string, UserDailyProgramSummary>()
 
-const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutos fresco, luego refresca en segundo plano sin bloquear
+const CACHE_TTL_MS = 15 * 1000 // 15 segundos de frescura máxima para captar modificaciones de último minuto en el Excel
 
 /**
  * Normaliza una cadena de hora (ej. "7:00", "08:40", "16:10") a formato "HH:mm" y minutos del día.
@@ -276,9 +278,14 @@ async function fetchFromApi2Csv(): Promise<NormalizedProgramSession[]> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 3500)
   try {
-    const res = await fetch(API_2_CSV_URL, {
+    const bustUrl = `${API_2_CSV_URL}&t=${Date.now()}`
+    const res = await fetch(bustUrl, {
       signal: controller.signal,
       cache: "no-store",
+      headers: {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        Pragma: "no-cache",
+      },
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const csvText = await res.text()
@@ -312,9 +319,14 @@ async function fetchFromApi1Json(): Promise<NormalizedProgramSession[]> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 4500)
   try {
-    const res = await fetch(API_1_JSON_URL, {
+    const bustUrl = `${API_1_JSON_URL}?t=${Date.now()}`
+    const res = await fetch(bustUrl, {
       signal: controller.signal,
       cache: "no-store",
+      headers: {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        Pragma: "no-cache",
+      },
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const json = await res.json()
@@ -327,18 +339,65 @@ async function fetchFromApi1Json(): Promise<NormalizedProgramSession[]> {
   }
 }
 
-async function refreshDailyProgramCache(): Promise<NormalizedProgramSession[]> {
-  if (inflightRefresh) return inflightRefresh
-  inflightRefresh = (async () => {
+async function refreshDailyProgramCache(preferLiveJson = false): Promise<NormalizedProgramSession[]> {
+  if (inflightRefresh && !preferLiveJson) return inflightRefresh
+  const task = (async () => {
     try {
-      // Competencia en paralelo: responde el que llegue más rápido (API 2 CSV suele responder 3x más rápido que Apps Script)
-      const fastest = await Promise.any([fetchFromApi2Csv(), fetchFromApi1Json()])
+      const p1 = fetchFromApi1Json()
+      const p2 = fetchFromApi2Csv()
+
+      // Cuando se solicita lectura en vivo (o validación directa), priorizamos API 1 (Apps Script lee las celdas en vivo
+      // sin el caché de CDN de exportación CSV de Google Docs). Si API 1 tarda > 2.2s o falla, usamos API 2 o el que tenga más filas.
+      if (preferLiveJson) {
+        try {
+          const liveData = await p1
+          cachedSessions = {
+            data: liveData,
+            expiresAt: Date.now() + CACHE_TTL_MS,
+            syncedAt: new Date().toISOString(),
+            source: "API_1_JSON_LIVE",
+          }
+          cachedUserMatchMap.clear()
+          return liveData
+        } catch {
+          const csvData = await p2
+          cachedSessions = {
+            data: csvData,
+            expiresAt: Date.now() + CACHE_TTL_MS,
+            syncedAt: new Date().toISOString(),
+            source: "API_2_CSV_BACKUP",
+          }
+          cachedUserMatchMap.clear()
+          return csvData
+        }
+      }
+
+      // En precarga general: si API 2 responde primero, actualizamos rápido, pero cuando API 1 termina (en vivo),
+      // actualiza el caché con los datos en tiempo real de Apps Script para no perder filas recién agregadas.
+      p1.then((liveData) => {
+        if (liveData && liveData.length > 0) {
+          cachedSessions = {
+            data: liveData,
+            expiresAt: Date.now() + CACHE_TTL_MS,
+            syncedAt: new Date().toISOString(),
+            source: "API_1_JSON_LIVE",
+          }
+          cachedUserMatchMap.clear()
+        }
+      }).catch(() => {})
+
+      const fastest = await Promise.any([
+        p1.then((d) => ({ data: d, source: "API_1_JSON_LIVE" as const })),
+        p2.then((d) => ({ data: d, source: "API_2_CSV_BACKUP" as const })),
+      ])
       cachedSessions = {
-        data: fastest,
+        data: fastest.data,
         expiresAt: Date.now() + CACHE_TTL_MS,
+        syncedAt: new Date().toISOString(),
+        source: fastest.source,
       }
       cachedUserMatchMap.clear()
-      return fastest
+      return fastest.data
     } catch (err) {
       console.warn("[daily-program-api] No se pudo actualizar desde API 1 / API 2:", err)
       return cachedSessions ? cachedSessions.data : []
@@ -346,33 +405,48 @@ async function refreshDailyProgramCache(): Promise<NormalizedProgramSession[]> {
       inflightRefresh = null
     }
   })()
-  return inflightRefresh
+  inflightRefresh = task
+  return task
+}
+
+export function getDailyProgramSyncMeta() {
+  return {
+    syncedAt: cachedSessions?.syncedAt || null,
+    source: cachedSessions?.source || null,
+    totalSessions: cachedSessions?.data.length || 0,
+  }
 }
 
 /**
- * Obtiene las sesiones programadas del día de forma ultra-rápida:
- * - Si hay datos en caché (frescos o ligeramente vencidos), responde en 0ms y refresca en segundo plano.
- * - Si es la primera carga en frío, compite en paralelo entre API 2 (CSV rápido) y API 1 (JSON),
- *   con un límite máximo de espera (`maxWaitMs`) para nunca bloquear una PC en redes lentas.
+ * Fuerza una recarga inmediata en vivo desde el Excel/Google Sheet ignorando cualquier caché previo.
  */
-export async function fetchDailyProgramSessions(maxWaitMs = 2200): Promise<NormalizedProgramSession[]> {
+export async function forceRefreshDailyProgramSessions(): Promise<NormalizedProgramSession[]> {
+  return refreshDailyProgramCache(true)
+}
+
+/**
+ * Obtiene las sesiones programadas del día:
+ * - Si `forceRefresh` es true, consulta en vivo el Excel/Apps Script para reflejar cambios recién hechos.
+ * - Si hay datos en caché vigentes (< 15s), responde en 0ms.
+ * - Si el caché venció (> 15s), espera hasta `maxWaitMs` por los datos frescos para que el usuario siempre vea sus últimos cambios.
+ */
+export async function fetchDailyProgramSessions(
+  maxWaitMs = 2400,
+  forceRefresh = false
+): Promise<NormalizedProgramSession[]> {
   const now = Date.now()
-  if (cachedSessions) {
-    if (cachedSessions.expiresAt <= now && !inflightRefresh) {
-      // Stale-while-revalidate: refrescar en segundo plano sin hacer esperar al usuario
-      void refreshDailyProgramCache()
-    }
+  if (!forceRefresh && cachedSessions && cachedSessions.expiresAt > now) {
     return cachedSessions.data
   }
 
-  const refreshPromise = refreshDailyProgramCache()
+  const refreshPromise = refreshDailyProgramCache(forceRefresh)
   if (maxWaitMs <= 0) {
     return refreshPromise
   }
 
   let timeoutId: ReturnType<typeof setTimeout> | null = null
   const timeoutPromise = new Promise<NormalizedProgramSession[]>((resolve) => {
-    timeoutId = setTimeout(() => resolve([]), maxWaitMs)
+    timeoutId = setTimeout(() => resolve(cachedSessions ? cachedSessions.data : []), maxWaitMs)
   })
 
   try {
@@ -823,28 +897,38 @@ export function resolveUserModulesState(
   }
 
   if (pendingAfterLastCompleted.length > 0) {
-    // Si ya completó un módulo previo (ej. acaba de marcar SALIDA del Módulo 1), el siguiente módulo inmediato
-    // es el que le toca marcar ENTRADA para su rotación.
-    // Si aún no ha marcado nada hoy (lastCompletedIdx === -1), elegimos el primer módulo que aún no haya terminado.
+    // Siempre priorizamos el primer módulo pendiente que aún no haya terminado (endMinutes > currentLimaMinutes).
+    // Así, si se agregan nuevos módulos en el Excel o hubo un módulo anterior ya vencido, muestra el horario actual/siguiente real.
     let chosenIdx = pendingAfterLastCompleted[0]
-    if (lastCompletedIdx === -1) {
-      const notEndedIdx = pendingAfterLastCompleted.find(
-        (idx) => moduleStates[idx].endMinutes > currentLimaMinutes
-      )
-      if (notEndedIdx !== undefined) {
-        chosenIdx = notEndedIdx
-      }
+    const notEndedIdx = pendingAfterLastCompleted.find(
+      (idx) => moduleStates[idx].endMinutes > currentLimaMinutes
+    )
+    if (notEndedIdx !== undefined) {
+      chosenIdx = notEndedIdx
     }
 
     const activeModule = moduleStates[chosenIdx]
     const nextModule = moduleStates[chosenIdx + 1] || null
+    const prevModule = chosenIdx > 0 ? moduleStates[chosenIdx - 1] : null
     const completedModuleBeforeActive =
-      lastCompletedIdx !== -1 ? moduleStates[lastCompletedIdx] : null
+      lastCompletedIdx !== -1
+        ? moduleStates[lastCompletedIdx]
+        : prevModule &&
+            currentLimaMinutes >= prevModule.endMinutes &&
+            currentLimaMinutes <= prevModule.endMinutes + 15
+          ? prevModule
+          : null
 
-    // Si acaba de completar el módulo anterior y ya estamos en (o cerca de) la rotación hacia el nuevo módulo
+    // Si acaba de completar (o acaba de vencer la hora de) el módulo anterior y ya estamos en la rotación hacia el nuevo módulo
     const readyForNext =
       completedModuleBeforeActive !== null &&
       currentLimaMinutes >= completedModuleBeforeActive.endMinutes - 15
+
+    // Si el módulo actual acaba de cumplir su hora de término (dentro de los últimos 15 min)
+    const activeJustEnded =
+      notEndedIdx === undefined &&
+      currentLimaMinutes >= activeModule.endMinutes &&
+      currentLimaMinutes <= activeModule.endMinutes + 15
 
     return {
       modules: moduleStates,
@@ -854,8 +938,12 @@ export function resolveUserModulesState(
       completedModuleBeforeActive,
       nextAction: "ENTRADA",
       allCompleted: false,
-      shouldTriggerRotationAlert: readyForNext,
-      rotationAlertReason: readyForNext ? "READY_FOR_NEXT_MODULE" : null,
+      shouldTriggerRotationAlert: readyForNext || activeJustEnded,
+      rotationAlertReason: activeJustEnded
+        ? "MODULE_TIME_ENDED"
+        : readyForNext
+          ? "READY_FOR_NEXT_MODULE"
+          : null,
     }
   }
 

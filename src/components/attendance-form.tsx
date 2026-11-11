@@ -25,6 +25,9 @@ import {
   registerServiceWorker,
   requestSystemNotificationPermission,
   showSystemNotification,
+  subscribeDeviceToWebPush,
+  syncModuleAlarmsWithServiceWorker,
+  scheduleClosedAppTestNotification,
 } from "@/lib/background-alerts"
 import { toast } from "sonner"
 import {
@@ -162,6 +165,8 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const [currentLimaMins, setCurrentLimaMins] = useState<number>(() => getCurrentLimaMinutes())
   const [dismissedRotationAlertKey, setDismissedRotationAlertKey] = useState<string | null>(null)
   const [mobileAlarmOnboarded, setMobileAlarmOnboarded] = useState<boolean>(true)
+  const [isRefreshingSchedule, setIsRefreshingSchedule] = useState<boolean>(false)
+  const [isTestingClosedAlert, setIsTestingClosedAlert] = useState<boolean>(false)
   const firedNotificationsRef = useRef<Set<string>>(new Set())
 
   const [isContingencyMode, setIsContingencyMode] = useState(false)
@@ -368,9 +373,49 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       setMobileAlarmOnboarded(true)
       const res = await requestSystemNotificationPermission()
       if (res === "granted") {
+        if (validatedUser && watchDni?.length === 8) {
+          void subscribeDeviceToWebPush({
+            dni: watchDni,
+            userId: validatedUser.id,
+            userName: validatedUser.name,
+            role: validatedUser.role,
+            campusName: validatedUser.campusName || "Campus Villa",
+          })
+        }
         toast.success("Avisos del sistema activados. Recibirá notificaciones en su pantalla incluso con la app cerrada.")
       }
     } catch {}
+  }
+
+  const handleTestClosedAppNotification = async () => {
+    if (typeof window === "undefined" || kioskConfig || !validatedUser || watchDni?.length !== 8) return
+    setIsTestingClosedAlert(true)
+    try {
+      const perm = await requestSystemNotificationPermission()
+      if (perm !== "granted") {
+        toast.error("Debe permitir las notificaciones en su navegador para recibir avisos con la app cerrada.")
+        setIsTestingClosedAlert(false)
+        return
+      }
+      await subscribeDeviceToWebPush({
+        dni: watchDni,
+        userId: validatedUser.id,
+        userName: validatedUser.name,
+        role: validatedUser.role,
+        campusName: validatedUser.campusName || "Campus Villa",
+      })
+      await scheduleClosedAppTestNotification({
+        dni: watchDni,
+        userName: validatedUser.name,
+        delayMs: 5000,
+      })
+      toast.info(
+        "📲 En 5 segundos llegará la notificación. Minimice la app o bloquee su teléfono ahora para comprobarlo.",
+        { duration: 6000 }
+      )
+    } finally {
+      setTimeout(() => setIsTestingClosedAlert(false), 5500)
+    }
   }
 
   // Detección y Sincronización Offline
@@ -517,7 +562,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     }
   }
 
-  const validateDni = async (dni: string, retryAttempts = 1) => {
+  const validateDni = async (dni: string, retryAttempts = 1, forceFreshExcel = false) => {
     if (isOffline || isContingencyMode) {
       setValidatedUser({
         id: `offline_${dni}`,
@@ -532,23 +577,49 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       return
     }
 
-    // Resolución instantánea (0ms) si el DNI ya está en el directorio precargado en memoria
-    if (directoryRef.current && directoryRef.current[dni]) {
+    // Resolución instantánea (0ms) desde memoria local + actualización en vivo del Excel en segundo plano
+    if (!forceFreshExcel && directoryRef.current && directoryRef.current[dni]) {
+      const cachedHit = directoryRef.current[dni]
       setIsValidating(false)
       setConnectionError(false)
-      applyValidationResult(directoryRef.current[dni], dni)
+      applyValidationResult(cachedHit, dni)
+
+      // Si es Docente o Paciente Simulado, consultar SIEMPRE el Excel en vivo para detectar cambios de último minuto
+      const hitRole = cachedHit?.user?.role
+      if (hitRole === Role.DOCENTE || hitRole === Role.PACIENTE_SIMULADO) {
+        setIsRefreshingSchedule(true)
+        void (async () => {
+          try {
+            const freshRes = await validateUserAction(dni, undefined, true)
+            if (freshRes?.success && freshRes.user && form.getValues("dni") === dni) {
+              if (directoryRef.current) {
+                directoryRef.current[dni] = freshRes
+              }
+              applyValidationResult(freshRes, dni)
+            }
+          } catch {
+            // Conservar el resultado en memoria si hay micro-corte
+          } finally {
+            setIsRefreshingSchedule(false)
+          }
+        })()
+      }
       return
     }
 
-    setIsValidating(true)
+    if (forceFreshExcel) {
+      setIsRefreshingSchedule(true)
+    } else {
+      setIsValidating(true)
+      setValidatedUser(null)
+      setTechnicianAssignment(null)
+      setDailyProgram(null)
+    }
     setConnectionError(false)
-    setValidatedUser(null)
-    setTechnicianAssignment(null)
-    setDailyProgram(null)
 
     try {
-      // Si la precarga inicial del directorio ya está en vuelo, esperar hasta 700ms para reutilizarla sin lanzar petición duplicada
-      if (warmDirectoryPromiseRef.current && !directoryRef.current) {
+      // Si la precarga inicial del directorio ya está en vuelo, esperar hasta 700ms para reutilizarla
+      if (!forceFreshExcel && warmDirectoryPromiseRef.current && !directoryRef.current) {
         const dir = await Promise.race([
           warmDirectoryPromiseRef.current,
           new Promise<null>((r) => setTimeout(() => r(null), 700)),
@@ -565,7 +636,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
 
       for (let attempt = 0; attempt <= retryAttempts; attempt++) {
         try {
-          res = await validateUserAction(dni)
+          res = await validateUserAction(dni, undefined, true)
           break
         } catch (err) {
           lastError = err
@@ -584,12 +655,16 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       }
 
       applyValidationResult(res, dni)
+      if (forceFreshExcel && res?.success) {
+        toast.success("Horario actualizado en vivo desde el Excel de programación.")
+      }
     } catch (error) {
       console.error("Error al validar DNI:", error)
       setConnectionError(true)
       toast.error("Error de conexión al validar. Puede reintentar o activar el Modo Local.")
     } finally {
       setIsValidating(false)
+      setIsRefreshingSchedule(false)
     }
   }
 
@@ -807,6 +882,42 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       url: "/",
     })
   }, [kioskConfig, mobileRotationAlert.shouldAlert, currentRotationAlertKey])
+
+  // Sincronizar suscripción Web Push + alarmas de fin de módulo en el Service Worker del teléfono
+  useEffect(() => {
+    if (kioskConfig || !validatedUser || !isModuleRole) return
+
+    if (watchDni?.length === 8) {
+      void subscribeDeviceToWebPush({
+        dni: watchDni,
+        userId: validatedUser.id,
+        userName: validatedUser.name,
+        role: validatedUser.role,
+        campusName:
+          effectiveActiveModule?.campusName ||
+          (dailyProgram?.found ? dailyProgram.campusName : null) ||
+          validatedUser.campusName ||
+          "Campus Villa",
+      })
+    }
+
+    if (moduleResolution && moduleResolution.modules.length > 0) {
+      void syncModuleAlarmsWithServiceWorker({
+        userId: validatedUser.id,
+        role: validatedUser.role,
+        modules: moduleResolution.modules,
+        currentLimaMinutes: currentLimaMins,
+      })
+    }
+  }, [
+    kioskConfig,
+    validatedUser?.id,
+    validatedUser?.role,
+    isModuleRole,
+    watchDni,
+    moduleResolution,
+    currentLimaMins,
+  ])
 
   const onSubmit = async (data: z.infer<typeof formSchema>, type: RecordType) => {
     if (!validatedUser && !isOffline && !isContingencyMode) {
@@ -1482,6 +1593,45 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                               )}
                             </div>
                           )}
+
+                        {/* Barra rápida: Actualizar horario desde Excel en vivo + Probar aviso con app cerrada */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white/80 border border-slate-200/80 text-[11px] sm:text-xs">
+                          <div className="flex items-center gap-1.5 text-slate-600 font-semibold">
+                            <RefreshCw
+                              size={12}
+                              className={isRefreshingSchedule ? "animate-spin text-[#1967D2]" : "text-emerald-600"}
+                            />
+                            <span>
+                              {isRefreshingSchedule
+                                ? "Consultando cambios recientes en el Excel..."
+                                : "Sincronizado con el Excel del día"}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <button
+                              type="button"
+                              disabled={isRefreshingSchedule}
+                              onClick={() => validateDni(watchDni, 1, true)}
+                              className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-50"
+                              title="Volver a consultar el Excel en vivo para detectar modificaciones de último momento"
+                            >
+                              <RefreshCw size={11} className={isRefreshingSchedule ? "animate-spin" : ""} />
+                              Actualizar Excel
+                            </button>
+                            {!kioskConfig && (
+                              <button
+                                type="button"
+                                disabled={isTestingClosedAlert}
+                                onClick={handleTestClosedAppNotification}
+                                className="px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-[#1967D2] border border-blue-200 font-bold text-[11px] flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-50"
+                                title="Envía una notificación en 5 segundos para comprobar que suena con la app cerrada o pantalla bloqueada"
+                              >
+                                <BellRing size={11} />
+                                {isTestingClosedAlert ? "Enviando en 5s..." : "Probar con app cerrada (5s)"}
+                              </button>
+                            )}
+                          </div>
+                        </div>
 
                         {/* Información necesaria: Hora que marca, Sede, Ambiente que le toca y Curso */}
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">

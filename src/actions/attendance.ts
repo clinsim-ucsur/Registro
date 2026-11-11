@@ -23,6 +23,10 @@ import {
   validateEarlyEntry,
   calculateStatusFromRule,
 } from "@/lib/tolerance"
+import {
+  checkAndDispatchDuePushNotifications,
+  ensureServerPushSchedulerStarted,
+} from "@/lib/push-notifications"
 
 // Cachés en memoria para acelerar tiempos de respuesta de validación y marcación en PCs y móviles
 let cachedCampuses: { data: any[]; expiresAt: number } | null = null
@@ -32,7 +36,11 @@ let cachedDirectory: { data: Record<string, any>; expiresAt: number } | null = n
 let inflightDirectoryBuild: Promise<Record<string, any>> | null = null
 
 const CATALOG_CACHE_TTL_MS = 120_000 // 2 minutos
-const DIRECTORY_CACHE_TTL_MS = 120_000 // 2 minutos (se actualiza en caliente al marcar asistencia)
+const DIRECTORY_CACHE_TTL_MS = 15_000 // 15 segundos (se actualiza en vivo con cada consulta al Excel y al marcar asistencia)
+
+export async function invalidateAttendanceDirectoryCache() {
+  cachedDirectory = null
+}
 
 export async function getCachedCampusesList() {
   const now = Date.now()
@@ -259,6 +267,9 @@ export async function preloadAttendanceDirectoryAction(): Promise<{
   directory: Record<string, any>
 }> {
   try {
+    ensureServerPushSchedulerStarted()
+    void checkAndDispatchDuePushNotifications(false)
+
     const nowMs = Date.now()
     if (cachedDirectory) {
       if (cachedDirectory.expiresAt <= nowMs && !inflightDirectoryBuild) {
@@ -310,17 +321,29 @@ export async function getTodayAttendanceStateAction(userId: string): Promise<{
 // ------------------------------------------------------------------
 // 1. VALIDACIÓN AUTOMÁTICA POR DNI (ROL, SEDE, HORARIO Y AMBIENTE)
 // ------------------------------------------------------------------
-export async function validateUserAction(dni: string, roleOverride?: Role) {
+export async function validateUserAction(
+  dni: string,
+  roleOverride?: Role,
+  forceFreshProgram = false
+) {
   try {
     const cleanDni = dni.trim()
 
-    // Respuesta en 0ms si el usuario ya está en el directorio en memoria (incluso con Stale-While-Revalidate)
+    // Respuesta en 0ms si el usuario ya está en el directorio en memoria y no se exige recarga en vivo del Excel
     if (cachedDirectory && !roleOverride) {
       if (cachedDirectory.expiresAt <= Date.now() && !inflightDirectoryBuild) {
         void buildAttendanceDirectory()
       }
       const hit = cachedDirectory.data[cleanDni]
-      if (hit) return hit
+      if (hit) {
+        if (!forceFreshProgram) {
+          return hit
+        }
+        // Si es Técnico, no depende del Excel de programación diaria de simulación
+        if (hit.user?.role === Role.TECNICO) {
+          return hit
+        }
+      }
     }
 
     const now = new Date()
@@ -446,7 +469,7 @@ export async function validateUserAction(dni: string, roleOverride?: Role) {
         }
       }
     } else if (effectiveRole === Role.DOCENTE || effectiveRole === Role.PACIENTE_SIMULADO) {
-      const dailySessions = await fetchDailyProgramSessions()
+      const dailySessions = await fetchDailyProgramSessions(2800, forceFreshProgram)
       dailyProgram = matchDailyProgramFromSessions(
         dailySessions,
         user.name,

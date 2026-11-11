@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Search, Edit, Trash2, Users, AlertTriangle, Loader2, UserPlus, UserCircle, FileSpreadsheet, Shield } from "lucide-react"
+import { Search, Edit, Trash2, Users, AlertTriangle, Loader2, UserPlus, UserCircle, FileSpreadsheet, Shield, CalendarClock } from "lucide-react"
 import { toast } from "sonner"
 import { editUserAction, deleteUserAction, createUserAction, createAdminAction } from "@/actions/users"
 import { Role } from "@prisma/client"
@@ -194,6 +194,15 @@ export function DashboardUsers({
                     onChange={e => setSearchTerm(e.target.value)}
                   />
                 </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => document.getElementById("trigger-daily-program")?.click()}
+                  className="h-12 border-blue-200 bg-blue-50/70 hover:bg-blue-100 text-[#1967D2] rounded-xl font-bold px-5 cursor-pointer"
+                >
+                  <CalendarClock className="mr-2" size={19} />
+                  Horarios del Día (Excel)
+                </Button>
                 <Button onClick={() => setAddingMethod(true)} className="h-12 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold px-6 shadow-md shadow-emerald-600/20">
                   <UserPlus className="mr-2" size={20} />{" "}
                   {lockedOperationalRole === "PACIENTE_SIMULADO" ? "Añadir Paciente" : "Añadir Usuario"}
