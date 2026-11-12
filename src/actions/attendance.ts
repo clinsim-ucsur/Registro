@@ -646,7 +646,10 @@ export async function revokeKioskDeviceAction(): Promise<{ success: boolean }> {
  * Vincula una PC como Estación Fija usando un Código de Un Solo Uso (OTP)
  * que ya trae configurada internamente la Sede para la que fue emitido.
  */
-export async function authorizeKioskWithOneTimeCodeAction(code: string): Promise<{
+export async function authorizeKioskWithOneTimeCodeAction(
+  code: string,
+  preferredCampusName?: string
+): Promise<{
   success: boolean
   kioskToken?: string
   campusName?: string
@@ -654,7 +657,7 @@ export async function authorizeKioskWithOneTimeCodeAction(code: string): Promise
 }> {
   try {
     const { consumeKioskOneTimeCode } = await import("@/lib/kiosk-codes")
-    const result = await consumeKioskOneTimeCode(code)
+    const result = await consumeKioskOneTimeCode(code, preferredCampusName)
 
     if (!result.success || !result.campusName) {
       return {

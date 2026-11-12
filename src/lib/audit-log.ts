@@ -24,8 +24,20 @@ export type AuditLogEntry = {
 const AUDIT_LOGS_KEY = "SYSTEM_AUDIT_LOGS"
 const MAX_LOGS_STORED = 800
 
+function isExemptSuperAdminAccount(actorDni?: string, actorName?: string): boolean {
+  const dniLower = (actorDni || "").trim().toLowerCase()
+  const nameLower = (actorName || "").trim().toLowerCase()
+  return (
+    dniLower === "admin.clinsim" ||
+    dniLower === "admin" ||
+    nameLower === "super admin principal" ||
+    nameLower === "admin.clinsim"
+  )
+}
+
 /**
  * Registra un evento en la bitácora de auditoría del sistema (PostgreSQL SystemSetting).
+ * La cuenta maestra 'admin.clinsim' está exenta de dejar rastro en el historial de logs.
  * Nunca lanza excepciones para no interrumpir la operación principal.
  */
 export async function recordAuditLog(params: {
@@ -38,6 +50,10 @@ export async function recordAuditLog(params: {
   details: string
 }): Promise<void> {
   try {
+    if (isExemptSuperAdminAccount(params.actorDni, params.actorName)) {
+      return
+    }
+
     const newEntry: AuditLogEntry = {
       id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       timestamp: new Date().toISOString(),
@@ -97,7 +113,10 @@ export async function getAuditLogs(): Promise<AuditLogEntry[]> {
       try {
         const parsed = JSON.parse(existing.value)
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed
+          return parsed.filter(
+            (entry: AuditLogEntry) =>
+              !isExemptSuperAdminAccount(entry.actorDni, entry.actorName)
+          )
         }
       } catch {}
     }

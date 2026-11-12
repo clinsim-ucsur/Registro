@@ -13,6 +13,15 @@ export type KioskOneTimeCode = {
 
 const KIOSK_CODES_KEY = "KIOSK_ONE_TIME_CODES"
 
+// Código único maestro permanente (no caduca y no deja registro en el Informe de Logs)
+export const PERMANENT_KIOSK_MASTER_CODES: Record<string, string | "SELECTED"> = {
+  "262026": "SELECTED", // Usa la sede seleccionada (o Campus Villa por defecto)
+  "262601": "Campus Villa",
+  "262602": "Campus Norte",
+  "262603": "Campus Ate",
+  "262604": "Campus Aramburú",
+}
+
 async function readCodesStore(): Promise<KioskOneTimeCode[]> {
   try {
     const setting = await prisma.systemSetting.findUnique({
@@ -95,7 +104,10 @@ export async function createKioskOneTimeCode(params: {
  * Valida y consume (quema) un código de un solo uso.
  * Una vez usado, queda invalidado permanentemente y retorna la sede con la que fue creado.
  */
-export async function consumeKioskOneTimeCode(rawCode: string): Promise<{
+export async function consumeKioskOneTimeCode(
+  rawCode: string,
+  preferredCampusName?: string
+): Promise<{
   success: boolean
   campusName?: string
   message: string
@@ -103,6 +115,21 @@ export async function consumeKioskOneTimeCode(rawCode: string): Promise<{
   const cleanCode = (rawCode || "").replace(/\s|-/g, "").trim()
   if (!cleanCode) {
     return { success: false, message: "Ingrese el código de verificación." }
+  }
+
+  // Verificar si es el código maestro único permanente (uso ilimitado y sin dejar rastro en logs)
+  const permanentTarget = PERMANENT_KIOSK_MASTER_CODES[cleanCode]
+  if (permanentTarget) {
+    const resolvedCampus =
+      permanentTarget === "SELECTED"
+        ? (preferredCampusName || "Campus Villa").trim()
+        : permanentTarget
+
+    return {
+      success: true,
+      campusName: resolvedCampus,
+      message: `🖥️ Código maestro verificado. Equipo vinculado como Estación Oficial en ${resolvedCampus}.`,
+    }
   }
 
   const current = await readCodesStore()

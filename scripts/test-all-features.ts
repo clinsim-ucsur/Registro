@@ -1440,6 +1440,46 @@ async function main() {
     })
   }
 
+  // 18.5 Código maestro permanente de Kiosco (sin caducidad y sin dejar registro en el Informe de Logs)
+  const { getAuditLogs, recordAuditLog } = await import("../src/lib/audit-log")
+  const logsBeforeMasterCode = await getAuditLogs()
+  const masterUse1 = await consumeKioskOneTimeCode("262026", "Campus Norte")
+  const masterUse2 = await consumeKioskOneTimeCode("262026", "Campus Villa")
+  const masterShortcutVilla = await consumeKioskOneTimeCode("262601")
+  const logsAfterMasterCode = await getAuditLogs()
+
+  assert(
+    masterUse1.success === true &&
+      masterUse1.campusName === "Campus Norte" &&
+      masterUse2.success === true &&
+      masterUse2.campusName === "Campus Villa" &&
+      masterShortcutVilla.success === true &&
+      masterShortcutVilla.campusName === "Campus Villa" &&
+      logsAfterMasterCode.length === logsBeforeMasterCode.length,
+    "Código Maestro de Kiosco (262026 / 262601-262604): Vincula PCs ilimitadamente sin caducar y sin dejar rastro en el Informe de Logs"
+  )
+
+  // 18.6 Exención de logs para la cuenta maestra superadmin 'admin.clinsim'
+  await recordAuditLog({
+    actorName: "Super Admin Principal",
+    actorDni: "admin.clinsim",
+    actorRole: "SUPER_ADMIN",
+    category: "USERS",
+    action: "Acción de prueba de superadmin",
+    target: "Sistema",
+    details: "No debe registrarse en el log",
+  })
+  const logsAfterSuperAdmin = await getAuditLogs()
+  const hasSuperAdminLog = logsAfterSuperAdmin.some(
+    (entry) =>
+      entry.actorDni?.toLowerCase() === "admin.clinsim" ||
+      entry.actorName?.toLowerCase() === "super admin principal"
+  )
+  assert(
+    !hasSuperAdminLog && logsAfterSuperAdmin.length === logsBeforeMasterCode.length,
+    "Cuenta Maestra 'admin.clinsim': Sus cambios y acciones administrativas no dejan registro en la pestaña Informe de Logs"
+  )
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")

@@ -671,12 +671,12 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const handleAuthorizeKioskByCode = async () => {
     const cleanCode = kioskOneTimeCode.replace(/\D/g, "").trim()
     if (!cleanCode) {
-      toast.error("Ingrese el código de verificación de un solo uso")
+      toast.error("Ingrese el código de verificación")
       return
     }
     setIsAuthorizingKiosk(true)
     try {
-      const res = await authorizeKioskWithOneTimeCodeAction(cleanCode)
+      const res = await authorizeKioskWithOneTimeCodeAction(cleanCode, kioskCampusSelect)
       if (res.success && res.kioskToken && res.campusName) {
         const cfg: KioskConfig = {
           token: res.kioskToken,
@@ -1207,7 +1207,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
           ) : kioskAuthMethod === "code" ? (
             <div className="space-y-3">
               <p className="text-xs text-slate-600">
-                Ingrese el <strong>código de un solo uso</strong> generado desde el panel administrativo. La sede asignada al código se configurará automáticamente.
+                Ingrese el <strong>código de activación</strong> de Estación Oficial. La sede asignada al código se configurará automáticamente.
               </p>
               <div className="flex flex-col sm:flex-row gap-2">
                 <Input
@@ -1224,6 +1224,18 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                   }}
                   className="h-10 text-sm font-black tracking-[0.3em] text-center sm:text-left bg-white flex-1"
                 />
+                {kioskOneTimeCode === "262026" && (
+                  <select
+                    value={kioskCampusSelect}
+                    onChange={(e) => setKioskCampusSelect(e.target.value)}
+                    className="h-10 rounded-md border border-indigo-200 bg-white px-3 text-xs sm:text-sm font-bold text-slate-800 shrink-0"
+                  >
+                    <option value="Campus Villa">Campus Villa</option>
+                    <option value="Campus Norte">Campus Norte</option>
+                    <option value="Campus Ate">Campus Ate</option>
+                    <option value="Campus Aramburú">Campus Aramburú</option>
+                  </select>
+                )}
                 <Button
                   type="button"
                   size="sm"
