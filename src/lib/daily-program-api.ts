@@ -345,6 +345,8 @@ async function refreshDailyProgramCache(preferLiveJson = false): Promise<Normali
     try {
       const p1 = fetchFromApi1Json()
       const p2 = fetchFromApi2Csv()
+      p1.catch(() => {})
+      p2.catch(() => {})
 
       // Cuando se solicita lectura en vivo (o validación directa), priorizamos API 1 (Apps Script lee las celdas en vivo
       // sin el caché de CDN de exportación CSV de Google Docs). Si API 1 tarda > 2.2s o falla, usamos API 2 o el que tenga más filas.

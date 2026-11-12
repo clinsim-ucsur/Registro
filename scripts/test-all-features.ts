@@ -1386,6 +1386,60 @@ async function main() {
     `Visor Admin de Horarios del Día en Vivo: Sincronizado (${liveOverview.patients.length} pacientes y ${liveOverview.totalRawSessions} sesiones leídas en directo del Excel)`
   )
 
+  // 18.4 Regularización manual de marcación de SALIDA cuando un Paciente Simulado olvida marcar su salida
+  const { regularizeMissingExitAction } = await import("../src/actions/attendance")
+  const samplePatient = await prisma.user.findFirst({
+    where: { role: Role.PACIENTE_SIMULADO },
+  })
+  if (samplePatient) {
+    const testDateStr = "2026-01-15"
+    const tempEntry = await prisma.attendanceRecord.create({
+      data: {
+        userId: samplePatient.id,
+        type: "ENTRADA",
+        status: RecordStatus.A_TIEMPO,
+        timestamp: new Date(`${testDateStr}T07:00:00-05:00`),
+      },
+    })
+
+    // Intento inválido: hora de salida muy anterior a la entrada (05:00 < 07:00)
+    const invalidEarlyExit = await regularizeMissingExitAction({
+      userId: samplePatient.id,
+      entryRecordId: tempEntry.id,
+      exitTimeHHMM: "05:00",
+      dateStr: testDateStr,
+      skipAuthForTests: true,
+    })
+
+    // Intento válido: regularizar salida al término del bloque (12:00)
+    const validExitReg = await regularizeMissingExitAction({
+      userId: samplePatient.id,
+      entryRecordId: tempEntry.id,
+      exitTimeHHMM: "12:00",
+      dateStr: testDateStr,
+      campusName: "Campus Villa",
+      courseName: "Semiología Basada en Simulación (SBS)",
+      reason: "Prueba automatizada de regularización de salida",
+      skipAuthForTests: true,
+    })
+
+    assert(
+      invalidEarlyExit.success === false &&
+        validExitReg.success === true &&
+        validExitReg.createdRecord?.type === "SALIDA",
+      "Regularización Manual de Salida: Bloquea horas anteriores a la entrada y registra exitosamente la SALIDA olvidada del paciente"
+    )
+
+    // Limpiar registros temporales de prueba
+    await prisma.attendanceRecord.deleteMany({
+      where: {
+        id: {
+          in: [tempEntry.id, ...(validExitReg.createdRecord ? [validExitReg.createdRecord.id] : [])],
+        },
+      },
+    })
+  }
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")

@@ -1286,3 +1286,296 @@ export async function syncOfflineRecordsAction(records: any[]) {
     return { success: false, message: "Error al sincronizar lotes offline." }
   }
 }
+
+// ------------------------------------------------------------------
+// 5. REGULARIZACIÓN MANUAL DE SALIDA (PARA PACIENTES / PERSONAL QUE OLVIDÓ MARCAR SALIDA)
+// ------------------------------------------------------------------
+export interface RegularizeExitParams {
+  userId: string
+  exitTimeHHMM: string // Formato "HH:mm", ej. "12:00"
+  dateStr?: string // Formato "YYYY-MM-DD" en hora Lima (por defecto hoy)
+  entryRecordId?: string // ID del registro de ENTRADA abierto (opcional)
+  entryTimeHHMM?: string // Si olvidó marcar entrada y salida del bloque, hora de inicio "HH:mm"
+  createEntryIfMissing?: boolean
+  campusName?: string | null
+  courseName?: string | null
+  reason?: string
+  skipAuthForTests?: boolean
+}
+
+export async function regularizeMissingExitAction(params: RegularizeExitParams): Promise<{
+  success: boolean
+  message: string
+  createdRecord?: {
+    id: string
+    type: RecordType
+    status: RecordStatus
+    timestamp: string
+    userId: string
+    campusName: string | null
+    courseName: string | null
+  }
+}> {
+  try {
+    let actorName = "Administrador"
+    let actorDni = "—"
+    let actorRole = "SUPER_ADMIN"
+
+    if (!params.skipAuthForTests) {
+      const { getAdminSession } = await import("@/lib/session")
+      const session = await getAdminSession()
+      if (!session) {
+        return { success: false, message: "No autorizado. Inicie sesión como administrador." }
+      }
+      actorName = session.name || "Administrador"
+      actorDni = session.dni || "—"
+      actorRole = session.role
+    }
+
+    const cleanExitHHMM = (params.exitTimeHHMM || "").trim()
+    const timeMatch = cleanExitHHMM.match(/^(\d{1,2}):(\d{2})$/)
+    if (!timeMatch) {
+      return {
+        success: false,
+        message: "Ingrese una hora de salida válida en formato HH:mm (ej. 12:00).",
+      }
+    }
+
+    const exitHour = Number(timeMatch[1])
+    const exitMin = Number(timeMatch[2])
+    if (exitHour < 0 || exitHour > 23 || exitMin < 0 || exitMin > 59) {
+      return {
+        success: false,
+        message: "La hora de salida debe estar entre las 00:00 y las 23:59.",
+      }
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: params.userId },
+      include: { campus: true },
+    })
+
+    if (!user) {
+      return { success: false, message: "El usuario seleccionado no existe en la base de datos." }
+    }
+
+    // Determinar la fecha objetivo en Lima ("YYYY-MM-DD")
+    let targetDateStr = params.dateStr?.trim()
+    let referenceEntryRecord: {
+      id: string
+      timestamp: Date
+      campusId: string | null
+      courseId: string | null
+      campus?: { name: string } | null
+      course?: { name: string } | null
+    } | null = null
+
+    if (params.entryRecordId) {
+      referenceEntryRecord = await prisma.attendanceRecord.findUnique({
+        where: { id: params.entryRecordId },
+        include: {
+          campus: { select: { name: true } },
+          course: { select: { name: true } },
+        },
+      })
+      if (referenceEntryRecord && !targetDateStr) {
+        targetDateStr = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "America/Lima",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(referenceEntryRecord.timestamp)
+      }
+    }
+
+    if (!targetDateStr) {
+      targetDateStr = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Lima",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(new Date())
+    }
+
+    const startOfDayUTC = new Date(`${targetDateStr}T00:00:00-05:00`)
+    const endOfDayUTC = new Date(startOfDayUTC.getTime() + 24 * 60 * 60 * 1000)
+
+    // Consultar las marcaciones del usuario en ese día para verificar su última ENTRADA
+    const dayRecords = await prisma.attendanceRecord.findMany({
+      where: {
+        userId: user.id,
+        timestamp: { gte: startOfDayUTC, lt: endOfDayUTC },
+      },
+      orderBy: { timestamp: "asc" },
+      include: {
+        campus: { select: { name: true } },
+        course: { select: { name: true } },
+      },
+    })
+
+    if (!referenceEntryRecord) {
+      // Buscar si el último registro del día es una ENTRADA abierta (o la última ENTRADA sin SALIDA posterior)
+      for (let i = dayRecords.length - 1; i >= 0; i--) {
+        if (dayRecords[i].type === RecordType.ENTRADA) {
+          const hasSubsequentExit = dayRecords
+            .slice(i + 1)
+            .some((r) => r.type === RecordType.SALIDA)
+          if (!hasSubsequentExit) {
+            referenceEntryRecord = dayRecords[i]
+            break
+          }
+        }
+      }
+    }
+
+    // Resolver Sede y Curso para el registro de salida
+    const allCampuses = await getCachedCampusesList()
+    const allCourses = await getCachedCoursesList()
+
+    const resolvedCampusName =
+      params.campusName?.trim() ||
+      referenceEntryRecord?.campus?.name ||
+      user.campus?.name ||
+      "Campus Villa"
+
+    let finalCampusId: string | null = referenceEntryRecord?.campusId ?? user.campusId ?? null
+    if (resolvedCampusName) {
+      const foundCampus = allCampuses.find(
+        (c) => c.name.toLowerCase() === resolvedCampusName.toLowerCase()
+      )
+      if (foundCampus?.id) {
+        finalCampusId = foundCampus.id
+      }
+    }
+
+    const resolvedCourseName =
+      params.courseName?.trim() || referenceEntryRecord?.course?.name || null
+
+    let finalCourseId: string | null = referenceEntryRecord?.courseId ?? null
+    if (resolvedCourseName) {
+      const foundCourse = allCourses.find(
+        (c) => c.name.toLowerCase() === resolvedCourseName.toLowerCase()
+      )
+      if (foundCourse?.id) {
+        finalCourseId = foundCourse.id
+      } else {
+        let course = await prisma.course.findUnique({ where: { name: resolvedCourseName } })
+        if (!course) {
+          course = await prisma.course.create({ data: { name: resolvedCourseName } })
+          cachedCourses = null
+        }
+        finalCourseId = course.id
+      }
+    }
+
+    const paddedExitHHMM = `${String(exitHour).padStart(2, "0")}:${String(exitMin).padStart(2, "0")}`
+    let exitTimestamp = new Date(`${targetDateStr}T${paddedExitHHMM}:00-05:00`)
+
+    // Si no tenía ENTRADA abierta y se solicitó crear también la ENTRADA del módulo
+    if (!referenceEntryRecord && params.createEntryIfMissing && params.entryTimeHHMM) {
+      const entryMatch = params.entryTimeHHMM.trim().match(/^(\d{1,2}):(\d{2})$/)
+      if (entryMatch) {
+        const paddedEntry = `${String(Number(entryMatch[1])).padStart(2, "0")}:${String(Number(entryMatch[2])).padStart(2, "0")}`
+        const entryTimestamp = new Date(`${targetDateStr}T${paddedEntry}:00-05:00`)
+        if (exitTimestamp <= entryTimestamp) {
+          return {
+            success: false,
+            message: `La hora de salida (${paddedExitHHMM}) debe ser posterior a la hora de inicio del bloque (${paddedEntry}).`,
+          }
+        }
+        const createdEntry = await prisma.attendanceRecord.create({
+          data: {
+            userId: user.id,
+            type: RecordType.ENTRADA,
+            status: RecordStatus.A_TIEMPO,
+            campusId: finalCampusId,
+            courseId: finalCourseId,
+            timestamp: entryTimestamp,
+            isOfflineSync: false,
+          },
+          include: {
+            campus: { select: { name: true } },
+            course: { select: { name: true } },
+          },
+        })
+        referenceEntryRecord = createdEntry
+      }
+    }
+
+    if (referenceEntryRecord) {
+      const entryMs = referenceEntryRecord.timestamp.getTime()
+      const exitMs = exitTimestamp.getTime()
+
+      if (exitMs <= entryMs) {
+        // Si la diferencia es menor a 45 min (ej. marcó entrada unos minutos después del fin teórico),
+        // ajustar 1 minuto después de la entrada para mantener la secuencia cronológica ENTRADA -> SALIDA
+        if (entryMs - exitMs <= 45 * 60 * 1000) {
+          exitTimestamp = new Date(entryMs + 60 * 1000)
+        } else {
+          const entryHourStr = new Intl.DateTimeFormat("es-PE", {
+            timeZone: "America/Lima",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          }).format(referenceEntryRecord.timestamp)
+          return {
+            success: false,
+            message: `La hora de salida (${paddedExitHHMM}) no puede ser anterior a la hora de entrada registrada (${entryHourStr}).`,
+          }
+        }
+      }
+    }
+
+    const createdExit = await prisma.attendanceRecord.create({
+      data: {
+        userId: user.id,
+        type: RecordType.SALIDA,
+        status: RecordStatus.A_TIEMPO,
+        campusId: finalCampusId,
+        courseId: finalCourseId,
+        timestamp: exitTimestamp,
+        isOfflineSync: false,
+      },
+    })
+
+    // Actualizar o limpiar caché en memoria para que el cambio se refleje de inmediato en celulares y PCs
+    cachedDirectory = null
+
+    try {
+      const { recordAuditLog } = await import("@/lib/audit-log")
+      await recordAuditLog({
+        actorName,
+        actorDni,
+        actorRole,
+        category: "SCHEDULES",
+        action: "Regularización Manual de Salida",
+        target: `${user.name} (DNI: ${user.dni})`,
+        details: `Salida regularizada manualmente a las ${paddedExitHHMM} (${targetDateStr}) en ${resolvedCampusName}${resolvedCourseName ? ` • ${resolvedCourseName}` : ""}${params.reason ? ` — Motivo: ${params.reason}` : ""}.`,
+      })
+    } catch {}
+
+    try {
+      revalidatePath("/dashboard")
+    } catch {}
+
+    return {
+      success: true,
+      message: `✓ Salida regularizada correctamente para ${user.name} (${paddedExitHHMM}).`,
+      createdRecord: {
+        id: createdExit.id,
+        type: createdExit.type,
+        status: createdExit.status,
+        timestamp: createdExit.timestamp.toISOString(),
+        userId: user.id,
+        campusName: resolvedCampusName,
+        courseName: resolvedCourseName,
+      },
+    }
+  } catch (error) {
+    console.error("[regularizeMissingExitAction] Error:", error)
+    return {
+      success: false,
+      message: "Ocurrió un error al regularizar la marcación de salida.",
+    }
+  }
+}

@@ -10,11 +10,12 @@ import {
   Building2, Users, CheckCircle2, Clock, AlertTriangle, ShieldAlert, Sparkles, Loader2,
   FileDown, Layers, BarChart3, TrendingUp, TrendingDown, Sun, Sunset, Moon, Coffee,
   Award, AlertCircle, FileCode, CheckSquare, Eye, ArrowUpDown, ArrowRight,
-  Sliders, Timer, ShieldCheck, Settings, Check, X
+  Sliders, Timer, ShieldCheck, Settings, Check, X, LogOut
 } from "lucide-react"
 import { toast } from "sonner"
 import { Role, RecordType, RecordStatus, Shift } from "@prisma/client"
 import { fetchFilteredRecordsAction, type ReportFilterParams } from "@/actions/reports"
+import { regularizeMissingExitAction } from "@/actions/attendance"
 import { formatLimaDate, formatLimaTime, limaDayKey, addDaysToKey } from "@/lib/timezone"
 import {
   DEFAULT_OVERTIME_SETTINGS,
@@ -153,6 +154,89 @@ export function DashboardReports({
 
   // Ordenamiento en la vista de consolidado
   const [consolidatedSort, setConsolidatedSort] = useState<"tardanzas" | "faltas" | "puntualidad" | "nombre" | "horasExtras">("tardanzas")
+
+  // Regularización manual de salidas pendientes
+  const [regModalItem, setRegModalItem] = useState<AttendanceItem | null>(null)
+  const [regExitHHMM, setRegExitHHMM] = useState<string>("12:00")
+  const [regExitReason, setRegExitReason] = useState<string>("Olvidó marcar salida")
+  const [isSavingRegExit, setIsSavingRegExit] = useState<boolean>(false)
+
+  // Identificar entradas sin salida en el mismo día (Lima) para cada usuario
+  const openEntryRecordIds = useMemo(() => {
+    const asc = [...records].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    )
+    const openByUserAndDay = new Map<string, string>()
+    for (const r of asc) {
+      const uid = r.user?.id
+      if (!uid) continue
+      const dayK = limaDayKey(new Date(r.timestamp))
+      const key = `${uid}_${dayK}`
+      if (r.type === "ENTRADA") {
+        openByUserAndDay.set(key, r.id)
+      } else if (r.type === "SALIDA") {
+        openByUserAndDay.delete(key)
+      }
+    }
+    return new Set<string>(openByUserAndDay.values())
+  }, [records])
+
+  const openRegularizeExitModal = (item: AttendanceItem) => {
+    setRegModalItem(item)
+    // Sugerir 2 horas después de la entrada (o 12:00 / hora actual)
+    const entryDate = new Date(item.timestamp)
+    const suggestedDate = new Date(entryDate.getTime() + 2 * 60 * 60 * 1000)
+    const suggestedHHMM = new Intl.DateTimeFormat("es-PE", {
+      timeZone: "America/Lima",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(suggestedDate)
+    setRegExitHHMM(suggestedHHMM)
+    setRegExitReason("Olvidó marcar salida")
+  }
+
+  const handleConfirmRegularizeReportExit = async () => {
+    if (!regModalItem || !regModalItem.user?.id) return
+    setIsSavingRegExit(true)
+    try {
+      const dayStr = limaDayKey(new Date(regModalItem.timestamp))
+      const res = await regularizeMissingExitAction({
+        userId: regModalItem.user.id,
+        entryRecordId: regModalItem.id,
+        exitTimeHHMM: regExitHHMM,
+        dateStr: dayStr,
+        campusName: regModalItem.campus?.name,
+        courseName: regModalItem.course?.name,
+        reason: regExitReason,
+      })
+
+      if (res.success && res.createdRecord) {
+        toast.success(res.message)
+        const newExitItem: AttendanceItem = {
+          id: res.createdRecord.id,
+          timestamp: res.createdRecord.timestamp,
+          type: res.createdRecord.type,
+          status: res.createdRecord.status,
+          user: regModalItem.user,
+          campus: regModalItem.campus,
+          course: regModalItem.course,
+        }
+        setRecords((prev) =>
+          [newExitItem, ...prev].sort(
+            (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          )
+        )
+        setRegModalItem(null)
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error("Error de conexión al regularizar la salida.")
+    } finally {
+      setIsSavingRegExit(false)
+    }
+  }
 
   // Aplicar filtros en el servidor
   const handleApplyFilters = () => {
@@ -1319,9 +1403,21 @@ export function DashboardReports({
                             )}
                           </TableCell>
                           <TableCell>
-                            <span className={`px-2 py-0.5 rounded-md text-[10px] font-black tracking-wider ${r.type === "ENTRADA" ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-700"}`}>
-                              {r.type}
-                            </span>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className={`px-2 py-0.5 rounded-md text-[10px] font-black tracking-wider ${r.type === "ENTRADA" ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-700"}`}>
+                                {r.type}
+                              </span>
+                              {openEntryRecordIds.has(r.id) && (
+                                <button
+                                  type="button"
+                                  onClick={() => openRegularizeExitModal(r)}
+                                  className="px-2 py-0.5 rounded-md bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-black flex items-center gap-1 transition-colors cursor-pointer"
+                                  title="Regularizar manualmente la salida olvidada"
+                                >
+                                  <LogOut size={10} /> Regularizar Salida
+                                </button>
+                              )}
+                            </div>
                           </TableCell>
                           <TableCell>
                             <span className={`px-2.5 py-1 rounded-full text-[10px] font-black border ${st.badge}`}>
@@ -1604,6 +1700,110 @@ export function DashboardReports({
                     <Check size={16} className="mr-2" /> Guardar Parámetros
                   </>
                 )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE REGULARIZACIÓN MANUAL DE SALIDA DESDE REPORTES */}
+      {regModalItem && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in-up">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-100 space-y-4">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
+                  <LogOut size={18} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    Regularizar Salida Manualmente
+                  </h3>
+                  <p className="text-xs font-medium text-slate-500">
+                    {regModalItem.user?.name} (DNI: {regModalItem.user?.dni})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRegModalItem(null)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-xs space-y-1">
+              <div className="flex justify-between">
+                <span className="font-bold text-slate-500">Fecha de Entrada:</span>
+                <span className="font-black text-slate-900">
+                  {formatLimaDate(new Date(regModalItem.timestamp))} —{" "}
+                  {formatLimaTime(new Date(regModalItem.timestamp))}
+                </span>
+              </div>
+              {regModalItem.campus?.name && (
+                <div className="flex justify-between">
+                  <span className="font-bold text-slate-500">Sede:</span>
+                  <span className="font-bold text-slate-800">{regModalItem.campus.name}</span>
+                </div>
+              )}
+              {regModalItem.course?.name && (
+                <div className="flex justify-between">
+                  <span className="font-bold text-slate-500">Curso:</span>
+                  <span className="font-bold text-slate-800 truncate max-w-[220px]">
+                    {regModalItem.course.name}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                  Hora de Salida a Registrar ({formatLimaDate(new Date(regModalItem.timestamp))})
+                </label>
+                <Input
+                  type="time"
+                  value={regExitHHMM}
+                  onChange={(e) => setRegExitHHMM(e.target.value)}
+                  className="h-11 rounded-xl bg-slate-50 border-slate-200 font-black text-slate-900 text-base"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                  Observación / Motivo (Auditoría)
+                </label>
+                <Input
+                  value={regExitReason}
+                  onChange={(e) => setRegExitReason(e.target.value)}
+                  placeholder="Ej. Olvidó marcar salida al retirarse"
+                  className="h-10 rounded-xl bg-slate-50 border-slate-200 text-xs font-semibold"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isSavingRegExit}
+                onClick={() => setRegModalItem(null)}
+                className="h-10 px-4 rounded-xl text-xs font-bold cursor-pointer"
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                disabled={isSavingRegExit || !regExitHHMM}
+                onClick={handleConfirmRegularizeReportExit}
+                className="h-10 px-5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-black text-xs cursor-pointer flex items-center gap-1.5"
+              >
+                {isSavingRegExit ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <LogOut size={14} />
+                )}
+                Guardar Salida ({regExitHHMM})
               </Button>
             </div>
           </div>

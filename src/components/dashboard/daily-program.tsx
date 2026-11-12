@@ -6,6 +6,8 @@ import {
   type LiveDailyProgramOverviewResponse,
   type LivePersonScheduleItem,
 } from "@/actions/daily-program"
+import { regularizeMissingExitAction } from "@/actions/attendance"
+import type { ResolvedModuleStatus } from "@/lib/daily-program-api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { toast } from "sonner"
@@ -24,6 +26,8 @@ import {
   Sparkles,
   Loader2,
   CalendarClock,
+  LogOut,
+  X,
 } from "lucide-react"
 
 interface DashboardDailyProgramProps {
@@ -71,6 +75,51 @@ export function DashboardDailyProgram({
   const [searchTerm, setSearchTerm] = useState<string>("")
   const [campusFilter, setCampusFilter] = useState<string>(scopedCampusName || "ALL")
   const [statusFilter, setStatusFilter] = useState<"ALL" | "MATCHED" | "UNMATCHED" | "EN_CURSO">("ALL")
+
+  // Estado del modal de regularización manual de salida
+  const [regularizeModal, setRegularizeModal] = useState<{
+    person: LivePersonScheduleItem
+    mod: ResolvedModuleStatus
+  } | null>(null)
+  const [regExitTime, setRegExitTime] = useState<string>("")
+  const [regCreateEntryToo, setRegCreateEntryToo] = useState<boolean>(false)
+  const [regReason, setRegReason] = useState<string>("Olvidó marcar salida al finalizar la sesión")
+  const [isSubmittingReg, setIsSubmittingReg] = useState<boolean>(false)
+
+  const openRegularizeModal = (person: LivePersonScheduleItem, mod: ResolvedModuleStatus) => {
+    setRegularizeModal({ person, mod })
+    setRegExitTime(mod.horaFin || person.exitTime || "12:00")
+    setRegCreateEntryToo(mod.status === "PENDIENTE" && person.lastRecordType !== "ENTRADA")
+    setRegReason("Olvidó marcar salida al finalizar la sesión")
+  }
+
+  const handleConfirmRegularizeExit = async () => {
+    if (!regularizeModal || !regularizeModal.person.dbUser) return
+    setIsSubmittingReg(true)
+    try {
+      const res = await regularizeMissingExitAction({
+        userId: regularizeModal.person.dbUser.id,
+        exitTimeHHMM: regExitTime,
+        entryTimeHHMM: regularizeModal.mod.horaInicio,
+        createEntryIfMissing: regCreateEntryToo,
+        campusName: regularizeModal.mod.campusName || regularizeModal.person.campusName,
+        courseName: regularizeModal.mod.courseName,
+        reason: regReason,
+      })
+
+      if (res.success) {
+        toast.success(res.message)
+        setRegularizeModal(null)
+        await loadProgram(false)
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error("Error de conexión al regularizar la salida.")
+    } finally {
+      setIsSubmittingReg(false)
+    }
+  }
 
   const loadProgram = async (forceRefresh = false) => {
     if (forceRefresh) {
@@ -594,7 +643,7 @@ export function DashboardDailyProgram({
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2 shrink-0">
+                          <div className="flex flex-wrap items-center gap-2 shrink-0">
                             {mod.status === "COMPLETADO" && (
                               <span className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-800 font-black text-[11px]">
                                 ✓ {formatRecordHourLima(mod.entryTimestamp)} -{" "}
@@ -602,15 +651,39 @@ export function DashboardDailyProgram({
                               </span>
                             )}
                             {mod.status === "EN_CURSO" && (
-                              <span className="px-2.5 py-1 rounded-lg bg-blue-600 text-white font-black text-[11px]">
-                                Ingresó {formatRecordHourLima(mod.entryTimestamp)} • Alarma{" "}
-                                {mod.horaFin}
-                              </span>
+                              <>
+                                <span className="px-2.5 py-1 rounded-lg bg-blue-600 text-white font-black text-[11px]">
+                                  Ingresó {formatRecordHourLima(mod.entryTimestamp)} • Fin{" "}
+                                  {mod.horaFin}
+                                </span>
+                                {person.dbUser && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openRegularizeModal(person, mod)}
+                                    className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-black text-[11px] flex items-center gap-1 shadow-xs transition-colors cursor-pointer"
+                                    title="Registrar manualmente la salida si el paciente olvidó marcarla"
+                                  >
+                                    <LogOut size={12} /> Regularizar Salida
+                                  </button>
+                                )}
+                              </>
                             )}
                             {mod.status === "PENDIENTE" && (
-                              <span className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-600 font-bold text-[11px]">
-                                Alarma fin: {mod.horaFin}
-                              </span>
+                              <>
+                                <span className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-slate-600 font-bold text-[11px]">
+                                  Alarma fin: {mod.horaFin}
+                                </span>
+                                {person.dbUser && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openRegularizeModal(person, mod)}
+                                    className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-amber-50 text-slate-700 hover:text-amber-800 border border-slate-200 hover:border-amber-300 font-bold text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
+                                    title="Regularizar manualmente la asistencia / salida de este bloque"
+                                  >
+                                    <LogOut size={11} /> Regularizar Salida
+                                  </button>
+                                )}
+                              </>
                             )}
                           </div>
                         </div>
@@ -621,6 +694,145 @@ export function DashboardDailyProgram({
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* MODAL DE REGULARIZACIÓN MANUAL DE SALIDA */}
+      {regularizeModal && regularizeModal.person.dbUser && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in-up">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 md:p-7 shadow-2xl border border-slate-100 space-y-5">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                  <LogOut size={20} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">
+                    Regularizar Marcación de Salida
+                  </h3>
+                  <p className="text-xs font-medium text-slate-500">
+                    Para pacientes o docentes que olvidaron marcar su salida
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRegularizeModal(null)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="rounded-2xl bg-slate-50 border border-slate-200/80 p-3.5 space-y-1.5 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-500">Paciente / Colaborador:</span>
+                <span className="font-black text-slate-900">
+                  {regularizeModal.person.dbUser.name}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-500">DNI:</span>
+                <span className="font-mono font-bold text-slate-700">
+                  {regularizeModal.person.dbUser.dni}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-slate-500">Bloque Programado:</span>
+                <span className="font-black text-[#1967D2]">
+                  {regularizeModal.mod.horaInicio} a {regularizeModal.mod.horaFin}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-slate-500 shrink-0">Ambiente / Curso:</span>
+                <span className="font-bold text-slate-800 text-right truncate">
+                  {regularizeModal.mod.ambiente} • {regularizeModal.mod.courseName}
+                </span>
+              </div>
+              {regularizeModal.mod.entryTimestamp && (
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-500">Entrada Registrada:</span>
+                  <span className="font-black text-emerald-700">
+                    {formatRecordHourLima(regularizeModal.mod.entryTimestamp)} hrs
+                  </span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3.5">
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1.5">
+                  Hora Oficial de Salida a Registrar
+                </label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="time"
+                    value={regExitTime}
+                    onChange={(e) => setRegExitTime(e.target.value)}
+                    className="h-11 rounded-xl bg-slate-50 border-slate-200 font-black text-slate-900 text-base flex-1"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setRegExitTime(regularizeModal.mod.horaFin)}
+                    className="px-3 py-2.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-[#1967D2] border border-blue-200 text-xs font-black cursor-pointer shrink-0"
+                  >
+                    Fin módulo ({regularizeModal.mod.horaFin})
+                  </button>
+                </div>
+              </div>
+
+              {regularizeModal.mod.status === "PENDIENTE" && (
+                <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/80 border border-amber-200 text-xs cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={regCreateEntryToo}
+                    onChange={(e) => setRegCreateEntryToo(e.target.checked)}
+                    className="mt-0.5 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                  />
+                  <span className="font-semibold text-amber-900 leading-snug">
+                    Registrar también la <strong>ENTRADA ({regularizeModal.mod.horaInicio})</strong> de este bloque (activar si el paciente tampoco marcó ingreso).
+                  </span>
+                </label>
+              )}
+
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1.5">
+                  Observación / Motivo (Auditoría)
+                </label>
+                <Input
+                  value={regReason}
+                  onChange={(e) => setRegReason(e.target.value)}
+                  placeholder="Ej. Olvidó marcar salida al finalizar la sesión"
+                  className="h-10 rounded-xl bg-slate-50 border-slate-200 text-xs font-semibold text-slate-800"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isSubmittingReg}
+                onClick={() => setRegularizeModal(null)}
+                className="h-10 px-4 rounded-xl font-bold text-xs cursor-pointer"
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                disabled={isSubmittingReg || !regExitTime}
+                onClick={handleConfirmRegularizeExit}
+                className="h-10 px-5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-black text-xs shadow-md shadow-amber-500/20 cursor-pointer flex items-center gap-1.5"
+              >
+                {isSubmittingReg ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <LogOut size={15} />
+                )}
+                Confirmar Salida ({regExitTime})
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>
