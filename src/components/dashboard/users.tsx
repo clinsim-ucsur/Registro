@@ -5,9 +5,10 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Search, Edit, Trash2, Users, AlertTriangle, Loader2, UserPlus, UserCircle, FileSpreadsheet, Shield, CalendarClock } from "lucide-react"
+import { Search, Edit, Trash2, Users, AlertTriangle, Loader2, UserPlus, UserCircle, FileSpreadsheet, Shield, CalendarClock, Smartphone } from "lucide-react"
 import { toast } from "sonner"
 import { editUserAction, deleteUserAction, createUserAction, createAdminAction } from "@/actions/users"
+import { getDeviceBindingsOverviewAction, adminResetUserDeviceBindingAction } from "@/actions/attendance"
 import { Role } from "@prisma/client"
 
 // Componente Modal Minimalista Integrado con Portal
@@ -55,6 +56,38 @@ export function DashboardUsers({
   const [promotingUser, setPromotingUser] = useState<any | null>(null)
 
   const [isProcessing, setIsProcessing] = useState(false)
+  const [boundDevicesByDni, setBoundDevicesByDni] = useState<Record<string, boolean>>({})
+  const [resettingDniDevice, setResettingDniDevice] = useState<string | null>(null)
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const map = await getDeviceBindingsOverviewAction()
+        setBoundDevicesByDni(map || {})
+      } catch {}
+    })()
+  }, [])
+
+  const handleResetDeviceBinding = async (user: any) => {
+    setResettingDniDevice(user.dni)
+    try {
+      const res = await adminResetUserDeviceBindingAction(user.dni)
+      if (res.success) {
+        setBoundDevicesByDni((prev) => {
+          const next = { ...prev }
+          delete next[user.dni]
+          return next
+        })
+        toast.success(res.message)
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error("Error al desvincular el celular del colaborador.")
+    } finally {
+      setResettingDniDevice(null)
+    }
+  }
 
   const [activeTab, setActiveTab] = useState<"TODOS" | "DOCENTE" | "TECNICO" | "PACIENTE_SIMULADO">(
     lockedOperationalRole === "PACIENTE_SIMULADO" ? "PACIENTE_SIMULADO" : "TODOS"
@@ -309,6 +342,28 @@ export function DashboardUsers({
                           )}
                         </TableCell>
                         <TableCell className="px-6 text-right space-x-2">
+                          <Button
+                            variant="outline"
+                            size="icon"
+                            disabled={resettingDniDevice === user.dni}
+                            title={
+                              boundDevicesByDni[user.dni]
+                                ? "Celular vinculado activo — Clic para liberar/desvincular si el colaborador cambió de teléfono"
+                                : "Liberar/resetear vínculo de celular para este DNI"
+                            }
+                            onClick={() => handleResetDeviceBinding(user)}
+                            className={`h-9 w-9 rounded-xl transition-colors shadow-sm cursor-pointer ${
+                              boundDevicesByDni[user.dni]
+                                ? "text-emerald-700 bg-emerald-50 border-emerald-300 hover:bg-emerald-100"
+                                : "text-slate-400 border-slate-200 hover:bg-slate-100 hover:text-slate-600"
+                            }`}
+                          >
+                            {resettingDniDevice === user.dni ? (
+                              <Loader2 size={15} className="animate-spin" />
+                            ) : (
+                              <Smartphone size={15} />
+                            )}
+                          </Button>
                           {lockedOperationalRole !== "PACIENTE_SIMULADO" && (
                             <Button
                               variant="outline"

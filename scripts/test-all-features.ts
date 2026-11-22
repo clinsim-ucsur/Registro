@@ -1480,6 +1480,114 @@ async function main() {
     "Cuenta Maestra 'admin.clinsim': Sus cambios y acciones administrativas no dejan registro en la pestaña Informe de Logs"
   )
 
+  // =========================================================================
+  // 19. BLOQUEO ANTI-SUPLANTACIÓN: VINCULACIÓN CELULAR <-> DNI Y RECONOCIMIENTO MULTI-NAVEGADOR
+  // =========================================================================
+  console.log("\n[TEST 19] Probando Vinculación Exclusiva Celular <-> DNI y Reconocimiento Multi-Navegador...")
+
+  const {
+    verifyAndBindDeviceForUser,
+    findBindingForDevice,
+    unbindDeviceForDni,
+  } = await import("../src/lib/device-binding")
+
+  const testDniA = "99000001"
+  const testDniB = "99000002"
+  await unbindDeviceForDni(testDniA)
+  await unbindDeviceForDni(testDniB)
+
+  // Huella del Celular 1 en Navegador Chrome
+  const phone1ChromeFp = {
+    deviceToken: "dev_test_phone1_chrome",
+    coreHardwareId: "chw_test_phone1_physical",
+    extendedHardwareId: "ehw_test_phone1_gpu",
+    deviceModel: "SM-A546E",
+    screenProfile: "ANDROID|360x800@2.81",
+  }
+
+  // Huella del MISMO Celular 1 pero abriendo el link desde OTRO navegador (ej. Safari / Samsung Internet / Edge / Incógnito)
+  const phone1OtherBrowserFp = {
+    deviceToken: "dev_test_phone1_other_browser", // Token de navegador distinto
+    coreHardwareId: "chw_test_phone1_physical",   // Misma huella física de equipo
+    extendedHardwareId: "ehw_test_phone1_gpu",
+    deviceModel: "SM-A546E",
+    screenProfile: "ANDROID|360x800@2.81",
+  }
+
+  // Huella de un Celular 2 completamente distinto (de otro compañero)
+  const phone2Fp = {
+    deviceToken: "dev_test_phone2_chrome",
+    coreHardwareId: "chw_test_phone2_different",
+    extendedHardwareId: "ehw_test_phone2_gpu",
+    deviceModel: "REDMI-NOTE-12",
+    screenProfile: "ANDROID|393x873@2.75",
+  }
+
+  // 19.1 Colaborador A registra su DNI en el Celular 1 (Chrome)
+  const bindPhone1Res = await verifyAndBindDeviceForUser({
+    dni: testDniA,
+    userId: "user_test_a",
+    userName: "Colaborador Prueba A",
+    role: "PACIENTE_SIMULADO",
+    fingerprint: phone1ChromeFp,
+    clientIp: "190.235.10.15",
+  })
+  assert(
+    bindPhone1Res.allowed === true && bindPhone1Res.boundDni === testDniA,
+    "Vinculación Inicial: El Celular 1 queda vinculado exitosamente al DNI del Colaborador A"
+  )
+
+  // 19.2 Si abre el link desde OTRO navegador en el mismo Celular 1, el sistema reconoce automáticamente el DNI A registrado en el equipo
+  const recognizedInOtherBrowser = await findBindingForDevice(
+    phone1OtherBrowserFp,
+    "190.235.10.15"
+  )
+  assert(
+    recognizedInOtherBrowser !== null &&
+      recognizedInOtherBrowser.dni === testDniA &&
+      recognizedInOtherBrowser.userName === "Colaborador Prueba A",
+    "Reconocimiento en Otro Navegador: Al abrir el link en otro navegador del mismo celular, reconoce automáticamente el DNI registrado en el equipo"
+  )
+
+  // 19.3 Si intenta colocar otro DNI (Colaborador B) desde otro navegador del mismo Celular 1, el sistema lo BLOQUEA y devuelve el DNI A vinculado
+  const attemptSecondDniOnSamePhone = await verifyAndBindDeviceForUser({
+    dni: testDniB,
+    userId: "user_test_b",
+    userName: "Colaborador Prueba B",
+    role: "PACIENTE_SIMULADO",
+    fingerprint: phone1OtherBrowserFp,
+    clientIp: "190.235.10.15",
+  })
+  assert(
+    attemptSecondDniOnSamePhone.allowed === false &&
+      attemptSecondDniOnSamePhone.code === "DEVICE_BOUND_TO_OTHER_DNI" &&
+      attemptSecondDniOnSamePhone.boundDni === testDniA,
+    "Bloqueo de 2 DNIs en el Mismo Celular: Impide ingresar otro DNI en el equipo vinculado (incluso desde otro navegador)"
+  )
+
+  // 19.4 Si un compañero con otro celular (Celular 2) intenta colocar el DNI del Colaborador A para marcarle asistencia, el sistema lo BLOQUEA
+  const attemptShareDniOnPhone2 = await verifyAndBindDeviceForUser({
+    dni: testDniA,
+    userId: "user_test_a",
+    userName: "Colaborador Prueba A",
+    role: "PACIENTE_SIMULADO",
+    fingerprint: phone2Fp,
+    clientIp: "190.235.10.99",
+  })
+  assert(
+    attemptShareDniOnPhone2.allowed === false &&
+      attemptShareDniOnPhone2.code === "DNI_BOUND_TO_OTHER_DEVICE",
+    "Bloqueo de DNI Compartido: Impide que el DNI vinculado al Celular 1 sea utilizado desde el celular de otro compañero"
+  )
+
+  // 19.5 El Administrador puede liberar el vínculo si el colaborador cambia de teléfono
+  const unboundOk = await unbindDeviceForDni(testDniA)
+  const afterUnbind = await findBindingForDevice(phone1ChromeFp)
+  assert(
+    unboundOk === true && afterUnbind === null,
+    "Liberación Admin: Permite al Administrador desvincular el equipo si el colaborador renueva su teléfono"
+  )
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")

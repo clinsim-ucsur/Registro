@@ -13,7 +13,15 @@ import {
   authorizeKioskDeviceAction,
   authorizeKioskWithOneTimeCodeAction,
   revokeKioskDeviceAction,
+  resolveDeviceBindingAction,
 } from "@/actions/attendance"
+import type { DeviceFingerprintPayload } from "@/lib/device-binding"
+import {
+  getClientDeviceFingerprint,
+  getLocalBoundDni,
+  saveLocalBoundDni,
+  clearLocalDeviceBindingCache,
+} from "@/lib/device-fingerprint-client"
 import {
   resolveUserModulesState,
   getCurrentLimaMinutes,
@@ -183,9 +191,13 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const [kioskCampusSelect, setKioskCampusSelect] = useState("Campus Villa")
   const [isAuthorizingKiosk, setIsAuthorizingKiosk] = useState(false)
 
-  // DNI recordado en celular personal
+  // DNI vinculado exclusivamente al celular/equipo personal (Bloqueo Anti-Suplantación)
   const [rememberDniOnDevice, setRememberDniOnDevice] = useState(true)
   const [hasRememberedDni, setHasRememberedDni] = useState(false)
+  const [boundDni, setBoundDni] = useState<string | null>(null)
+  const [boundUserName, setBoundUserName] = useState<string | null>(null)
+  const [isCheckingDeviceBinding, setIsCheckingDeviceBinding] = useState(true)
+  const deviceFingerprintRef = useRef<DeviceFingerprintPayload | null>(null)
 
   // GPS pre-cargado en segundo plano para celulares (0ms de espera al tocar Marcar)
   const cachedLocationRef = useRef<{ lat: number; lng: number; accuracy: number; timestamp: number } | null>(null)
@@ -210,7 +222,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     radiusMeters: c.radiusMeters ?? 500,
   }))
 
-  // 1. Cargar configuración de Kiosco o DNI recordado en celular al iniciar + registrar Service Worker
+  // 1. Cargar configuración de Kiosco o vínculo exclusivo de celular (incluso si abre desde otro navegador en el mismo equipo)
   useEffect(() => {
     if (typeof window === "undefined") return
 
@@ -224,24 +236,71 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
         if (parsed && parsed.token) {
           setKioskConfig(parsed)
           setRememberDniOnDevice(false)
+          setBoundDni(null)
+          setIsCheckingDeviceBinding(false)
           return
         }
       }
     } catch {}
 
-    // Si NO es PC Kiosco (es celular/dispositivo personal), recuperar DNI guardado y estado de primera activación de alarma
+    // Si NO es PC Kiosco (es celular/dispositivo personal), verificar DNI vinculado localmente y en el servidor por huella de equipo
     try {
       const onboarded = localStorage.getItem(MOBILE_ALARM_ONBOARDED_KEY) === "true"
       const alreadyGranted =
         typeof Notification !== "undefined" && Notification.permission === "granted"
       setMobileAlarmOnboarded(onboarded || alreadyGranted)
-
-      const savedDni = localStorage.getItem(SAVED_DNI_STORAGE_KEY)
-      if (savedDni && /^\d{8}$/.test(savedDni)) {
-        setHasRememberedDni(true)
-        form.setValue("dni", savedDni)
-      }
     } catch {}
+
+    const localBound = getLocalBoundDni()
+    if (localBound) {
+      setBoundDni(localBound)
+      setHasRememberedDni(true)
+      form.setValue("dni", localBound)
+    }
+
+    let active = true
+    void (async () => {
+      try {
+        const fp = await getClientDeviceFingerprint()
+        deviceFingerprintRef.current = fp
+        const serverBinding = await resolveDeviceBindingAction(fp)
+        if (!active) return
+
+        if (serverBinding.bound && serverBinding.dni) {
+          saveLocalBoundDni(serverBinding.dni)
+          setBoundDni(serverBinding.dni)
+          setBoundUserName(serverBinding.userName || null)
+          setHasRememberedDni(true)
+          if (form.getValues("dni") !== serverBinding.dni) {
+            form.setValue("dni", serverBinding.dni)
+          }
+        } else if (localBound) {
+          // El servidor indica que un Administrador liberó/reseteó el vínculo de este equipo
+          clearLocalDeviceBindingCache()
+          setBoundDni(null)
+          setBoundUserName(null)
+          setHasRememberedDni(false)
+          form.reset({ dni: "" })
+        } else {
+          // Migrar DNI guardado previo si existía antes del bloqueo por dispositivo
+          const legacySaved = localStorage.getItem(SAVED_DNI_STORAGE_KEY)
+          if (legacySaved && /^\d{8}$/.test(legacySaved)) {
+            setHasRememberedDni(true)
+            form.setValue("dni", legacySaved)
+          }
+        }
+      } catch {
+        // En modo sin conexión, respetar el DNI vinculado localmente
+      } finally {
+        if (active) {
+          setIsCheckingDeviceBinding(false)
+        }
+      }
+    })()
+
+    return () => {
+      active = false
+    }
   }, [])
 
   // 2. Pre-calentar GPS en segundo plano cuando NO está en Modo Kiosco (Celulares)
@@ -488,13 +547,23 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   const watchDni = form.watch("dni")
 
   const clearOrResetForm = (forceClearRemembered = false) => {
+    // Si el equipo personal ya tiene un DNI vinculado (Modo Celular Bloqueado), NUNCA borrar ni permitir cambiar a otro DNI
+    if (!kioskConfig && boundDni && !forceClearRemembered) {
+      if (form.getValues("dni") !== boundDni) {
+        form.setValue("dni", boundDni)
+      }
+      return
+    }
+
     if (forceClearRemembered && typeof window !== "undefined") {
-      localStorage.removeItem(SAVED_DNI_STORAGE_KEY)
+      clearLocalDeviceBindingCache()
+      setBoundDni(null)
+      setBoundUserName(null)
       setHasRememberedDni(false)
     }
 
-    // En PC Kiosco (o si no desea recordar DNI), limpiar el campo para la siguiente persona
-    if (kioskConfig || !rememberDniOnDevice || forceClearRemembered) {
+    // En PC Kiosco, limpiar el campo para la siguiente persona en la fila
+    if (kioskConfig || forceClearRemembered) {
       form.reset({ dni: "" })
       setValidatedUser(null)
       setTodayLastRecord(null)
@@ -507,6 +576,11 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   }
 
   useEffect(() => {
+    if (!kioskConfig && boundDni && watchDni && watchDni !== boundDni) {
+      // Impedir cualquier cambio de DNI en un equipo ya vinculado
+      form.setValue("dni", boundDni)
+      return
+    }
     if (watchDni?.length === 8) {
       validateDni(watchDni)
     } else {
@@ -518,15 +592,52 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       setSelectedShift(null)
       setConnectionError(false)
     }
-  }, [watchDni])
+  }, [watchDni, boundDni, kioskConfig])
 
   const applyValidationResult = (res: any, dni: string) => {
+    // Si el servidor detecta que este equipo físico ya está vinculado a OTRO DNI (ej. abrió otro navegador intentando poner otro DNI)
+    if (res?.isDeviceLockedToOtherDni && res?.boundDni) {
+      saveLocalBoundDni(res.boundDni)
+      setBoundDni(res.boundDni)
+      setBoundUserName(res.boundUserName || null)
+      setHasRememberedDni(true)
+      toast.error(
+        res.message ||
+          `🔒 Este equipo ya está vinculado al DNI ${res.boundDni}. No se permite colocar otro DNI.`,
+        { duration: 7000 }
+      )
+      if (form.getValues("dni") !== res.boundDni) {
+        form.setValue("dni", res.boundDni)
+      }
+      return
+    }
+
+    // Si el DNI ingresado ya pertenece al celular de otro compañero
+    if (res?.isDniBoundToOtherDevice) {
+      setValidatedUser(null)
+      setTodayLastRecord(null)
+      setTodayRecords([])
+      setTechnicianAssignment(null)
+      setDailyProgram(null)
+      setSelectedShift(null)
+      toast.error(
+        res.message ||
+          "🔒 El DNI ingresado ya está vinculado al teléfono de otro colaborador. No puede marcar desde este equipo.",
+        { duration: 8000 }
+      )
+      form.reset({ dni: "" })
+      return
+    }
+
     if (res.success && res.user) {
       setValidatedUser(res.user)
 
-      // Si es un celular/dispositivo personal y está activado "Recordar mi DNI", guardarlo en localStorage
-      if (!kioskConfig && rememberDniOnDevice && typeof window !== "undefined") {
-        localStorage.setItem(SAVED_DNI_STORAGE_KEY, dni)
+      // En cualquier celular/dispositivo personal (!kioskConfig), vincular y bloquear el DNI en este equipo
+      if (!kioskConfig && typeof window !== "undefined") {
+        const lockedDni = res.boundDni || dni
+        saveLocalBoundDni(lockedDni)
+        setBoundDni(lockedDni)
+        setBoundUserName(res.user.name)
         setHasRememberedDni(true)
       }
 
@@ -548,6 +659,12 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       setTodayRecords(Array.isArray(res.todayRecords) ? res.todayRecords : [])
       setConnectionError(false)
     } else {
+      // Si el usuario está en día de descanso o comisión pero el equipo quedó vinculado a su DNI válido
+      if (!kioskConfig && res?.boundDni) {
+        saveLocalBoundDni(res.boundDni)
+        setBoundDni(res.boundDni)
+        setHasRememberedDni(true)
+      }
       setValidatedUser(null)
       setTodayLastRecord(null)
       setTodayRecords([])
@@ -563,10 +680,18 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   }
 
   const validateDni = async (dni: string, retryAttempts = 1, forceFreshExcel = false) => {
+    if (!kioskConfig && boundDni && dni !== boundDni) {
+      form.setValue("dni", boundDni)
+      toast.error(
+        `🔒 Este equipo está vinculado exclusivamente al DNI ${boundDni}. No se permite colocar otro DNI.`
+      )
+      return
+    }
+
     if (isOffline || isContingencyMode) {
       setValidatedUser({
         id: `offline_${dni}`,
-        name: `Usuario DNI: ${dni} (Modo Local)`,
+        name: boundUserName ? `${boundUserName} (Modo Local)` : `Usuario DNI: ${dni} (Modo Local)`,
         role: Role.TECNICO,
         campusName: kioskConfig?.campusName || "Campus Villa",
       })
@@ -577,20 +702,33 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       return
     }
 
-    // Resolución instantánea (0ms) desde memoria local + actualización en vivo del Excel en segundo plano
-    if (!forceFreshExcel && directoryRef.current && directoryRef.current[dni]) {
+    // Resolución instantánea (0ms) desde memoria local cuando es Kiosco o cuando el DNI ya fue verificado y vinculado a este equipo
+    const canUseFastDirectoryCache =
+      Boolean(kioskConfig) || (Boolean(boundDni) && boundDni === dni)
+
+    if (!forceFreshExcel && canUseFastDirectoryCache && directoryRef.current && directoryRef.current[dni]) {
       const cachedHit = directoryRef.current[dni]
       setIsValidating(false)
       setConnectionError(false)
       applyValidationResult(cachedHit, dni)
 
-      // Si es Docente o Paciente Simulado, consultar SIEMPRE el Excel en vivo para detectar cambios de último minuto
+      // Si es Docente o Paciente Simulado (o equipo personal verificando vínculo), sincronizar en segundo plano con el servidor
       const hitRole = cachedHit?.user?.role
-      if (hitRole === Role.DOCENTE || hitRole === Role.PACIENTE_SIMULADO) {
-        setIsRefreshingSchedule(true)
+      if (!kioskConfig || hitRole === Role.DOCENTE || hitRole === Role.PACIENTE_SIMULADO) {
+        if (hitRole === Role.DOCENTE || hitRole === Role.PACIENTE_SIMULADO) {
+          setIsRefreshingSchedule(true)
+        }
         void (async () => {
           try {
-            const freshRes = await validateUserAction(dni, undefined, true)
+            const fp = !kioskConfig
+              ? deviceFingerprintRef.current || (await getClientDeviceFingerprint())
+              : null
+            if (fp) deviceFingerprintRef.current = fp
+            const freshRes = await validateUserAction(dni, undefined, true, fp)
+            if (freshRes?.isDeviceLockedToOtherDni || freshRes?.isDniBoundToOtherDevice) {
+              applyValidationResult(freshRes, dni)
+              return
+            }
             if (freshRes?.success && freshRes.user && form.getValues("dni") === dni) {
               if (directoryRef.current) {
                 directoryRef.current[dni] = freshRes
@@ -618,8 +756,13 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     setConnectionError(false)
 
     try {
-      // Si la precarga inicial del directorio ya está en vuelo, esperar hasta 700ms para reutilizarla
-      if (!forceFreshExcel && warmDirectoryPromiseRef.current && !directoryRef.current) {
+      const fp = !kioskConfig
+        ? deviceFingerprintRef.current || (await getClientDeviceFingerprint())
+        : null
+      if (fp) deviceFingerprintRef.current = fp
+
+      // En PC Kiosco, si la precarga inicial del directorio ya está en vuelo, esperar hasta 700ms para reutilizarla
+      if (kioskConfig && !forceFreshExcel && warmDirectoryPromiseRef.current && !directoryRef.current) {
         const dir = await Promise.race([
           warmDirectoryPromiseRef.current,
           new Promise<null>((r) => setTimeout(() => r(null), 700)),
@@ -636,7 +779,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
 
       for (let attempt = 0; attempt <= retryAttempts; attempt++) {
         try {
-          res = await validateUserAction(dni, undefined, true)
+          res = await validateUserAction(dni, undefined, true, fp)
           break
         } catch (err) {
           lastError = err
@@ -676,7 +819,8 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     }
     setIsAuthorizingKiosk(true)
     try {
-      const res = await authorizeKioskWithOneTimeCodeAction(cleanCode, kioskCampusSelect)
+      const fp = deviceFingerprintRef.current || (await getClientDeviceFingerprint())
+      const res = await authorizeKioskWithOneTimeCodeAction(cleanCode, kioskCampusSelect, fp)
       if (res.success && res.kioskToken && res.campusName) {
         const cfg: KioskConfig = {
           token: res.kioskToken,
@@ -684,12 +828,16 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
           authorizedAt: new Date().toISOString(),
         }
         localStorage.setItem(KIOSK_STORAGE_KEY, JSON.stringify(cfg))
-        localStorage.removeItem(SAVED_DNI_STORAGE_KEY)
+        clearLocalDeviceBindingCache()
         setKioskConfig(cfg)
+        setBoundDni(null)
+        setBoundUserName(null)
         setRememberDniOnDevice(false)
         setHasRememberedDni(false)
         setShowKioskModal(false)
         setKioskOneTimeCode("")
+        form.reset({ dni: "" })
+        setValidatedUser(null)
         toast.success(res.message, { duration: 6000 })
       } else {
         toast.error(res.message || "Código inválido o ya utilizado")
@@ -708,10 +856,12 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     }
     setIsAuthorizingKiosk(true)
     try {
+      const fp = deviceFingerprintRef.current || (await getClientDeviceFingerprint())
       const res = await authorizeKioskDeviceAction({
         adminUser: kioskAdminUser,
         adminPass: kioskAdminPass,
         campusName: kioskCampusSelect,
+        deviceFingerprint: fp,
       })
       if (res.success && res.kioskToken) {
         const cfg: KioskConfig = {
@@ -720,13 +870,17 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
           authorizedAt: new Date().toISOString(),
         }
         localStorage.setItem(KIOSK_STORAGE_KEY, JSON.stringify(cfg))
-        localStorage.removeItem(SAVED_DNI_STORAGE_KEY)
+        clearLocalDeviceBindingCache()
         setKioskConfig(cfg)
+        setBoundDni(null)
+        setBoundUserName(null)
         setRememberDniOnDevice(false)
         setHasRememberedDni(false)
         setShowKioskModal(false)
         setKioskAdminUser("")
         setKioskAdminPass("")
+        form.reset({ dni: "" })
+        setValidatedUser(null)
         toast.success(res.message, { duration: 6000 })
       } else {
         toast.error(res.message || "No se pudo autorizar la Estación Fija")
@@ -920,6 +1074,14 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
   ])
 
   const onSubmit = async (data: z.infer<typeof formSchema>, type: RecordType) => {
+    if (!kioskConfig && boundDni && data.dni !== boundDni) {
+      form.setValue("dni", boundDni)
+      toast.error(
+        `🔒 Este equipo está vinculado exclusivamente al DNI ${boundDni}. No puede marcar por otro DNI.`
+      )
+      return
+    }
+
     if (!validatedUser && !isOffline && !isContingencyMode) {
       toast.error("Debe ingresar un DNI válido primero")
       return
@@ -1043,6 +1205,9 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
     // Persistir en segundo plano sin hacer esperar al colaborador
     void (async () => {
       try {
+        const fp = !isKioskAuthorized
+          ? deviceFingerprintRef.current || (await getClientDeviceFingerprint())
+          : null
         const res = await registerAttendanceAction({
           userId: currentUser.id,
           role: detectedRole,
@@ -1052,6 +1217,7 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
           courseId: resolvedCourse,
           expectedEntryTime: resolvedExpectedEntry,
           kioskToken: kioskConfig?.token,
+          deviceFingerprint: fp,
           clientTimestamp: new Date(),
           location,
           isOfflineSync: false,
@@ -1066,6 +1232,11 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
           }
           setTodayLastRecord(previousLastRecord)
           setTodayRecords(previousTodayRecords)
+          if ((res as any).isDeviceLockedToOtherDni && (res as any).boundDni) {
+            saveLocalBoundDni((res as any).boundDni)
+            setBoundDni((res as any).boundDni)
+            form.setValue("dni", (res as any).boundDni)
+          }
           toast.error(res.message, { duration: 7000 })
         }
       } catch (error) {
@@ -1340,39 +1511,27 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                     Número de DNI
                   </FormLabel>
 
-                  {/* En celulares personales: mostrar si el DNI está recordado y opción de cambiarlo */}
+                  {/* En celulares/equipos personales: mostrar estado de vinculación exclusiva del equipo al DNI */}
                   {!kioskConfig && (
-                    <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 sm:gap-3">
-                      <label className="flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-slate-500 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          checked={rememberDniOnDevice}
-                          onChange={(e) => {
-                            const checked = e.target.checked
-                            setRememberDniOnDevice(checked)
-                            if (!checked && typeof window !== "undefined") {
-                              localStorage.removeItem(SAVED_DNI_STORAGE_KEY)
-                              setHasRememberedDni(false)
-                            } else if (checked && watchDni?.length === 8 && typeof window !== "undefined") {
-                              localStorage.setItem(SAVED_DNI_STORAGE_KEY, watchDni)
-                              setHasRememberedDni(true)
-                            }
-                          }}
-                          className="rounded border-slate-300 text-[#1967D2] focus:ring-[#1967D2] w-3.5 h-3.5"
-                        />
-                        <Smartphone size={12} className="text-[#1967D2] shrink-0" />
-                        <span>Recordar mi DNI</span>
-                      </label>
-
-                      {hasRememberedDni && watchDni?.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => clearOrResetForm(true)}
-                          className="flex items-center gap-1 text-[11px] sm:text-xs font-bold text-[#1967D2] hover:text-blue-800 cursor-pointer"
-                          title="Borrar DNI guardado para ingresar otro"
+                    <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2">
+                      {isCheckingDeviceBinding ? (
+                        <span className="flex items-center gap-1.5 text-[11px] font-bold text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200">
+                          <Loader2 size={11} className="animate-spin" />
+                          Verificando equipo...
+                        </span>
+                      ) : boundDni ? (
+                        <span
+                          className="flex items-center gap-1.5 text-[11px] font-black text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-300"
+                          title="Este equipo está vinculado exclusivamente a su DNI en todos los navegadores. No permite ingresar otro DNI."
                         >
-                          <UserX size={12} /> Cambiar DNI
-                        </button>
+                          <Lock size={11} className="text-emerald-700 shrink-0" />
+                          <span>Equipo vinculado a este DNI</span>
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500">
+                          <Smartphone size={12} className="text-[#1967D2] shrink-0" />
+                          <span>Se vinculará su DNI a este equipo</span>
+                        </span>
                       )}
                     </div>
                   )}
@@ -1382,15 +1541,30 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                   <div className="relative">
                     <Search className="absolute left-3.5 sm:left-5 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
                     <Input
-                      placeholder="Ingrese sus 8 dígitos"
+                      placeholder={
+                        !kioskConfig && isCheckingDeviceBinding
+                          ? "Reconociendo equipo..."
+                          : "Ingrese sus 8 dígitos"
+                      }
                       maxLength={8}
                       inputMode="numeric"
                       pattern="[0-9]*"
                       enterKeyHint="done"
                       autoComplete="off"
-                      className="h-14 sm:h-16 md:h-20 pl-10 sm:pl-14 pr-10 sm:pr-14 bg-slate-50 border-2 border-slate-200 text-slate-900 text-xl sm:text-2xl font-black tracking-[0.22em] sm:tracking-[0.4em] rounded-xl focus-visible:ring-[#1967D2] focus-visible:border-[#1967D2] transition-all placeholder:text-slate-300 placeholder:tracking-normal placeholder:font-medium placeholder:text-sm sm:placeholder:text-lg"
+                      readOnly={Boolean(!kioskConfig && (boundDni || isCheckingDeviceBinding))}
+                      disabled={Boolean(!kioskConfig && isCheckingDeviceBinding)}
+                      className={`h-14 sm:h-16 md:h-20 pl-10 sm:pl-14 pr-10 sm:pr-14 border-2 text-slate-900 text-xl sm:text-2xl font-black tracking-[0.22em] sm:tracking-[0.4em] rounded-xl focus-visible:ring-[#1967D2] focus-visible:border-[#1967D2] transition-all placeholder:text-slate-300 placeholder:tracking-normal placeholder:font-medium placeholder:text-sm sm:placeholder:text-lg ${
+                        !kioskConfig && boundDni
+                          ? "bg-emerald-50/40 border-emerald-300 cursor-not-allowed select-none"
+                          : "bg-slate-50 border-slate-200"
+                      }`}
                       {...field}
                       onChange={(e) => {
+                        if (!kioskConfig && boundDni) {
+                          // No permitir cambiar ni borrar el DNI vinculado al equipo
+                          field.onChange(boundDni)
+                          return
+                        }
                         const val = e.target.value.replace(/\D/g, "")
                         field.onChange(val)
                       }}
@@ -1398,8 +1572,13 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
                     {isValidating && (
                       <Loader2 className="absolute right-3.5 sm:right-5 top-1/2 -translate-y-1/2 text-[#1967D2] animate-spin" size={22} />
                     )}
-                    {validatedUser && !isValidating && (
-                      <UserCheck className="absolute right-3.5 sm:right-5 top-1/2 -translate-y-1/2 text-emerald-500" size={24} />
+                    {!kioskConfig && boundDni && !isValidating ? (
+                      <Lock className="absolute right-3.5 sm:right-5 top-1/2 -translate-y-1/2 text-emerald-600" size={20} />
+                    ) : (
+                      validatedUser &&
+                      !isValidating && (
+                        <UserCheck className="absolute right-3.5 sm:right-5 top-1/2 -translate-y-1/2 text-emerald-500" size={24} />
+                      )
                     )}
                   </div>
                 </FormControl>

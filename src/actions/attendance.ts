@@ -1,11 +1,19 @@
 "use server"
 
 import { revalidatePath } from "next/cache"
-import { cookies } from "next/headers"
+import { cookies, headers } from "next/headers"
 import { Role, RecordType, RecordStatus, Shift } from "@prisma/client"
 import prisma from "@/lib/prisma"
 import { limaDayOfWeek } from "@/lib/timezone"
 import { validateHybridLocation } from "@/lib/geofence"
+import {
+  findBindingForDevice,
+  verifyAndBindDeviceForUser,
+  unbindDeviceForDni,
+  unbindDeviceByFingerprint,
+  getAllDeviceBindings,
+  type DeviceFingerprintPayload,
+} from "@/lib/device-binding"
 import { DEFAULT_SHIFT_TIMES } from "@/lib/schedule-constants"
 import {
   getDailyProgramForUser,
@@ -318,16 +326,109 @@ export async function getTodayAttendanceStateAction(userId: string): Promise<{
   }
 }
 
+async function getRequestClientIp(): Promise<string | undefined> {
+  try {
+    const h = await headers()
+    const xff = h.get("x-forwarded-for")
+    if (xff) return xff.split(",")[0].trim()
+    const realIp = h.get("x-real-ip")
+    if (realIp) return realIp.trim()
+  } catch {}
+  return undefined
+}
+
+/**
+ * Consulta si el equipo físico actual ya tiene un DNI vinculado (incluso si se abre desde otro navegador en el mismo equipo).
+ */
+export async function resolveDeviceBindingAction(
+  fingerprint: DeviceFingerprintPayload
+): Promise<{
+  bound: boolean
+  dni?: string
+  userName?: string
+  role?: string
+}> {
+  try {
+    const clientIp = await getRequestClientIp()
+    const entry = await findBindingForDevice(fingerprint, clientIp)
+    if (!entry) {
+      return { bound: false }
+    }
+    return {
+      bound: true,
+      dni: entry.dni,
+      userName: entry.userName,
+      role: entry.role,
+    }
+  } catch (err) {
+    console.error("[resolveDeviceBindingAction] Error:", err)
+    return { bound: false }
+  }
+}
+
+export async function getDeviceBindingsOverviewAction(): Promise<Record<string, boolean>> {
+  try {
+    const all = await getAllDeviceBindings()
+    const map: Record<string, boolean> = {}
+    for (const dni of Object.keys(all)) {
+      map[dni] = true
+    }
+    return map
+  } catch {
+    return {}
+  }
+}
+
+export async function adminResetUserDeviceBindingAction(dni: string): Promise<{
+  success: boolean
+  message: string
+}> {
+  try {
+    const { getAdminSession } = await import("@/lib/session")
+    const session = await getAdminSession().catch(() => null)
+    if (!session) {
+      return { success: false, message: "No autorizado." }
+    }
+    const cleanDni = (dni || "").trim()
+    const removed = await unbindDeviceForDni(cleanDni)
+    return {
+      success: true,
+      message: removed
+        ? `📱 Se liberó el celular vinculado al DNI ${cleanDni}. El colaborador ya puede vincular su nuevo equipo.`
+        : `El DNI ${cleanDni} no tenía ningún celular bloqueado. Ya puede vincular su equipo.`,
+    }
+  } catch (err) {
+    console.error("[adminResetUserDeviceBindingAction] Error:", err)
+    return { success: false, message: "Error al desvincular el equipo." }
+  }
+}
+
 // ------------------------------------------------------------------
 // 1. VALIDACIÓN AUTOMÁTICA POR DNI (ROL, SEDE, HORARIO Y AMBIENTE)
 // ------------------------------------------------------------------
 export async function validateUserAction(
   dni: string,
   roleOverride?: Role,
-  forceFreshProgram = false
+  forceFreshProgram = false,
+  deviceFingerprint?: DeviceFingerprintPayload | null
 ) {
   try {
     const cleanDni = dni.trim()
+    const clientIp = deviceFingerprint ? await getRequestClientIp() : undefined
+
+    // 0. Si viene desde un celular/equipo personal (no Kiosco), verificar primero si este equipo ya pertenece a otro DNI
+    if (deviceFingerprint) {
+      const existingDeviceOwner = await findBindingForDevice(deviceFingerprint, clientIp)
+      if (existingDeviceOwner && existingDeviceOwner.dni !== cleanDni) {
+        return {
+          success: false,
+          isDeviceLockedToOtherDni: true,
+          boundDni: existingDeviceOwner.dni,
+          boundUserName: existingDeviceOwner.userName,
+          message: `🔒 Este equipo ya está registrado a nombre de ${existingDeviceOwner.userName} (DNI: ${existingDeviceOwner.dni}). No se permite colocar otro DNI desde este dispositivo.`,
+        }
+      }
+    }
 
     // Respuesta en 0ms si el usuario ya está en el directorio en memoria y no se exige recarga en vivo del Excel
     if (cachedDirectory && !roleOverride) {
@@ -336,12 +437,32 @@ export async function validateUserAction(
       }
       const hit = cachedDirectory.data[cleanDni]
       if (hit) {
+        if (deviceFingerprint && hit.user) {
+          const bindRes = await verifyAndBindDeviceForUser({
+            dni: cleanDni,
+            userId: hit.user.id,
+            userName: hit.user.name,
+            role: hit.user.role,
+            fingerprint: deviceFingerprint,
+            clientIp,
+          })
+          if (!bindRes.allowed) {
+            return {
+              success: false,
+              isDeviceLockedToOtherDni: bindRes.code === "DEVICE_BOUND_TO_OTHER_DNI",
+              isDniBoundToOtherDevice: bindRes.code === "DNI_BOUND_TO_OTHER_DEVICE",
+              boundDni: bindRes.boundDni,
+              boundUserName: bindRes.boundUserName,
+              message: bindRes.message,
+            }
+          }
+        }
         if (!forceFreshProgram) {
-          return hit
+          return deviceFingerprint ? { ...hit, boundDni: cleanDni } : hit
         }
         // Si es Técnico, no depende del Excel de programación diaria de simulación
         if (hit.user?.role === Role.TECNICO) {
-          return hit
+          return deviceFingerprint ? { ...hit, boundDni: cleanDni } : hit
         }
       }
     }
@@ -404,9 +525,32 @@ export async function validateUserAction(
     const isAdmin = user.role === Role.SUPER_ADMIN || user.role === Role.ADMIN_SECUNDARIO
     const effectiveRole: Role = isAdmin ? (roleOverride || Role.DOCENTE) : user.role
 
+    // Verificar y vincular el celular/equipo personal al DNI si aplica (Bloqueo anti-suplantación 1 Equipo <-> 1 DNI)
+    if (deviceFingerprint) {
+      const bindRes = await verifyAndBindDeviceForUser({
+        dni: cleanDni,
+        userId: user.id,
+        userName: user.name,
+        role: effectiveRole,
+        fingerprint: deviceFingerprint,
+        clientIp,
+      })
+      if (!bindRes.allowed) {
+        return {
+          success: false,
+          isDeviceLockedToOtherDni: bindRes.code === "DEVICE_BOUND_TO_OTHER_DNI",
+          isDniBoundToOtherDevice: bindRes.code === "DNI_BOUND_TO_OTHER_DEVICE",
+          boundDni: bindRes.boundDni,
+          boundUserName: bindRes.boundUserName,
+          message: bindRes.message,
+        }
+      }
+    }
+
     if (effectiveRole === Role.TECNICO && todaySched?.shift === Shift.DESCANSO) {
       return {
         success: false,
+        boundDni: deviceFingerprint ? cleanDni : undefined,
         message: `🏖️ Hola ${user.name}, hoy tienes asignado tu DÍA DE DESCANSO según el cronograma oficial. No requieres registrar asistencia.`,
       }
     }
@@ -415,6 +559,7 @@ export async function validateUserAction(
       return {
         success: false,
         isComision: true,
+        boundDni: deviceFingerprint ? cleanDni : undefined,
         message: `✈️ Hola ${user.name}, hoy estás en COMISIÓN DE SERVICIO / EVENTO ESPECIAL (EV) en provincia según el cronograma oficial. No es necesario marcar asistencia.`,
       }
     }
@@ -510,7 +655,7 @@ export async function validateUserAction(
       cachedDirectory.data[cleanDni] = result
     }
 
-    return result
+    return deviceFingerprint ? { ...result, boundDni: cleanDni } : result
   } catch (error) {
     console.error("[validateUserAction] Error:", error)
     return { success: false, message: "Error de conexión con la base de datos." }
@@ -527,6 +672,7 @@ export async function authorizeKioskDeviceAction(params: {
   adminUser: string
   adminPass: string
   campusName: string
+  deviceFingerprint?: DeviceFingerprintPayload | null
 }): Promise<{ success: boolean; kioskToken?: string; campusName?: string; message: string }> {
   try {
     const cleanInput = (params.adminUser || "").trim()
@@ -600,6 +746,9 @@ export async function authorizeKioskDeviceAction(params: {
     }
 
     const token = `${KIOSK_TOKEN_PREFIX}${targetCampus}`
+    if (params.deviceFingerprint) {
+      await unbindDeviceByFingerprint(params.deviceFingerprint)
+    }
     try {
       const cookieStore = await cookies()
       cookieStore.set("kiosk_authorized_token", token, {
@@ -648,7 +797,8 @@ export async function revokeKioskDeviceAction(): Promise<{ success: boolean }> {
  */
 export async function authorizeKioskWithOneTimeCodeAction(
   code: string,
-  preferredCampusName?: string
+  preferredCampusName?: string,
+  deviceFingerprint?: DeviceFingerprintPayload | null
 ): Promise<{
   success: boolean
   kioskToken?: string
@@ -664,6 +814,10 @@ export async function authorizeKioskWithOneTimeCodeAction(
         success: false,
         message: result.message,
       }
+    }
+
+    if (deviceFingerprint) {
+      await unbindDeviceByFingerprint(deviceFingerprint)
     }
 
     const token = `${KIOSK_TOKEN_PREFIX}${result.campusName}`
@@ -782,6 +936,7 @@ type RegisterAttendanceData = {
   courseId?: string
   expectedEntryTime?: string
   kioskToken?: string
+  deviceFingerprint?: DeviceFingerprintPayload | null
   isOfflineSync?: boolean
   clientTimestamp?: Date 
   location?: { lat: number; lng: number; accuracy?: number }
@@ -864,6 +1019,32 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           isKioskAuthorized = true
         }
       } catch {}
+    }
+
+    // Validación Anti-Suplantación: en celulares/dispositivos personales (!isKioskAuthorized),
+    // un equipo solo puede marcar para el único DNI que tiene vinculado, y un DNI vinculado no puede marcar desde el celular de otro compañero.
+    if (!isKioskAuthorized && data.deviceFingerprint) {
+      const clientIp = await getRequestClientIp()
+      const bindCheck = await verifyAndBindDeviceForUser({
+        dni: user.dni,
+        userId: user.id,
+        userName: user.name,
+        role: data.role,
+        fingerprint: data.deviceFingerprint,
+        clientIp,
+      })
+      if (!bindCheck.allowed) {
+        return {
+          success: false,
+          isDeviceLockedToOtherDni: bindCheck.code === "DEVICE_BOUND_TO_OTHER_DNI",
+          isDniBoundToOtherDevice: bindCheck.code === "DNI_BOUND_TO_OTHER_DEVICE",
+          boundDni: bindCheck.boundDni,
+          boundUserName: bindCheck.boundUserName,
+          message:
+            bindCheck.message ||
+            "No puede registrar asistencia con un DNI distinto al vinculado en este equipo.",
+        }
+      }
     }
 
     // Detección y validación de sede en Modo Híbrido (PC Kiosco sin GPS vs Celular con GPS en campus)
