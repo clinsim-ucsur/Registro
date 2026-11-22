@@ -1725,18 +1725,20 @@ export async function regularizeMissingExitAction(params: RegularizeExitParams):
     // Actualizar o limpiar caché en memoria para que el cambio se refleje de inmediato en celulares y PCs
     cachedDirectory = null
 
-    try {
-      const { recordAuditLog } = await import("@/lib/audit-log")
-      await recordAuditLog({
-        actorName,
-        actorDni,
-        actorRole,
-        category: "SCHEDULES",
-        action: "Regularización Manual de Salida",
-        target: `${user.name} (DNI: ${user.dni})`,
-        details: `Salida regularizada manualmente a las ${paddedExitHHMM} (${targetDateStr}) en ${resolvedCampusName}${resolvedCourseName ? ` • ${resolvedCourseName}` : ""}${params.reason ? ` — Motivo: ${params.reason}` : ""}.`,
-      })
-    } catch {}
+    if (!params.skipAuthForTests) {
+      try {
+        const { recordAuditLog } = await import("@/lib/audit-log")
+        await recordAuditLog({
+          actorName,
+          actorDni,
+          actorRole,
+          category: "SCHEDULES",
+          action: "Regularización Manual de Salida",
+          target: `${user.name} (DNI: ${user.dni})`,
+          details: `Salida regularizada manualmente a las ${paddedExitHHMM} (${targetDateStr}) en ${resolvedCampusName}${resolvedCourseName ? ` • ${resolvedCourseName}` : ""}${params.reason ? ` — Motivo: ${params.reason}` : ""}.`,
+        })
+      } catch {}
+    }
 
     try {
       revalidatePath("/dashboard")
