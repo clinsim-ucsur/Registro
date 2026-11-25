@@ -21,6 +21,7 @@ import {
   getLocalBoundDni,
   saveLocalBoundDni,
   clearLocalDeviceBindingCache,
+  purgeLegacyContaminatedDniCache,
 } from "@/lib/device-fingerprint-client"
 import {
   resolveUserModulesState,
@@ -251,11 +252,15 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
       setMobileAlarmOnboarded(onboarded || alreadyGranted)
     } catch {}
 
-    const localBound = getLocalBoundDni()
-    if (localBound) {
-      setBoundDni(localBound)
+    // Limpiar cualquier caché heredada de la versión v1 que pudo haberse contaminado entre modelos similares de iPhone/Android
+    purgeLegacyContaminatedDniCache()
+
+    const localBoundV2 = getLocalBoundDni()
+    // Solo pre-cargar desde memoria local antes de consultar al servidor si el teléfono está sin conexión a internet
+    if (localBoundV2 && typeof navigator !== "undefined" && !navigator.onLine) {
+      setBoundDni(localBoundV2)
       setHasRememberedDni(true)
-      form.setValue("dni", localBound)
+      form.setValue("dni", localBoundV2)
     }
 
     let active = true
@@ -274,23 +279,26 @@ export default function AttendanceForm({ campuses: propCampuses }: AttendanceFor
           if (form.getValues("dni") !== serverBinding.dni) {
             form.setValue("dni", serverBinding.dni)
           }
-        } else if (localBound) {
-          // El servidor indica que un Administrador liberó/reseteó el vínculo de este equipo
+        } else {
+          // Este dispositivo (deviceToken único) NO tiene ningún DNI vinculado en el servidor:
+          // limpiar cualquier rastro local y dejar la casilla libre para que el dueño registre su propio DNI
           clearLocalDeviceBindingCache()
           setBoundDni(null)
           setBoundUserName(null)
           setHasRememberedDni(false)
-          form.reset({ dni: "" })
-        } else {
-          // Migrar DNI guardado previo si existía antes del bloqueo por dispositivo
-          const legacySaved = localStorage.getItem(SAVED_DNI_STORAGE_KEY)
-          if (legacySaved && /^\d{8}$/.test(legacySaved)) {
-            setHasRememberedDni(true)
-            form.setValue("dni", legacySaved)
+          if (form.getValues("dni")) {
+            form.reset({ dni: "" })
           }
         }
       } catch {
-        // En modo sin conexión, respetar el DNI vinculado localmente
+        // Si hay corte de red, usar el vínculo v2 verificado previamente en este dispositivo
+        if (active && localBoundV2) {
+          setBoundDni(localBoundV2)
+          setHasRememberedDni(true)
+          if (form.getValues("dni") !== localBoundV2) {
+            form.setValue("dni", localBoundV2)
+          }
+        }
       } finally {
         if (active) {
           setIsCheckingDeviceBinding(false)

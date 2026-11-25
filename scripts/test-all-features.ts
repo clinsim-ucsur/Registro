@@ -1481,9 +1481,9 @@ async function main() {
   )
 
   // =========================================================================
-  // 19. BLOQUEO ANTI-SUPLANTACIÓN: VINCULACIÓN CELULAR <-> DNI Y RECONOCIMIENTO MULTI-NAVEGADOR
+  // 19. BLOQUEO ANTI-SUPLANTACIÓN: VINCULACIÓN CELULAR <-> DNI SIN COLISIÓN EN IPHONE / ANDROID
   // =========================================================================
-  console.log("\n[TEST 19] Probando Vinculación Exclusiva Celular <-> DNI y Reconocimiento Multi-Navegador...")
+  console.log("\n[TEST 19] Probando Vinculación Exclusiva Celular <-> DNI sin Colisión entre iPhones o Androids Iguales...")
 
   const {
     verifyAndBindDeviceForUser,
@@ -1496,93 +1496,127 @@ async function main() {
   await unbindDeviceForDni(testDniA)
   await unbindDeviceForDni(testDniB)
 
-  // Huella del Celular 1 en Navegador Chrome
-  const phone1ChromeFp = {
-    deviceToken: "dev_test_phone1_chrome",
-    coreHardwareId: "chw_test_phone1_physical",
-    extendedHardwareId: "ehw_test_phone1_gpu",
-    deviceModel: "SM-A546E",
-    screenProfile: "ANDROID|360x800@2.81",
+  // iPhone 1 (ej. Luis Capitán - Safari, IOS|390x844@3)
+  const iphoneLuisFp = {
+    deviceToken: "dev_test_iphone_luis_token",
+    coreHardwareId: "chw_same_ios_390x844",
+    extendedHardwareId: "ehw_same_ios_apple_gpu",
+    deviceModel: "IPHONE",
+    screenProfile: "IOS|390x844@3",
+    isStandalonePwa: false,
   }
 
-  // Huella del MISMO Celular 1 pero abriendo el link desde OTRO navegador (ej. Safari / Samsung Internet / Edge / Incógnito)
-  const phone1OtherBrowserFp = {
-    deviceToken: "dev_test_phone1_other_browser", // Token de navegador distinto
-    coreHardwareId: "chw_test_phone1_physical",   // Misma huella física de equipo
-    extendedHardwareId: "ehw_test_phone1_gpu",
-    deviceModel: "SM-A546E",
-    screenProfile: "ANDROID|360x800@2.81",
+  // iPhone 1 de Luis Capitán al instalar el aplicativo en su pantalla de inicio ("Agregar a inicio" -> display-mode: standalone)
+  const iphoneLuisInstalledAppFp = {
+    deviceToken: "dev_test_iphone_luis_pwa_token",
+    coreHardwareId: "chw_same_ios_390x844",
+    extendedHardwareId: "ehw_same_ios_apple_gpu",
+    deviceModel: "IPHONE",
+    screenProfile: "IOS|390x844@3",
+    isStandalonePwa: true,
   }
 
-  // Huella de un Celular 2 completamente distinto (de otro compañero)
-  const phone2Fp = {
-    deviceToken: "dev_test_phone2_chrome",
-    coreHardwareId: "chw_test_phone2_different",
-    extendedHardwareId: "ehw_test_phone2_gpu",
-    deviceModel: "REDMI-NOTE-12",
-    screenProfile: "ANDROID|393x873@2.75",
+  // iPhone 2 COMPLETAMENTE DIFERENTE (ej. Leo Gómez - mismo modelo de iPhone IOS|390x844@3 y misma IP de Wi-Fi de sede)
+  const iphoneLeoFp = {
+    deviceToken: "dev_test_iphone_leo_token",
+    coreHardwareId: "chw_same_ios_390x844",       // Idéntico hardware reportado por iOS
+    extendedHardwareId: "ehw_same_ios_apple_gpu", // Idéntica GPU reportada por iOS
+    deviceModel: "IPHONE",
+    screenProfile: "IOS|390x844@3",
+    isStandalonePwa: false,
   }
 
-  // 19.1 Colaborador A registra su DNI en el Celular 1 (Chrome)
-  const bindPhone1Res = await verifyAndBindDeviceForUser({
+  // 19.1 Luis Capitán registra su DNI en su iPhone 1
+  const bindLuisRes = await verifyAndBindDeviceForUser({
     dni: testDniA,
     userId: "user_test_a",
-    userName: "Colaborador Prueba A",
+    userName: "Luis Capitán (Prueba)",
     role: "PACIENTE_SIMULADO",
-    fingerprint: phone1ChromeFp,
-    clientIp: "190.235.10.15",
+    fingerprint: iphoneLuisFp,
+    clientIp: "170.254.233.128",
   })
   assert(
-    bindPhone1Res.allowed === true && bindPhone1Res.boundDni === testDniA,
-    "Vinculación Inicial: El Celular 1 queda vinculado exitosamente al DNI del Colaborador A"
+    bindLuisRes.allowed === true && bindLuisRes.boundDni === testDniA,
+    "Vinculación Inicial: El iPhone de Luis queda vinculado exitosamente a su DNI"
   )
 
-  // 19.2 Si abre el link desde OTRO navegador en el mismo Celular 1, el sistema reconoce automáticamente el DNI A registrado en el equipo
-  const recognizedInOtherBrowser = await findBindingForDevice(
-    phone1OtherBrowserFp,
-    "190.235.10.15"
+  // 19.2 Cuando Leo Gómez abre el link en SU propio iPhone (mismo modelo IOS|390x844@3 y misma red), NO aparece el DNI de Luis Capitán
+  const lookupOnLeoIphone = await findBindingForDevice(
+    iphoneLeoFp,
+    "170.254.233.128"
   )
+  const bindLeoRes = await verifyAndBindDeviceForUser({
+    dni: testDniB,
+    userId: "user_test_b",
+    userName: "Leo Gómez (Prueba)",
+    role: "PACIENTE_SIMULADO",
+    fingerprint: iphoneLeoFp,
+    clientIp: "170.254.233.128",
+  })
   assert(
-    recognizedInOtherBrowser !== null &&
-      recognizedInOtherBrowser.dni === testDniA &&
-      recognizedInOtherBrowser.userName === "Colaborador Prueba A",
-    "Reconocimiento en Otro Navegador: Al abrir el link en otro navegador del mismo celular, reconoce automáticamente el DNI registrado en el equipo"
+    lookupOnLeoIphone === null &&
+      bindLeoRes.allowed === true &&
+      bindLeoRes.boundDni === testDniB,
+    "Cero Cruce entre iPhones/Androids Iguales: El teléfono de Leo Gómez NO muestra el DNI de Luis Capitán y permite vincular el DNI de Leo"
   )
 
-  // 19.3 Si intenta colocar otro DNI (Colaborador B) desde otro navegador del mismo Celular 1, el sistema lo BLOQUEA y devuelve el DNI A vinculado
+  // 19.3 Si Luis intenta colocar el DNI de Leo desde el iPhone de Luis, el sistema lo BLOQUEA
   const attemptSecondDniOnSamePhone = await verifyAndBindDeviceForUser({
     dni: testDniB,
     userId: "user_test_b",
-    userName: "Colaborador Prueba B",
+    userName: "Leo Gómez (Prueba)",
     role: "PACIENTE_SIMULADO",
-    fingerprint: phone1OtherBrowserFp,
-    clientIp: "190.235.10.15",
+    fingerprint: iphoneLuisFp,
+    clientIp: "170.254.233.128",
   })
   assert(
     attemptSecondDniOnSamePhone.allowed === false &&
       attemptSecondDniOnSamePhone.code === "DEVICE_BOUND_TO_OTHER_DNI" &&
       attemptSecondDniOnSamePhone.boundDni === testDniA,
-    "Bloqueo de 2 DNIs en el Mismo Celular: Impide ingresar otro DNI en el equipo vinculado (incluso desde otro navegador)"
+    "Bloqueo de 2 DNIs en el Mismo Celular: Impide ingresar el DNI de otro compañero en un teléfono ya vinculado"
   )
 
-  // 19.4 Si un compañero con otro celular (Celular 2) intenta colocar el DNI del Colaborador A para marcarle asistencia, el sistema lo BLOQUEA
-  const attemptShareDniOnPhone2 = await verifyAndBindDeviceForUser({
+  // 19.4 Si un tercer teléfono intenta usar el DNI ya vinculado de Luis Capitán, el sistema lo BLOQUEA
+  const phone3Fp = {
+    deviceToken: "dev_test_phone3_token",
+    coreHardwareId: "chw_test_phone3",
+    extendedHardwareId: "ehw_test_phone3",
+    deviceModel: "REDMI-NOTE-12",
+    screenProfile: "ANDROID|393x873@2.75",
+    isStandalonePwa: false,
+  }
+  const attemptShareDniOnPhone3 = await verifyAndBindDeviceForUser({
     dni: testDniA,
     userId: "user_test_a",
-    userName: "Colaborador Prueba A",
+    userName: "Luis Capitán (Prueba)",
     role: "PACIENTE_SIMULADO",
-    fingerprint: phone2Fp,
+    fingerprint: phone3Fp,
     clientIp: "190.235.10.99",
   })
   assert(
-    attemptShareDniOnPhone2.allowed === false &&
-      attemptShareDniOnPhone2.code === "DNI_BOUND_TO_OTHER_DEVICE",
+    attemptShareDniOnPhone3.allowed === false &&
+      attemptShareDniOnPhone3.code === "DNI_BOUND_TO_OTHER_DEVICE",
     "Bloqueo de DNI Compartido: Impide que el DNI vinculado al Celular 1 sea utilizado desde el celular de otro compañero"
   )
 
-  // 19.5 El Administrador puede liberar el vínculo si el colaborador cambia de teléfono
+  // 19.5 En iPhone (iOS), si Luis instaló el aplicativo en su pantalla de inicio ("Agregar a inicio" -> standalone PWA), le permite vincular su propio DNI al ícono instalado
+  const bindLuisPwaRes = await verifyAndBindDeviceForUser({
+    dni: testDniA,
+    userId: "user_test_a",
+    userName: "Luis Capitán (Prueba)",
+    role: "PACIENTE_SIMULADO",
+    fingerprint: iphoneLuisInstalledAppFp,
+    clientIp: "170.254.233.128",
+  })
+  assert(
+    bindLuisPwaRes.allowed === true && bindLuisPwaRes.boundDni === testDniA,
+    "Soporte PWA en iPhone (Agregar a inicio): Permite al titular usar su propio DNI dentro del aplicativo instalado en su pantalla de inicio"
+  )
+
+  // 19.6 El Administrador puede liberar el vínculo si el colaborador cambia de teléfono
   const unboundOk = await unbindDeviceForDni(testDniA)
-  const afterUnbind = await findBindingForDevice(phone1ChromeFp)
+  await unbindDeviceForDni(testDniB)
+  const afterUnbind = await findBindingForDevice(iphoneLuisFp)
   assert(
     unboundOk === true && afterUnbind === null,
     "Liberación Admin: Permite al Administrador desvincular el equipo si el colaborador renueva su teléfono"

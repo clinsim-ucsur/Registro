@@ -1,6 +1,8 @@
 import prisma from "@/lib/prisma"
 
 export const DEVICE_BINDINGS_SETTING_KEY = "MOBILE_DEVICE_DNI_BINDINGS_V1"
+const DNI_KEY_PREFIX = "DEVBIND_DNI:"
+const TOK_KEY_PREFIX = "DEVBIND_TOK:"
 
 export interface DeviceFingerprintPayload {
   deviceToken: string
@@ -9,6 +11,7 @@ export interface DeviceFingerprintPayload {
   deviceModel?: string
   screenProfile?: string
   userAgent?: string
+  isStandalonePwa?: boolean
 }
 
 export interface DeviceBindingEntry {
@@ -27,225 +30,272 @@ export interface DeviceBindingEntry {
 }
 
 let cachedBindingsByDni: Map<string, DeviceBindingEntry> | null = null
+let cachedDniByToken: Map<string, string> | null = null
 let cacheLoadedAt = 0
-const CACHE_TTL_MS = 60_000
+const CACHE_TTL_MS = 4_000 // 4 segundos para mantener sincronizadas todas las instancias serverless en Vercel
 
-async function loadBindingsMap(forceReload = false): Promise<Map<string, DeviceBindingEntry>> {
+function isDesktopScreenProfile(screenProfile?: string): boolean {
+  if (!screenProfile) return false
+  return screenProfile.startsWith("WINDOWS|") || screenProfile.startsWith("MAC|")
+}
+
+function isMobileScreenProfile(screenProfile?: string): boolean {
+  if (!screenProfile) return false
+  return screenProfile.startsWith("ANDROID|") || screenProfile.startsWith("IOS|")
+}
+
+async function loadBindingsCache(forceReload = false): Promise<{
+  byDni: Map<string, DeviceBindingEntry>
+  byToken: Map<string, string>
+}> {
   const now = Date.now()
-  if (!forceReload && cachedBindingsByDni && now - cacheLoadedAt < CACHE_TTL_MS) {
-    return cachedBindingsByDni
+  if (
+    !forceReload &&
+    cachedBindingsByDni &&
+    cachedDniByToken &&
+    now - cacheLoadedAt < CACHE_TTL_MS
+  ) {
+    return { byDni: cachedBindingsByDni, byToken: cachedDniByToken }
   }
 
+  const byDni = new Map<string, DeviceBindingEntry>()
+  const byToken = new Map<string, string>()
+
   try {
-    const setting = await prisma.systemSetting.findUnique({
-      where: { key: DEVICE_BINDINGS_SETTING_KEY },
+    const rows = await prisma.systemSetting.findMany({
+      where: {
+        OR: [
+          { key: { startsWith: DNI_KEY_PREFIX } },
+          { key: { startsWith: TOK_KEY_PREFIX } },
+          { key: DEVICE_BINDINGS_SETTING_KEY },
+        ],
+      },
     })
-    const map = new Map<string, DeviceBindingEntry>()
-    if (setting?.value) {
-      const parsed = JSON.parse(setting.value)
-      if (parsed && typeof parsed === "object") {
-        for (const [dni, rawEntry] of Object.entries(parsed)) {
-          const entry = rawEntry as DeviceBindingEntry
-          if (entry && entry.dni && entry.coreHardwareId) {
-            map.set(dni, {
+
+    let legacyRowValue: string | null = null
+
+    for (const row of rows) {
+      if (row.key === DEVICE_BINDINGS_SETTING_KEY) {
+        legacyRowValue = row.value
+        continue
+      }
+      if (row.key.startsWith(DNI_KEY_PREFIX)) {
+        try {
+          const entry = JSON.parse(row.value) as DeviceBindingEntry
+          if (entry && entry.dni) {
+            const tokens = Array.isArray(entry.deviceTokens)
+              ? entry.deviceTokens.filter(Boolean)
+              : []
+            const normalized: DeviceBindingEntry = {
               ...entry,
-              deviceTokens: Array.isArray(entry.deviceTokens) ? entry.deviceTokens : [],
+              deviceTokens: tokens,
               extendedHardwareIds: Array.isArray(entry.extendedHardwareIds)
                 ? entry.extendedHardwareIds
                 : [],
-            })
+            }
+            byDni.set(entry.dni, normalized)
+            for (const t of tokens) {
+              byToken.set(t, entry.dni)
+            }
           }
+        } catch {}
+      } else if (row.key.startsWith(TOK_KEY_PREFIX)) {
+        const token = row.key.slice(TOK_KEY_PREFIX.length)
+        const dni = (row.value || "").trim()
+        if (token && dni) {
+          byToken.set(token, dni)
         }
       }
     }
-    cachedBindingsByDni = map
-    cacheLoadedAt = now
-    return map
+
+    // Si existía el registro antiguo monolítico, migrar entradas faltantes a filas atómicas
+    if (legacyRowValue) {
+      try {
+        const parsed = JSON.parse(legacyRowValue)
+        if (parsed && typeof parsed === "object") {
+          for (const [dni, rawEntry] of Object.entries(parsed)) {
+            const entry = rawEntry as DeviceBindingEntry
+            if (entry && entry.dni && !byDni.has(dni)) {
+              const tokens = Array.isArray(entry.deviceTokens)
+                ? entry.deviceTokens.filter(Boolean)
+                : []
+              if (tokens.length > 0) {
+                const normalized: DeviceBindingEntry = {
+                  ...entry,
+                  deviceTokens: tokens,
+                  extendedHardwareIds: Array.isArray(entry.extendedHardwareIds)
+                    ? entry.extendedHardwareIds
+                    : [],
+                }
+                byDni.set(dni, normalized)
+                for (const t of tokens) {
+                  byToken.set(t, dni)
+                }
+                await saveAtomicBindingEntry(normalized)
+              }
+            }
+          }
+        }
+        await prisma.systemSetting
+          .delete({ where: { key: DEVICE_BINDINGS_SETTING_KEY } })
+          .catch(() => {})
+      } catch {}
+    }
+
+    cachedBindingsByDni = byDni
+    cachedDniByToken = byToken
+    cacheLoadedAt = Date.now()
+    return { byDni, byToken }
   } catch (err) {
     console.warn("[device-binding] Error cargando vínculos de equipos:", err)
-    return cachedBindingsByDni || new Map<string, DeviceBindingEntry>()
+    return {
+      byDni: cachedBindingsByDni || byDni,
+      byToken: cachedDniByToken || byToken,
+    }
   }
 }
 
-async function persistBindingsMap(map: Map<string, DeviceBindingEntry>): Promise<void> {
-  cachedBindingsByDni = map
-  cacheLoadedAt = Date.now()
-  const obj: Record<string, DeviceBindingEntry> = {}
-  for (const [dni, entry] of map.entries()) {
-    obj[dni] = entry
-  }
+async function saveAtomicBindingEntry(entry: DeviceBindingEntry): Promise<void> {
+  const dniKey = `${DNI_KEY_PREFIX}${entry.dni}`
+  const valueJson = JSON.stringify(entry)
 
-  try {
-    await prisma.systemSetting.upsert({
-      where: { key: DEVICE_BINDINGS_SETTING_KEY },
+  const ops: Promise<any>[] = [
+    prisma.systemSetting.upsert({
+      where: { key: dniKey },
       update: {
-        value: JSON.stringify(obj),
-        description: "Registro de vinculación exclusiva Celular/Equipo <-> DNI (Anti-suplantación)",
+        value: valueJson,
+        description: `Vínculo exclusivo de celular para ${entry.userName} (${entry.dni})`,
       },
       create: {
-        key: DEVICE_BINDINGS_SETTING_KEY,
-        value: JSON.stringify(obj),
-        description: "Registro de vinculación exclusiva Celular/Equipo <-> DNI (Anti-suplantación)",
+        key: dniKey,
+        value: valueJson,
+        description: `Vínculo exclusivo de celular para ${entry.userName} (${entry.dni})`,
       },
-    })
-  } catch (err) {
-    console.warn("[device-binding] Error guardando vínculos de equipos:", err)
+    }),
+  ]
+
+  for (const token of entry.deviceTokens) {
+    if (!token) continue
+    const tokKey = `${TOK_KEY_PREFIX}${token}`
+    ops.push(
+      prisma.systemSetting.upsert({
+        where: { key: tokKey },
+        update: {
+          value: entry.dni,
+          description: `Token de dispositivo vinculado al DNI ${entry.dni}`,
+        },
+        create: {
+          key: tokKey,
+          value: entry.dni,
+          description: `Token de dispositivo vinculado al DNI ${entry.dni}`,
+        },
+      })
+    )
+  }
+
+  await Promise.all(ops)
+
+  if (cachedBindingsByDni) {
+    cachedBindingsByDni.set(entry.dni, entry)
+  }
+  if (cachedDniByToken) {
+    for (const token of entry.deviceTokens) {
+      cachedDniByToken.set(token, entry.dni)
+    }
   }
 }
 
 /**
- * Verifica si una huella de dispositivo coincide con un registro vinculado existente,
- * incluso si el enlace se abrió desde OTRO navegador o pestaña incógnito en el mismo equipo.
+ * Verifica si el dispositivo actual corresponde al mismo equipo vinculado al usuario.
+ *
+ * IMPORTANTE (Corrección crítica para iPhone y Android de modelos similares):
+ * - NUNCA se considera "el mismo equipo" solo porque coincidan `coreHardwareId` o `extendedHardwareId`,
+ *   ya que todos los iPhone del mismo tamaño (ej. iPhone 12/13/14 = 390x844@3 | Apple GPU)
+ *   y los Android del mismo modelo/pantalla reportan exactamente el mismo `coreHardwareId` y `extendedHardwareId`.
+ * - La identidad del equipo se valida estrictamente mediante su `deviceToken` criptográfico único (UUID).
  */
 export function isSamePhysicalDevice(
   entry: DeviceBindingEntry,
-  fp: DeviceFingerprintPayload,
-  clientIp?: string
+  fp: DeviceFingerprintPayload
 ): boolean {
-  if (!fp) return false
-
-  // 1. Coincidencia exacta por token persistente del navegador
-  if (fp.deviceToken && entry.deviceTokens.includes(fp.deviceToken)) {
-    return true
-  }
-
-  // 2. Coincidencia por huella extendida de hardware (Modelo + GPU + Pantalla + DPR + Cores)
-  if (
-    fp.extendedHardwareId &&
-    entry.extendedHardwareIds.includes(fp.extendedHardwareId)
-  ) {
-    return true
-  }
-
-  // 3. Coincidencia por huella base multi-navegador del equipo (OS + Pantalla física + ColorDepth + Cores + Touch + Timezone)
-  if (fp.coreHardwareId && entry.coreHardwareId === fp.coreHardwareId) {
-    // Si ambos reportan un modelo físico específico (ej. SM-A546E vs SM-G991B) y son distintos, no es el mismo equipo
-    if (
-      fp.deviceModel &&
-      entry.deviceModel &&
-      fp.deviceModel !== "GENERIC" &&
-      entry.deviceModel !== "GENERIC" &&
-      fp.deviceModel !== entry.deviceModel
-    ) {
-      return false
-    }
-    return true
-  }
-
-  return false
+  if (!fp || !fp.deviceToken) return false
+  return entry.deviceTokens.includes(fp.deviceToken)
 }
 
 /**
- * Busca si el equipo físico actual ya tiene un DNI vinculado (en el mismo navegador o en otro navegador del mismo equipo).
+ * Busca si este navegador/aplicativo específico ya tiene un DNI vinculado.
+ * Solo busca por `deviceToken` único para garantizar CERO cruces entre teléfonos distintos
+ * (incluso si son dos iPhone idénticos o dos Android del mismo modelo en la misma red Wi-Fi).
  */
 export async function findBindingForDevice(
   fp: DeviceFingerprintPayload,
-  clientIp?: string
+  _clientIp?: string
 ): Promise<DeviceBindingEntry | null> {
-  if (!fp || (!fp.deviceToken && !fp.coreHardwareId)) return null
+  const token = fp?.deviceToken?.trim()
+  if (!token) return null
 
-  const map = await loadBindingsMap()
-  const entries = Array.from(map.values())
+  const { byDni, byToken } = await loadBindingsCache()
 
-  // Prioridad 1: Coincidencia exacta por deviceToken
-  if (fp.deviceToken) {
-    const tokenMatch = entries.find((e) => e.deviceTokens.includes(fp.deviceToken))
-    if (tokenMatch) return tokenMatch
+  const matchedDni = byToken.get(token)
+  if (matchedDni) {
+    const entry = byDni.get(matchedDni)
+    if (entry) return entry
   }
 
-  // Prioridad 2: Coincidencia por extendedHardwareId (cuando abre otro navegador basado en el mismo motor o con el mismo modelo/GPU)
-  if (fp.extendedHardwareId) {
-    const extMatches = entries.filter((e) =>
-      e.extendedHardwareIds.includes(fp.extendedHardwareId!)
-    )
-    if (extMatches.length === 1) {
-      await attachBrowserTokenToEntry(map, extMatches[0], fp, clientIp)
-      return extMatches[0]
-    }
-    if (extMatches.length > 1 && clientIp) {
-      const ipMatch = extMatches.find((e) => e.lastIp === clientIp)
-      if (ipMatch) {
-        await attachBrowserTokenToEntry(map, ipMatch, fp, clientIp)
-        return ipMatch
+  // Búsqueda directa en BD en caso de que otra instancia serverless acabe de registrar el token
+  try {
+    const tokRow = await prisma.systemSetting.findUnique({
+      where: { key: `${TOK_KEY_PREFIX}${token}` },
+    })
+    if (tokRow?.value) {
+      const dni = tokRow.value.trim()
+      const dniRow = await prisma.systemSetting.findUnique({
+        where: { key: `${DNI_KEY_PREFIX}${dni}` },
+      })
+      if (dniRow?.value) {
+        const entry = JSON.parse(dniRow.value) as DeviceBindingEntry
+        byDni.set(dni, entry)
+        byToken.set(token, dni)
+        return entry
       }
     }
-  }
+  } catch {}
 
-  // Prioridad 3: Coincidencia por coreHardwareId (invariante entre todos los navegadores del mismo equipo: Chrome, Safari, Edge, Firefox, Samsung Internet, Incógnito)
-  if (fp.coreHardwareId) {
-    const coreMatches = entries.filter((e) => isSamePhysicalDevice(e, fp, clientIp))
-    if (coreMatches.length === 1) {
-      await attachBrowserTokenToEntry(map, coreMatches[0], fp, clientIp)
-      return coreMatches[0]
-    }
-    if (coreMatches.length > 1) {
-      // Si hay más de un equipo del mismo modelo exacto, desempatar por IP de red actual o por el más reciente
-      if (clientIp) {
-        const ipMatch = coreMatches.find((e) => e.lastIp === clientIp)
-        if (ipMatch) {
-          await attachBrowserTokenToEntry(map, ipMatch, fp, clientIp)
-          return ipMatch
-        }
-      }
-      const sorted = [...coreMatches].sort((a, b) =>
-        b.updatedAt.localeCompare(a.updatedAt)
-      )
-      await attachBrowserTokenToEntry(map, sorted[0], fp, clientIp)
-      return sorted[0]
+  for (const entry of byDni.values()) {
+    if (entry.deviceTokens.includes(token)) {
+      byToken.set(token, entry.dni)
+      return entry
     }
   }
 
   return null
 }
 
-async function attachBrowserTokenToEntry(
-  map: Map<string, DeviceBindingEntry>,
-  entry: DeviceBindingEntry,
-  fp: DeviceFingerprintPayload,
-  clientIp?: string
-): Promise<void> {
-  let changed = false
-  if (fp.deviceToken && !entry.deviceTokens.includes(fp.deviceToken)) {
-    entry.deviceTokens = [...entry.deviceTokens.slice(-9), fp.deviceToken]
-    changed = true
-  }
-  if (
-    fp.extendedHardwareId &&
-    !entry.extendedHardwareIds.includes(fp.extendedHardwareId)
-  ) {
-    entry.extendedHardwareIds = [
-      ...entry.extendedHardwareIds.slice(-9),
-      fp.extendedHardwareId,
-    ]
-    changed = true
-  }
-  if (fp.deviceModel && fp.deviceModel !== "GENERIC" && !entry.deviceModel) {
-    entry.deviceModel = fp.deviceModel
-    changed = true
-  }
-  if (clientIp && entry.lastIp !== clientIp) {
-    entry.lastIp = clientIp
-    changed = true
-  }
-  if (changed) {
-    entry.updatedAt = new Date().toISOString()
-    map.set(entry.dni, entry)
-    await persistBindingsMap(map)
-  }
-}
-
 export async function findBindingByDni(dni: string): Promise<DeviceBindingEntry | null> {
   const cleanDni = (dni || "").trim()
   if (!cleanDni) return null
-  const map = await loadBindingsMap()
-  return map.get(cleanDni) || null
+  const { byDni } = await loadBindingsCache()
+  const cached = byDni.get(cleanDni)
+  if (cached) return cached
+
+  try {
+    const row = await prisma.systemSetting.findUnique({
+      where: { key: `${DNI_KEY_PREFIX}${cleanDni}` },
+    })
+    if (row?.value) {
+      const entry = JSON.parse(row.value) as DeviceBindingEntry
+      byDni.set(cleanDni, entry)
+      return entry
+    }
+  } catch {}
+  return null
 }
 
 /**
  * Verifica que:
- * 1) El celular/equipo actual NO esté vinculado al DNI de otra persona.
- * 2) El DNI ingresado NO esté vinculado al celular/equipo de otra persona.
- * Si todo es válido, registra/actualiza el vínculo exclusivo Celular <-> DNI.
+ * 1) Este dispositivo (`deviceToken`) NO esté vinculado al DNI de otra persona.
+ * 2) El DNI ingresado NO esté vinculado al teléfono (`deviceToken`) de otra persona.
+ * Si todo es válido, registra el vínculo exclusivo `deviceToken <-> DNI`.
  */
 export async function verifyAndBindDeviceForUser(params: {
   dni: string
@@ -265,13 +315,11 @@ export async function verifyAndBindDeviceForUser(params: {
   const cleanDni = params.dni.trim()
   const fp = params.fingerprint
 
-  if (!fp || (!fp.deviceToken && !fp.coreHardwareId)) {
+  if (!fp || !fp.deviceToken) {
     return { allowed: true }
   }
 
-  const map = await loadBindingsMap()
-
-  // 1. Verificar si este equipo físico ya está vinculado a OTRO DNI
+  // 1. Verificar si este dispositivo (`deviceToken`) ya está vinculado a OTRO DNI
   const existingForDevice = await findBindingForDevice(fp, params.clientIp)
   if (existingForDevice && existingForDevice.dni !== cleanDni) {
     return {
@@ -283,39 +331,79 @@ export async function verifyAndBindDeviceForUser(params: {
     }
   }
 
-  // 2. Verificar si el DNI ingresado ya está vinculado a OTRO equipo distinto
-  const existingForDni = map.get(cleanDni)
+  // 2. Verificar si el DNI ingresado ya está vinculado a otro dispositivo
+  const existingForDni = await findBindingByDni(cleanDni)
   if (existingForDni) {
-    const sameDevice = isSamePhysicalDevice(existingForDni, fp, params.clientIp)
-    if (!sameDevice) {
+    if (isSamePhysicalDevice(existingForDni, fp)) {
+      // Es exactamente el mismo dispositivo (`deviceToken`)
+      return {
+        allowed: true,
+        boundDni: existingForDni.dni,
+        boundUserName: existingForDni.userName,
+        entry: existingForDni,
+      }
+    }
+
+    // Caso A: Si el vínculo previo se hizo accidentalmente desde una PC Windows/Mac de escritorio
+    // y ahora el colaborador ingresa desde su teléfono celular real (Android/iPhone),
+    // transferir automáticamente el vínculo a su celular real.
+    if (
+      isDesktopScreenProfile(existingForDni.screenProfile) &&
+      isMobileScreenProfile(fp.screenProfile)
+    ) {
+      await unbindDeviceForDni(cleanDni)
+    } else if (
+      // Caso B: En iPhone (iOS), cuando el colaborador abre primero el link en Safari (1 token)
+      // y luego instala la app en su pantalla de inicio ("Agregar a inicio", display-mode: standalone),
+      // iOS crea un contenedor separado para el ícono instalado. Si aún solo tenía 1 token (el de Safari)
+      // y ahora ingresa su propio DNI desde el aplicativo instalado (`isStandalonePwa: true`) con la misma pantalla,
+      // autorizar la vinculación de su aplicativo instalado.
+      fp.isStandalonePwa === true &&
+      existingForDni.deviceTokens.length === 1 &&
+      existingForDni.screenProfile &&
+      fp.screenProfile === existingForDni.screenProfile
+    ) {
+      const updatedEntry: DeviceBindingEntry = {
+        ...existingForDni,
+        deviceTokens: [...existingForDni.deviceTokens, fp.deviceToken],
+        updatedAt: new Date().toISOString(),
+      }
+      await saveAtomicBindingEntry(updatedEntry)
+      return {
+        allowed: true,
+        boundDni: updatedEntry.dni,
+        boundUserName: updatedEntry.userName,
+        entry: updatedEntry,
+      }
+    } else {
       return {
         allowed: false,
         code: "DNI_BOUND_TO_OTHER_DEVICE",
         boundDni: existingForDni.dni,
         boundUserName: existingForDni.userName,
-        message: `🔒 El DNI ${cleanDni} (${params.userName}) ya se encuentra vinculado a su propio teléfono personal. No se permite compartir el DNI para marcar desde otro equipo.`,
+        message: `🔒 El DNI ${cleanDni} (${params.userName}) ya se encuentra vinculado a su teléfono personal registrado. No se permite compartir el DNI ni marcar desde otro dispositivo.`,
       }
-    }
-
-    // Es el mismo equipo (ej. abrió el link desde otro navegador del mismo celular)
-    await attachBrowserTokenToEntry(map, existingForDni, fp, params.clientIp)
-    return {
-      allowed: true,
-      boundDni: existingForDni.dni,
-      boundUserName: existingForDni.userName,
-      entry: existingForDni,
     }
   }
 
-  // 3. Crear nuevo vínculo exclusivo Celular/Equipo <-> DNI
+  // 3. Si la petición viene de una PC Windows/Mac (no celular Android/iOS), permitir validar sin bloquear el celular del trabajador
+  if (isDesktopScreenProfile(fp.screenProfile)) {
+    return {
+      allowed: true,
+      boundDni: cleanDni,
+      boundUserName: params.userName,
+    }
+  }
+
+  // 4. Crear nuevo vínculo exclusivo Celular (`deviceToken`) <-> DNI
   const nowIso = new Date().toISOString()
   const newEntry: DeviceBindingEntry = {
     dni: cleanDni,
     userId: params.userId,
     userName: params.userName,
     role: params.role,
-    deviceTokens: fp.deviceToken ? [fp.deviceToken] : [],
-    coreHardwareId: fp.coreHardwareId,
+    deviceTokens: [fp.deviceToken],
+    coreHardwareId: fp.coreHardwareId || "chw_v2",
     extendedHardwareIds: fp.extendedHardwareId ? [fp.extendedHardwareId] : [],
     deviceModel: fp.deviceModel,
     screenProfile: fp.screenProfile,
@@ -324,8 +412,7 @@ export async function verifyAndBindDeviceForUser(params: {
     updatedAt: nowIso,
   }
 
-  map.set(cleanDni, newEntry)
-  await persistBindingsMap(map)
+  await saveAtomicBindingEntry(newEntry)
 
   return {
     allowed: true,
@@ -341,12 +428,26 @@ export async function verifyAndBindDeviceForUser(params: {
 export async function unbindDeviceForDni(dni: string): Promise<boolean> {
   const cleanDni = (dni || "").trim()
   if (!cleanDni) return false
-  const map = await loadBindingsMap(true)
-  const existed = map.delete(cleanDni)
-  if (existed) {
-    await persistBindingsMap(map)
+
+  const existing = await findBindingByDni(cleanDni)
+  const keysToDelete: string[] = [`${DNI_KEY_PREFIX}${cleanDni}`]
+  if (existing && Array.isArray(existing.deviceTokens)) {
+    for (const tok of existing.deviceTokens) {
+      keysToDelete.push(`${TOK_KEY_PREFIX}${tok}`)
+      cachedDniByToken?.delete(tok)
+    }
   }
-  return existed
+  cachedBindingsByDni?.delete(cleanDni)
+
+  try {
+    const res = await prisma.systemSetting.deleteMany({
+      where: { key: { in: keysToDelete } },
+    })
+    return res.count > 0
+  } catch (err) {
+    console.warn("[unbindDeviceForDni] Error:", err)
+    return false
+  }
 }
 
 /**
@@ -355,24 +456,17 @@ export async function unbindDeviceForDni(dni: string): Promise<boolean> {
 export async function unbindDeviceByFingerprint(
   fp?: DeviceFingerprintPayload | null
 ): Promise<void> {
-  if (!fp) return
-  const map = await loadBindingsMap(true)
-  let changed = false
-  for (const [dni, entry] of map.entries()) {
-    if (isSamePhysicalDevice(entry, fp)) {
-      map.delete(dni)
-      changed = true
-    }
-  }
-  if (changed) {
-    await persistBindingsMap(map)
+  if (!fp || !fp.deviceToken) return
+  const existing = await findBindingForDevice(fp)
+  if (existing) {
+    await unbindDeviceForDni(existing.dni)
   }
 }
 
 export async function getAllDeviceBindings(): Promise<Record<string, DeviceBindingEntry>> {
-  const map = await loadBindingsMap()
+  const { byDni } = await loadBindingsCache(true)
   const result: Record<string, DeviceBindingEntry> = {}
-  for (const [dni, entry] of map.entries()) {
+  for (const [dni, entry] of byDni.entries()) {
     result[dni] = entry
   }
   return result
