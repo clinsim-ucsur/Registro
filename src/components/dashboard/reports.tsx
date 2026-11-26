@@ -10,12 +10,12 @@ import {
   Building2, Users, CheckCircle2, Clock, AlertTriangle, ShieldAlert, Sparkles, Loader2,
   FileDown, Layers, BarChart3, TrendingUp, TrendingDown, Sun, Sunset, Moon, Coffee,
   Award, AlertCircle, FileCode, CheckSquare, Eye, ArrowUpDown, ArrowRight,
-  Sliders, Timer, ShieldCheck, Settings, Check, X, LogOut
+  Sliders, Timer, ShieldCheck, Settings, Check, X, LogOut, LogIn, Edit3, PlusCircle
 } from "lucide-react"
 import { toast } from "sonner"
 import { Role, RecordType, RecordStatus, Shift } from "@prisma/client"
 import { fetchFilteredRecordsAction, type ReportFilterParams } from "@/actions/reports"
-import { regularizeMissingExitAction } from "@/actions/attendance"
+import { regularizeMissingExitAction, regularizeEntryAndExitAction } from "@/actions/attendance"
 import { formatLimaDate, formatLimaTime, limaDayKey, addDaysToKey } from "@/lib/timezone"
 import {
   DEFAULT_OVERTIME_SETTINGS,
@@ -98,11 +98,15 @@ export function DashboardReports({
   campuses,
   initialOvertimeSettings,
   lockedOperationalRole = null,
+  canEditEntryTime = false,
+  users = [],
 }: {
   initialRecords: any[]
   campuses: { id: string; name: string }[]
   initialOvertimeSettings?: OvertimeSettings
   lockedOperationalRole?: "PACIENTE_SIMULADO" | null
+  canEditEntryTime?: boolean
+  users?: any[]
 }) {
   const [records, setRecords] = useState<AttendanceItem[]>(initialRecords)
   const [isPending, startTransition] = useTransition()
@@ -160,6 +164,123 @@ export function DashboardReports({
   const [regExitHHMM, setRegExitHHMM] = useState<string>("12:00")
   const [regExitReason, setRegExitReason] = useState<string>("Olvidó marcar salida")
   const [isSavingRegExit, setIsSavingRegExit] = useState<boolean>(false)
+
+  // Regularización / Edición manual de Hora de Entrada (y Salida) exclusiva para Admin Total y Admin General
+  const [entryEditModalOpen, setEntryEditModalOpen] = useState<boolean>(false)
+  const [editingEntryItem, setEditingEntryItem] = useState<AttendanceItem | null>(null)
+  const [manualUserId, setManualUserId] = useState<string>(users[0]?.id || "")
+  const [manualUserSearch, setManualUserSearch] = useState<string>("")
+  const [manualDateStr, setManualDateStr] = useState<string>(todayKey)
+  const [manualEntryHHMM, setManualEntryHHMM] = useState<string>("07:00")
+  const [manualIncludeExit, setManualIncludeExit] = useState<boolean>(false)
+  const [manualExitHHMM, setManualExitHHMM] = useState<string>("15:00")
+  const [manualStatus, setManualStatus] = useState<RecordStatus>(RecordStatus.A_TIEMPO)
+  const [manualCampusName, setManualCampusName] = useState<string>(campuses[0]?.name || "Campus Villa")
+  const [manualReason, setManualReason] = useState<string>("Regularización manual de entrada")
+  const [isSavingManualEntry, setIsSavingManualEntry] = useState<boolean>(false)
+
+  const openEditEntryTimeModal = (item: AttendanceItem) => {
+    setEditingEntryItem(item)
+    setManualUserId(item.user?.id || "")
+    setManualDateStr(limaDayKey(new Date(item.timestamp)))
+    const entryHHMM = new Intl.DateTimeFormat("es-PE", {
+      timeZone: "America/Lima",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(item.timestamp))
+    setManualEntryHHMM(entryHHMM)
+    setManualIncludeExit(false)
+    setManualExitHHMM("15:00")
+    setManualStatus(item.status || RecordStatus.A_TIEMPO)
+    setManualCampusName(item.campus?.name || campuses[0]?.name || "Campus Villa")
+    setManualReason("Edición manual de hora de ingreso por Admin")
+    setEntryEditModalOpen(true)
+  }
+
+  const openCreateManualEntryExitModal = () => {
+    setEditingEntryItem(null)
+    setManualUserSearch("")
+    setManualUserId(users[0]?.id || "")
+    setManualDateStr(todayKey)
+    setManualEntryHHMM("07:00")
+    setManualIncludeExit(true)
+    setManualExitHHMM("15:00")
+    setManualStatus(RecordStatus.A_TIEMPO)
+    setManualCampusName(campuses[0]?.name || "Campus Villa")
+    setManualReason("Olvidó marcar entrada — Regularización manual")
+    setEntryEditModalOpen(true)
+  }
+
+  const handleConfirmManualEntryExit = async () => {
+    const targetUid = editingEntryItem ? editingEntryItem.user?.id : manualUserId
+    if (!targetUid) {
+      toast.error("Seleccione un colaborador.")
+      return
+    }
+    setIsSavingManualEntry(true)
+    try {
+      const res = await regularizeEntryAndExitAction({
+        userId: targetUid,
+        existingEntryRecordId: editingEntryItem?.id,
+        dateStr: manualDateStr,
+        entryTimeHHMM: manualEntryHHMM,
+        includeExit: manualIncludeExit,
+        exitTimeHHMM: manualIncludeExit ? manualExitHHMM : undefined,
+        status: manualStatus,
+        campusName: manualCampusName,
+        reason: manualReason,
+      })
+
+      if (res.success && res.entryRecord) {
+        toast.success(res.message)
+        const targetUser =
+          editingEntryItem?.user ||
+          users.find((u) => u.id === targetUid) || {
+            id: targetUid,
+            name: "Colaborador",
+            dni: "—",
+            role: Role.TECNICO,
+          }
+
+        const updatedEntryItem: AttendanceItem = {
+          id: res.entryRecord.id,
+          timestamp: res.entryRecord.timestamp,
+          type: res.entryRecord.type,
+          status: res.entryRecord.status,
+          user: targetUser,
+          campus: { id: "", name: res.entryRecord.campusName || manualCampusName },
+          course: res.entryRecord.courseName ? { id: "", name: res.entryRecord.courseName } : null,
+        }
+
+        setRecords((prev) => {
+          let next = editingEntryItem
+            ? prev.map((r) => (r.id === editingEntryItem.id ? updatedEntryItem : r))
+            : [updatedEntryItem, ...prev]
+          if (res.exitRecord) {
+            const exitItem: AttendanceItem = {
+              id: res.exitRecord.id,
+              timestamp: res.exitRecord.timestamp,
+              type: res.exitRecord.type,
+              status: res.exitRecord.status,
+              user: targetUser,
+              campus: { id: "", name: res.exitRecord.campusName || manualCampusName },
+              course: res.exitRecord.courseName ? { id: "", name: res.exitRecord.courseName } : null,
+            }
+            next = [exitItem, ...next]
+          }
+          return next
+        })
+        setEntryEditModalOpen(false)
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error("Error al guardar la hora de ingreso.")
+    } finally {
+      setIsSavingManualEntry(false)
+    }
+  }
 
   // Identificar entradas sin salida en el mismo día (Lima) para cada usuario
   const openEntryRecordIds = useMemo(() => {
@@ -1338,22 +1459,35 @@ export function DashboardReports({
           </div>
 
           {/* Opciones auxiliares según tab */}
-          {activeViewTab === "CONSOLIDADO" && (
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-bold text-slate-400">Ordenar por:</span>
-              <select
-                value={consolidatedSort}
-                onChange={(e) => setConsolidatedSort(e.target.value as any)}
-                className="h-9 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none"
+          <div className="flex flex-wrap items-center gap-2">
+            {canEditEntryTime && (
+              <Button
+                type="button"
+                size="sm"
+                onClick={openCreateManualEntryExitModal}
+                className="h-9 px-3.5 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-xs cursor-pointer flex items-center gap-1.5 shadow-sm"
               >
-                <option value="horasExtras">Más Horas Extras (Contabilizadas)</option>
-                <option value="tardanzas">Más Tardanzas</option>
-                <option value="faltas">Más Faltas</option>
-                <option value="puntualidad">Menor Puntualidad</option>
-                <option value="nombre">Nombre Alfabético</option>
-              </select>
-            </div>
-          )}
+                <PlusCircle size={14} />
+                Regularizar Entrada / Salida
+              </Button>
+            )}
+            {activeViewTab === "CONSOLIDADO" && (
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-slate-400">Ordenar por:</span>
+                <select
+                  value={consolidatedSort}
+                  onChange={(e) => setConsolidatedSort(e.target.value as any)}
+                  className="h-9 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 outline-none"
+                >
+                  <option value="horasExtras">Más Horas Extras (Contabilizadas)</option>
+                  <option value="tardanzas">Más Tardanzas</option>
+                  <option value="faltas">Más Faltas</option>
+                  <option value="puntualidad">Menor Puntualidad</option>
+                  <option value="nombre">Nombre Alfabético</option>
+                </select>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* CONTENIDO TAB 1: MARCACIONES DETALLADAS */}
@@ -1407,6 +1541,16 @@ export function DashboardReports({
                               <span className={`px-2 py-0.5 rounded-md text-[10px] font-black tracking-wider ${r.type === "ENTRADA" ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-700"}`}>
                                 {r.type}
                               </span>
+                              {canEditEntryTime && r.type === "ENTRADA" && (
+                                <button
+                                  type="button"
+                                  onClick={() => openEditEntryTimeModal(r)}
+                                  className="px-2 py-0.5 rounded-md bg-blue-50 hover:bg-blue-100 text-[#1967D2] border border-blue-200 text-[10px] font-black flex items-center gap-1 transition-colors cursor-pointer"
+                                  title="Editar manualmente la hora de ingreso (Exclusivo Admin Total / General)"
+                                >
+                                  <Edit3 size={10} /> Editar Hora Ingreso
+                                </button>
+                              )}
                               {openEntryRecordIds.has(r.id) && (
                                 <button
                                   type="button"
@@ -1804,6 +1948,199 @@ export function DashboardReports({
                   <LogOut size={14} />
                 )}
                 Guardar Salida ({regExitHHMM})
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Exclusivo Admin Total y Admin General: Editar Hora de Ingreso o Regularizar Entrada y Salida */}
+      {canEditEntryTime && entryEditModalOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in-up">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-100 space-y-4">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-100 text-[#1967D2] flex items-center justify-center">
+                  <LogIn size={18} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    {editingEntryItem
+                      ? "Editar Hora de Ingreso Manualmente"
+                      : "Regularizar Entrada y Salida"}
+                  </h3>
+                  <p className="text-xs font-medium text-slate-500">
+                    {editingEntryItem
+                      ? `${editingEntryItem.user?.name} (DNI: ${editingEntryItem.user?.dni})`
+                      : "Exclusivo para Admin Total y Admin General"}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEntryEditModalOpen(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {!editingEntryItem && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-black uppercase tracking-wider text-slate-700 block">
+                    Colaborador
+                  </label>
+                  <Input
+                    placeholder="Buscar por nombre o DNI..."
+                    value={manualUserSearch}
+                    onChange={(e) => {
+                      const q = e.target.value
+                      setManualUserSearch(q)
+                      const found = users.filter(
+                        (u) =>
+                          u.name.toLowerCase().includes(q.toLowerCase()) ||
+                          u.dni.includes(q)
+                      )
+                      if (found.length > 0) setManualUserId(found[0].id)
+                    }}
+                    className="h-9 rounded-xl bg-slate-50 border-slate-200 text-xs font-semibold"
+                  />
+                  <select
+                    value={manualUserId}
+                    onChange={(e) => setManualUserId(e.target.value)}
+                    className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                  >
+                    {users
+                      .filter(
+                        (u) =>
+                          !manualUserSearch.trim() ||
+                          u.name.toLowerCase().includes(manualUserSearch.toLowerCase()) ||
+                          u.dni.includes(manualUserSearch)
+                      )
+                      .map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name} (DNI: {u.dni})
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                    Fecha
+                  </label>
+                  <Input
+                    type="date"
+                    value={manualDateStr}
+                    onChange={(e) => setManualDateStr(e.target.value)}
+                    className="h-11 rounded-xl bg-slate-50 border-slate-200 font-bold text-slate-800 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                    Hora de Entrada
+                  </label>
+                  <Input
+                    type="time"
+                    value={manualEntryHHMM}
+                    onChange={(e) => setManualEntryHHMM(e.target.value)}
+                    className="h-11 rounded-xl bg-slate-50 border-slate-200 font-black text-slate-900 text-base"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                    Estado de Ingreso
+                  </label>
+                  <select
+                    value={manualStatus}
+                    onChange={(e) => setManualStatus(e.target.value as RecordStatus)}
+                    className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                  >
+                    <option value="A_TIEMPO">A Tiempo</option>
+                    <option value="TARDANZA">Tardanza</option>
+                    <option value="EXCEPCION">Excepción</option>
+                    <option value="FALTA">Falta</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                    Sede
+                  </label>
+                  <select
+                    value={manualCampusName}
+                    onChange={(e) => setManualCampusName(e.target.value)}
+                    className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                  >
+                    {campuses.map((c) => (
+                      <option key={c.id} value={c.name}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                <label className="flex items-center gap-2 text-xs font-black text-slate-800 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={manualIncludeExit}
+                    onChange={(e) => setManualIncludeExit(e.target.checked)}
+                    className="rounded border-slate-300 text-[#1967D2] focus:ring-[#1967D2]"
+                  />
+                  <span>Registrar también la Hora de Salida</span>
+                </label>
+                {manualIncludeExit && (
+                  <Input
+                    type="time"
+                    value={manualExitHHMM}
+                    onChange={(e) => setManualExitHHMM(e.target.value)}
+                    className="h-10 rounded-xl bg-white border-slate-200 font-black text-slate-900 text-sm"
+                  />
+                )}
+              </div>
+
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                  Observación / Motivo (Auditoría)
+                </label>
+                <Input
+                  value={manualReason}
+                  onChange={(e) => setManualReason(e.target.value)}
+                  placeholder="Ej. Olvidó marcar entrada"
+                  className="h-10 rounded-xl bg-slate-50 border-slate-200 text-xs font-semibold"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isSavingManualEntry}
+                onClick={() => setEntryEditModalOpen(false)}
+                className="h-10 px-4 rounded-xl text-xs font-bold cursor-pointer"
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                disabled={isSavingManualEntry || !manualEntryHHMM}
+                onClick={handleConfirmManualEntryExit}
+                className="h-10 px-5 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-xs cursor-pointer flex items-center gap-1.5"
+              >
+                {isSavingManualEntry ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <LogIn size={14} />
+                )}
+                Guardar ({manualEntryHHMM})
               </Button>
             </div>
           </div>

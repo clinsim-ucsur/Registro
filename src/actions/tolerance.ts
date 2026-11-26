@@ -352,3 +352,90 @@ export async function seedDefaultToleranceRuleAction() {
     return { success: false, message: error.message || "Error al inicializar la regla predeterminada." }
   }
 }
+
+/**
+ * Obtiene el mapa de reglas específicas y liberaciones fuera de hora por Técnico.
+ */
+export async function getTechnicianCustomRulesAction() {
+  try {
+    const { getTechnicianCustomRulesMap } = await import("@/lib/tech-custom-rules")
+    const map = await getTechnicianCustomRulesMap(true)
+    return { success: true, map }
+  } catch (error: any) {
+    return { success: false, map: {} }
+  }
+}
+
+/**
+ * Libera manualmente a un técnico para ingresar fuera de hora o le asigna una regla/horario específico.
+ */
+export async function saveTechnicianCustomRuleAction(params: {
+  userId: string
+  dni: string
+  userName: string
+  freeOutOfHours: boolean
+  customRuleId?: string | null
+  customEntryTime?: string | null
+  customGraceMinutes?: number | null
+  customLateMinutes?: number | null
+  notes?: string | null
+}) {
+  try {
+    const session = await requireAdmin()
+    const { upsertTechnicianCustomRule } = await import("@/lib/tech-custom-rules")
+    const { invalidateAttendanceDirectoryCache } = await import("@/actions/attendance")
+
+    const saved = await upsertTechnicianCustomRule({
+      userId: params.userId,
+      dni: params.dni,
+      userName: params.userName,
+      freeOutOfHours: Boolean(params.freeOutOfHours),
+      customRuleId: params.customRuleId || null,
+      customEntryTime: params.customEntryTime || null,
+      customGraceMinutes:
+        params.customGraceMinutes != null ? Number(params.customGraceMinutes) : null,
+      customLateMinutes:
+        params.customLateMinutes != null ? Number(params.customLateMinutes) : null,
+      notes: params.notes || null,
+    })
+
+    await invalidateAttendanceDirectoryCache()
+
+    try {
+      const { recordAuditLog } = await import("@/lib/audit-log")
+      await recordAuditLog({
+        actorName: session.name,
+        actorDni: session.dni,
+        actorRole: session.role,
+        category: "SCHEDULES",
+        action: params.freeOutOfHours
+          ? "Liberación de Técnico para Ingreso Fuera de Hora"
+          : "Configuración de Regla Específica para Técnico",
+        target: `${params.userName} (${params.dni})`,
+        details: params.freeOutOfHours
+          ? `Técnico liberado manualmente para registrar asistencia fuera de hora sin restricción.${params.customEntryTime ? ` Hora personalizada: ${params.customEntryTime}.` : ""}`
+          : params.customEntryTime || params.customRuleId
+          ? `Regla específica asignada al técnico (${params.customEntryTime || params.customRuleId}).`
+          : "Se restauró la regla estándar del turno para el técnico.",
+      })
+    } catch {}
+
+    safeRevalidate()
+    return {
+      success: true,
+      saved,
+      message: params.freeOutOfHours
+        ? `🔓 ${params.userName} ha sido liberado para ingresar fuera de hora.`
+        : params.customEntryTime || params.customRuleId
+        ? `✓ Regla específica guardada para ${params.userName}.`
+        : `Se restauró el horario estándar para ${params.userName}.`,
+    }
+  } catch (error: any) {
+    console.error("[saveTechnicianCustomRuleAction]", error)
+    return {
+      success: false,
+      message: error.message || "Error al guardar la configuración del técnico.",
+    }
+  }
+}
+

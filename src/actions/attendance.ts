@@ -575,7 +575,13 @@ export async function validateUserAction(
     let dailyProgram: UserDailyProgramSummary | null = null
 
     if (effectiveRole === Role.TECNICO) {
-      if (todaySched) {
+      const { getTechnicianCustomRule } = await import("@/lib/tech-custom-rules")
+      const techCustom = await getTechnicianCustomRule(user.id)
+      const customLinkedRule = techCustom?.customRuleId
+        ? allRules.find((r: any) => r.id === techCustom.customRuleId)
+        : null
+
+      if (todaySched && !techCustom?.customEntryTime && !customLinkedRule) {
         let expectedTime = todaySched.expectedEntryTime
         const def = DEFAULT_SHIFT_TIMES[todaySched.shift] || DEFAULT_SHIFT_TIMES.MANANA
         if (todaySched.shift === Shift.INTERMEDIO && expectedTime === "13:00") {
@@ -594,23 +600,29 @@ export async function validateUserAction(
           source: "SCHEDULE",
         }
       } else {
-        const defaultShift = user.defaultShift || Shift.MANANA
+        const defaultShift: Shift = (todaySched?.shift ||
+          customLinkedRule?.shift ||
+          user.defaultShift ||
+          Shift.MANANA) as Shift
         const def = DEFAULT_SHIFT_TIMES[defaultShift] || DEFAULT_SHIFT_TIMES.MANANA
-        const techRules = allRules.filter((r: any) => r.role === Role.TECNICO)
+        const techRules = allRules.filter((r: any) => r.role === Role.TECNICO || r.role === null)
         const matchingRule =
+          customLinkedRule ||
           techRules.find(
             (r: any) =>
               (r.shift === defaultShift || r.shift === null) &&
               (r.campusId === user.campusId || r.campusId === null)
-          ) || null
+          ) ||
+          null
 
-        const expectedEntry = matchingRule?.expectedEntryTime || def.entry
+        const expectedEntry =
+          techCustom?.customEntryTime || matchingRule?.expectedEntryTime || def.entry
         technicianAssignment = {
-          campusName: user.campus?.name || "Campus Villa",
+          campusName: todaySched?.campus?.name || user.campus?.name || "Campus Villa",
           shift: defaultShift,
           expectedEntryTime: expectedEntry,
           expectedExitTime: calculateExpectedExitTime(expectedEntry, 9),
-          source: "DEFAULT_PROFILE",
+          source: techCustom?.customEntryTime || customLinkedRule ? "SCHEDULE" : "DEFAULT_PROFILE",
         }
       }
     } else if (effectiveRole === Role.DOCENTE || effectiveRole === Role.PACIENTE_SIMULADO) {
@@ -1201,13 +1213,20 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
 
         const defShift = DEFAULT_SHIFT_TIMES[userShift] || DEFAULT_SHIFT_TIMES.MANANA
 
-        // Filtrar desde reglas en memoria
+        // Filtrar desde reglas en memoria (incluye reglas de TECNICO y reglas Globales sin rol específico)
         const shiftRules = allRules.filter(
           (r: any) =>
-            r.role === Role.TECNICO && (r.campusId === finalCampusId || r.campusId === null)
+            (r.role === Role.TECNICO || r.role === null) &&
+            (r.campusId === finalCampusId || r.campusId === null)
         )
 
+        const { getTechnicianCustomRule } = await import("@/lib/tech-custom-rules")
+        const techCustomOverride = await getTechnicianCustomRule(user.id)
+
         const matchingShiftRules = shiftRules.filter((r: any) => {
+          if (techCustomOverride?.customRuleId && r.id === techCustomOverride.customRuleId) {
+            return true
+          }
           if (r.shift) {
             if (r.shift === userShift) return true
             if (currentDayOfWeek === 0 && userShift === Shift.MANANA && r.shift === Shift.INTERMEDIO) return true
@@ -1221,25 +1240,35 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
         })
 
         const rulesForToday = matchingShiftRules.filter((r: any) => {
+          if (techCustomOverride?.customRuleId && r.id === techCustomOverride.customRuleId) {
+            return true
+          }
           if (!r.daysOfWeek || r.daysOfWeek.trim() === "" || r.daysOfWeek === "ALL") return true
           const days = r.daysOfWeek.split(",").map((d: string) => Number(d.trim()))
           return days.includes(currentDayOfWeek)
         })
 
         let matchedShiftRule = null
-        const candidateRules = rulesForToday.length > 0 ? rulesForToday : matchingShiftRules
-
-        if (candidateRules.length > 0) {
-          candidateRules.sort((a: any, b: any) => {
-            const diffA = Math.abs(getShiftDiffInMinutes(recordTimestamp, a.expectedEntryTime).diffInMinutes)
-            const diffB = Math.abs(getShiftDiffInMinutes(recordTimestamp, b.expectedEntryTime).diffInMinutes)
-            return diffA - diffB
-          })
-          matchedShiftRule = candidateRules[0]
+        if (techCustomOverride?.customRuleId) {
+          matchedShiftRule = allRules.find((r: any) => r.id === techCustomOverride.customRuleId) || null
+        }
+        if (!matchedShiftRule) {
+          const candidateRules = rulesForToday.length > 0 ? rulesForToday : matchingShiftRules
+          if (candidateRules.length > 0) {
+            candidateRules.sort((a: any, b: any) => {
+              const diffA = Math.abs(getShiftDiffInMinutes(recordTimestamp, a.expectedEntryTime).diffInMinutes)
+              const diffB = Math.abs(getShiftDiffInMinutes(recordTimestamp, b.expectedEntryTime).diffInMinutes)
+              return diffA - diffB
+            })
+            matchedShiftRule = candidateRules[0]
+          }
         }
 
-        let resolvedEntryTime = matchedShiftRule?.expectedEntryTime ?? defShift.entry
-        if (scheduledShift) {
+        let resolvedEntryTime =
+          techCustomOverride?.customEntryTime ||
+          matchedShiftRule?.expectedEntryTime ||
+          defShift.entry
+        if (!techCustomOverride?.customEntryTime && !techCustomOverride?.customRuleId && scheduledShift) {
           let sTime = scheduledShift.expectedEntryTime
           if (userShift === Shift.INTERMEDIO && sTime === "13:00") {
             sTime = resolvedEntryTime || defShift.entry
@@ -1251,19 +1280,28 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           resolvedEntryTime = sTime
         }
 
-        const allTechRulesDisabledEarly = shiftRules.length > 0 && shiftRules.every((r: any) => r.enableEarlyTolerance === false)
-        const isEarlyToleranceDisabled = allTechRulesDisabledEarly
-          || (matchedShiftRule != null && matchedShiftRule.enableEarlyTolerance === false)
-          || scheduledShift?.enableEarlyTolerance === false
+        const allTechRulesDisabledLate =
+          shiftRules.length > 0 && shiftRules.every((r: any) => r.enableLateTolerance === false)
+        const isLateToleranceDisabled =
+          Boolean(techCustomOverride?.freeOutOfHours) ||
+          allTechRulesDisabledLate ||
+          (matchedShiftRule != null && matchedShiftRule.enableLateTolerance === false) ||
+          scheduledShift?.enableLateTolerance === false
 
-        const allTechRulesDisabledLate = shiftRules.length > 0 && shiftRules.every((r: any) => r.enableLateTolerance === false)
-        const isLateToleranceDisabled = allTechRulesDisabledLate
-          || (matchedShiftRule != null && matchedShiftRule.enableLateTolerance === false)
-          || scheduledShift?.enableLateTolerance === false
-
-        const earlyMins = matchedShiftRule?.earlyEntryToleranceMinutes ?? scheduledShift?.earlyEntryToleranceMinutes ?? defShift.early
-        const graceMins = matchedShiftRule?.gracePeriodMinutes ?? scheduledShift?.gracePeriodMinutes ?? defShift.grace
-        const lateMins = matchedShiftRule?.lateToleranceMinutes ?? scheduledShift?.lateToleranceMinutes ?? defShift.late
+        const earlyMins =
+          matchedShiftRule?.earlyEntryToleranceMinutes ??
+          scheduledShift?.earlyEntryToleranceMinutes ??
+          defShift.early
+        const graceMins =
+          techCustomOverride?.customGraceMinutes ??
+          matchedShiftRule?.gracePeriodMinutes ??
+          scheduledShift?.gracePeriodMinutes ??
+          defShift.grace
+        const lateMins =
+          techCustomOverride?.customLateMinutes ??
+          matchedShiftRule?.lateToleranceMinutes ??
+          scheduledShift?.lateToleranceMinutes ??
+          defShift.late
 
         techRule = {
           expectedEntryTime: resolvedEntryTime,
@@ -1271,18 +1309,14 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
           gracePeriodMinutes: graceMins,
           lateToleranceMinutes: lateMins,
           shiftName: userShift,
-          enableEarlyTolerance: !isEarlyToleranceDisabled,
+          // Sin bloqueo de límite de hora para permitir registrar asistencia en cualquier momento
+          enableEarlyTolerance: false,
           enableLateTolerance: !isLateToleranceDisabled,
         }
 
-        const earlyCheck = validateEarlyEntry(recordTimestamp, techRule)
-        if (!earlyCheck.allowed) {
-          return {
-            success: false,
-            message: earlyCheck.message || "No se permite marcar con tanta anticipación para su turno asignado.",
-          }
-        }
-        status = calculateStatusFromRule(recordTimestamp, techRule)
+        status = techCustomOverride?.freeOutOfHours
+          ? RecordStatus.A_TIEMPO
+          : calculateStatusFromRule(recordTimestamp, techRule)
       } else {
         const matchedRule = findApplicableToleranceRule(allRules, finalCampusId || undefined, data.role)
         if (resolvedExpectedEntryTime) {
@@ -1291,26 +1325,15 @@ export async function registerAttendanceAction(data: RegisterAttendanceData) {
             earlyEntryToleranceMinutes: matchedRule?.earlyEntryToleranceMinutes ?? 30,
             gracePeriodMinutes: matchedRule?.gracePeriodMinutes ?? 10,
             lateToleranceMinutes: matchedRule?.lateToleranceMinutes ?? 30,
-            enableEarlyTolerance: matchedRule?.enableEarlyTolerance ?? false,
+            enableEarlyTolerance: false,
             enableLateTolerance: matchedRule?.enableLateTolerance ?? true,
-          }
-          const earlyCheck = validateEarlyEntry(recordTimestamp, dynamicRule)
-          if (!earlyCheck.allowed) {
-            return {
-              success: false,
-              message: earlyCheck.message || "No se permite marcar con tanta anticipación.",
-            }
           }
           status = calculateStatusFromRule(recordTimestamp, dynamicRule)
         } else if (matchedRule) {
-          const earlyCheck = validateEarlyEntry(recordTimestamp, matchedRule)
-          if (!earlyCheck.allowed) {
-            return {
-              success: false,
-              message: earlyCheck.message || "No se permite marcar con tanta anticipación.",
-            }
-          }
-          status = calculateStatusFromRule(recordTimestamp, matchedRule)
+          status = calculateStatusFromRule(recordTimestamp, {
+            ...matchedRule,
+            enableEarlyTolerance: false,
+          })
         } else {
           status = RecordStatus.A_TIEMPO
         }
@@ -1510,6 +1533,19 @@ export async function regularizeMissingExitAction(params: RegularizeExitParams):
       const session = await getAdminSession()
       if (!session) {
         return { success: false, message: "No autorizado. Inicie sesión como administrador." }
+      }
+      if (params.createEntryIfMissing) {
+        const canEditEntry =
+          session.role === "SUPER_ADMIN" ||
+          session.adminTier === "SUPER_ADMIN" ||
+          session.adminTier === "ADMIN_GLOBAL"
+        if (!canEditEntry) {
+          return {
+            success: false,
+            message:
+              "Solo el Admin Total (Super Admin) y el Admin General están autorizados para registrar o editar manualmente la hora de entrada.",
+          }
+        }
       }
       actorName = session.name || "Administrador"
       actorDni = session.dni || "—"
@@ -1762,6 +1798,345 @@ export async function regularizeMissingExitAction(params: RegularizeExitParams):
     return {
       success: false,
       message: "Ocurrió un error al regularizar la marcación de salida.",
+    }
+  }
+}
+
+// ------------------------------------------------------------------
+// 6. REGULARIZACIÓN Y EDICIÓN MANUAL DE HORA DE ENTRADA Y SALIDA
+//    (EXCLUSIVO PARA ADMIN TOTAL / SUPER_ADMIN Y ADMIN GENERAL / ADMIN_GLOBAL)
+// ------------------------------------------------------------------
+export interface RegularizeEntryExitParams {
+  userId: string
+  entryTimeHHMM: string // Formato "HH:mm", ej. "07:00"
+  exitTimeHHMM?: string // Formato "HH:mm" opcional, ej. "15:00"
+  includeExit?: boolean // true si se desea registrar/regularizar también la hora de salida
+  dateStr?: string // Formato "YYYY-MM-DD" en hora Lima (por defecto hoy)
+  existingEntryRecordId?: string // Si se está editando la hora de una ENTRADA ya existente
+  status?: RecordStatus // Estado de la entrada (por defecto A_TIEMPO)
+  campusName?: string | null
+  courseName?: string | null
+  reason?: string
+  skipAuthForTests?: boolean
+  mockAdminTierForTests?: "SUPER_ADMIN" | "ADMIN_GLOBAL" | "ADMIN_SEDE" | "COORDINADOR_PACIENTES"
+}
+
+export async function regularizeEntryAndExitAction(
+  params: RegularizeEntryExitParams
+): Promise<{
+  success: boolean
+  message: string
+  entryRecord?: {
+    id: string
+    type: RecordType
+    status: RecordStatus
+    timestamp: string
+    userId: string
+    campusName: string | null
+    courseName: string | null
+  }
+  exitRecord?: {
+    id: string
+    type: RecordType
+    status: RecordStatus
+    timestamp: string
+    userId: string
+    campusName: string | null
+    courseName: string | null
+  }
+}> {
+  try {
+    let actorName = "Administrador"
+    let actorDni = "—"
+    let actorRole = "SUPER_ADMIN"
+
+    if (params.skipAuthForTests) {
+      if (
+        params.mockAdminTierForTests &&
+        params.mockAdminTierForTests !== "SUPER_ADMIN" &&
+        params.mockAdminTierForTests !== "ADMIN_GLOBAL"
+      ) {
+        return {
+          success: false,
+          message:
+            "Acceso denegado: Solo el Admin Total (Super Admin) y el Admin General pueden editar o regularizar manualmente la hora de ingreso.",
+        }
+      }
+    } else {
+      const { getAdminSession } = await import("@/lib/session")
+      const session = await getAdminSession()
+      if (!session) {
+        return { success: false, message: "No autorizado. Inicie sesión como administrador." }
+      }
+      const isTotalOrGeneralAdmin =
+        session.role === "SUPER_ADMIN" ||
+        session.adminTier === "SUPER_ADMIN" ||
+        session.adminTier === "ADMIN_GLOBAL"
+      if (!isTotalOrGeneralAdmin) {
+        return {
+          success: false,
+          message:
+            "Acceso denegado: Solo el Admin Total (Super Admin) y el Admin General pueden editar o regularizar manualmente la hora de ingreso.",
+        }
+      }
+      actorName = session.name || "Administrador"
+      actorDni = session.dni || "—"
+      actorRole = session.role
+    }
+
+    const cleanEntryHHMM = (params.entryTimeHHMM || "").trim()
+    const entryMatch = cleanEntryHHMM.match(/^(\d{1,2}):(\d{2})$/)
+    if (!entryMatch) {
+      return {
+        success: false,
+        message: "Ingrese una hora de entrada válida en formato HH:mm (ej. 07:00).",
+      }
+    }
+    const entryHour = Number(entryMatch[1])
+    const entryMin = Number(entryMatch[2])
+    if (entryHour < 0 || entryHour > 23 || entryMin < 0 || entryMin > 59) {
+      return {
+        success: false,
+        message: "La hora de entrada debe estar entre las 00:00 y las 23:59.",
+      }
+    }
+    const paddedEntryHHMM = `${String(entryHour).padStart(2, "0")}:${String(entryMin).padStart(2, "0")}`
+
+    let paddedExitHHMM: string | null = null
+    if (params.includeExit && params.exitTimeHHMM?.trim()) {
+      const exitMatch = params.exitTimeHHMM.trim().match(/^(\d{1,2}):(\d{2})$/)
+      if (!exitMatch) {
+        return {
+          success: false,
+          message: "Ingrese una hora de salida válida en formato HH:mm (ej. 15:00).",
+        }
+      }
+      const exitH = Number(exitMatch[1])
+      const exitM = Number(exitMatch[2])
+      if (exitH < 0 || exitH > 23 || exitM < 0 || exitM > 59) {
+        return {
+          success: false,
+          message: "La hora de salida debe estar entre las 00:00 y las 23:59.",
+        }
+      }
+      paddedExitHHMM = `${String(exitH).padStart(2, "0")}:${String(exitM).padStart(2, "0")}`
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: params.userId },
+      include: { campus: true },
+    })
+    if (!user) {
+      return { success: false, message: "El colaborador seleccionado no existe." }
+    }
+
+    let existingEntry: {
+      id: string
+      timestamp: Date
+      status: RecordStatus
+      campusId: string | null
+      courseId: string | null
+      campus?: { name: string } | null
+      course?: { name: string } | null
+    } | null = null
+
+    if (params.existingEntryRecordId) {
+      existingEntry = await prisma.attendanceRecord.findUnique({
+        where: { id: params.existingEntryRecordId },
+        include: {
+          campus: { select: { name: true } },
+          course: { select: { name: true } },
+        },
+      })
+    }
+
+    let targetDateStr = params.dateStr?.trim()
+    if (!targetDateStr && existingEntry) {
+      targetDateStr = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Lima",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(existingEntry.timestamp)
+    }
+    if (!targetDateStr) {
+      targetDateStr = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Lima",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(new Date())
+    }
+
+    const entryTimestamp = new Date(`${targetDateStr}T${paddedEntryHHMM}:00-05:00`)
+    let exitTimestamp: Date | null = null
+    if (paddedExitHHMM) {
+      exitTimestamp = new Date(`${targetDateStr}T${paddedExitHHMM}:00-05:00`)
+      if (exitTimestamp <= entryTimestamp) {
+        return {
+          success: false,
+          message: `La hora de salida (${paddedExitHHMM}) debe ser posterior a la hora de entrada (${paddedEntryHHMM}).`,
+        }
+      }
+    }
+
+    const allCampuses = await getCachedCampusesList()
+    const allCourses = await getCachedCoursesList()
+
+    const resolvedCampusName =
+      params.campusName?.trim() ||
+      existingEntry?.campus?.name ||
+      user.campus?.name ||
+      "Campus Villa"
+
+    let finalCampusId: string | null = existingEntry?.campusId ?? user.campusId ?? null
+    if (resolvedCampusName) {
+      const foundCampus = allCampuses.find(
+        (c) => c.name.toLowerCase() === resolvedCampusName.toLowerCase()
+      )
+      if (foundCampus?.id) {
+        finalCampusId = foundCampus.id
+      }
+    }
+
+    const resolvedCourseName =
+      params.courseName?.trim() || existingEntry?.course?.name || null
+    let finalCourseId: string | null = existingEntry?.courseId ?? null
+    if (resolvedCourseName) {
+      const foundCourse = allCourses.find(
+        (c) => c.name.toLowerCase() === resolvedCourseName.toLowerCase()
+      )
+      if (foundCourse?.id) {
+        finalCourseId = foundCourse.id
+      } else {
+        let course = await prisma.course.findUnique({ where: { name: resolvedCourseName } })
+        if (!course) {
+          course = await prisma.course.create({ data: { name: resolvedCourseName } })
+          cachedCourses = null
+        }
+        finalCourseId = course.id
+      }
+    }
+
+    const finalStatus = params.status || existingEntry?.status || RecordStatus.A_TIEMPO
+
+    let savedEntry: {
+      id: string
+      type: RecordType
+      status: RecordStatus
+      timestamp: Date
+    }
+
+    if (existingEntry) {
+      savedEntry = await prisma.attendanceRecord.update({
+        where: { id: existingEntry.id },
+        data: {
+          timestamp: entryTimestamp,
+          status: finalStatus,
+          campusId: finalCampusId,
+          courseId: finalCourseId,
+        },
+      })
+    } else {
+      savedEntry = await prisma.attendanceRecord.create({
+        data: {
+          userId: user.id,
+          type: RecordType.ENTRADA,
+          status: finalStatus,
+          campusId: finalCampusId,
+          courseId: finalCourseId,
+          timestamp: entryTimestamp,
+          isOfflineSync: false,
+        },
+      })
+    }
+
+    let savedExit: {
+      id: string
+      type: RecordType
+      status: RecordStatus
+      timestamp: Date
+    } | null = null
+
+    if (exitTimestamp) {
+      savedExit = await prisma.attendanceRecord.create({
+        data: {
+          userId: user.id,
+          type: RecordType.SALIDA,
+          status: RecordStatus.A_TIEMPO,
+          campusId: finalCampusId,
+          courseId: finalCourseId,
+          timestamp: exitTimestamp,
+          isOfflineSync: false,
+        },
+      })
+    }
+
+    cachedDirectory = null
+
+    if (!params.skipAuthForTests) {
+      try {
+        const { recordAuditLog } = await import("@/lib/audit-log")
+        const actionTitle = existingEntry
+          ? "Edición Manual de Hora de Entrada"
+          : savedExit
+          ? "Regularización Manual de Entrada y Salida"
+          : "Regularización Manual de Entrada"
+        await recordAuditLog({
+          actorName,
+          actorDni,
+          actorRole,
+          category: "SCHEDULES",
+          action: actionTitle,
+          target: `${user.name} (DNI: ${user.dni})`,
+          details: `${actionTitle} (${targetDateStr}): Entrada ${paddedEntryHHMM}${
+            paddedExitHHMM ? ` → Salida ${paddedExitHHMM}` : ""
+          } en ${resolvedCampusName}${
+            resolvedCourseName ? ` • ${resolvedCourseName}` : ""
+          }${params.reason ? ` — Motivo: ${params.reason}` : ""}.`,
+        })
+      } catch {}
+    }
+
+    try {
+      revalidatePath("/dashboard")
+    } catch {}
+
+    return {
+      success: true,
+      message: existingEntry
+        ? `✓ Hora de entrada actualizada a ${paddedEntryHHMM}${
+            paddedExitHHMM ? ` y salida registrada a ${paddedExitHHMM}` : ""
+          } para ${user.name}.`
+        : `✓ Entrada regularizada a las ${paddedEntryHHMM}${
+            paddedExitHHMM ? ` y salida a las ${paddedExitHHMM}` : ""
+          } para ${user.name}.`,
+      entryRecord: {
+        id: savedEntry.id,
+        type: savedEntry.type,
+        status: savedEntry.status,
+        timestamp: savedEntry.timestamp.toISOString(),
+        userId: user.id,
+        campusName: resolvedCampusName,
+        courseName: resolvedCourseName,
+      },
+      exitRecord: savedExit
+        ? {
+            id: savedExit.id,
+            type: savedExit.type,
+            status: savedExit.status,
+            timestamp: savedExit.timestamp.toISOString(),
+            userId: user.id,
+            campusName: resolvedCampusName,
+            courseName: resolvedCourseName,
+          }
+        : undefined,
+    }
+  } catch (error) {
+    console.error("[regularizeEntryAndExitAction] Error:", error)
+    return {
+      success: false,
+      message: "Ocurrió un error al regularizar o editar la hora de entrada.",
     }
   }
 }

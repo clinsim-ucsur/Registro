@@ -1622,6 +1622,104 @@ async function main() {
     "Liberación Admin: Permite al Administrador desvincular el equipo si el colaborador renueva su teléfono"
   )
 
+  // =========================================================================
+  // 20. LIBERACIÓN DE TÉCNICOS FUERA DE HORA, REGLAS ESPECÍFICAS Y EDICIÓN DE ENTRADA (SOLO ADMIN TOTAL / GENERAL)
+  // =========================================================================
+  console.log("\n[TEST 20] Probando Liberación de Técnicos Fuera de Hora y Regularización de Entrada (Exclusivo Admin Total/General)...")
+
+  const {
+    upsertTechnicianCustomRule,
+    getTechnicianCustomRule,
+    removeTechnicianCustomRule,
+  } = await import("../src/lib/tech-custom-rules")
+  const { regularizeEntryAndExitAction } = await import("../src/actions/attendance")
+
+  // 20.1 Liberación manual de técnico fuera de hora y regla específica por técnico
+  await upsertTechnicianCustomRule({
+    userId: "tech_test_custom_1",
+    dni: "88000001",
+    userName: "Técnico Prueba Especial",
+    freeOutOfHours: true,
+    customEntryTime: "07:30",
+    customGraceMinutes: 15,
+    customLateMinutes: 30,
+  })
+  const loadedTechCustom = await getTechnicianCustomRule("tech_test_custom_1")
+  assert(
+    loadedTechCustom !== null &&
+      loadedTechCustom.freeOutOfHours === true &&
+      loadedTechCustom.customEntryTime === "07:30",
+    "Regla Específica y Liberación por Técnico: Permite liberar a un técnico para ingresar fuera de hora o asignarle un horario específico"
+  )
+  await removeTechnicianCustomRule("tech_test_custom_1")
+
+  // 20.2 Bloqueo a ADMIN_SEDE y COORDINADOR_PACIENTES al intentar editar/regularizar hora de ENTRADA
+  if (samplePatient) {
+    const deniedSedeAdmin = await regularizeEntryAndExitAction({
+      userId: samplePatient.id,
+      entryTimeHHMM: "07:00",
+      dateStr: "2026-01-16",
+      skipAuthForTests: true,
+      mockAdminTierForTests: "ADMIN_SEDE",
+    })
+    const deniedCoordPacientes = await regularizeEntryAndExitAction({
+      userId: samplePatient.id,
+      entryTimeHHMM: "07:00",
+      dateStr: "2026-01-16",
+      skipAuthForTests: true,
+      mockAdminTierForTests: "COORDINADOR_PACIENTES",
+    })
+    assert(
+      deniedSedeAdmin.success === false && deniedCoordPacientes.success === false,
+      "Control de Acceso en Edición de Entrada: Bloquea a Admin por Sede y Coordinador de Pacientes para editar/crear hora de entrada"
+    )
+
+    // 20.3 Autorización a SUPER_ADMIN (Admin Total) y ADMIN_GLOBAL (Admin General) para regularizar Entrada y Salida y editar Entrada
+    const allowedGeneralAdmin = await regularizeEntryAndExitAction({
+      userId: samplePatient.id,
+      entryTimeHHMM: "07:05",
+      includeExit: true,
+      exitTimeHHMM: "12:00",
+      dateStr: "2026-01-16",
+      campusName: "Campus Villa",
+      reason: "Prueba automatizada de regularización de entrada y salida",
+      skipAuthForTests: true,
+      mockAdminTierForTests: "ADMIN_GLOBAL",
+    })
+
+    const editedEntryBySuperAdmin = allowedGeneralAdmin.entryRecord
+      ? await regularizeEntryAndExitAction({
+          userId: samplePatient.id,
+          existingEntryRecordId: allowedGeneralAdmin.entryRecord.id,
+          entryTimeHHMM: "06:58",
+          dateStr: "2026-01-16",
+          campusName: "Campus Villa",
+          reason: "Edición de hora de ingreso por Super Admin",
+          skipAuthForTests: true,
+          mockAdminTierForTests: "SUPER_ADMIN",
+        })
+      : { success: false }
+
+    assert(
+      allowedGeneralAdmin.success === true &&
+        Boolean(allowedGeneralAdmin.entryRecord?.id) &&
+        Boolean(allowedGeneralAdmin.exitRecord?.id) &&
+        editedEntryBySuperAdmin.success === true,
+      "Regularización y Edición de Entrada (Admin Total y Admin General): Permite regularizar entrada+salida y editar la hora de ingreso"
+    )
+
+    // Limpiar registros temporales de prueba
+    const idsToClean = [
+      ...(allowedGeneralAdmin.entryRecord ? [allowedGeneralAdmin.entryRecord.id] : []),
+      ...(allowedGeneralAdmin.exitRecord ? [allowedGeneralAdmin.exitRecord.id] : []),
+    ]
+    if (idsToClean.length > 0) {
+      await prisma.attendanceRecord.deleteMany({
+        where: { id: { in: idsToClean } },
+      })
+    }
+  }
+
   console.log("\n==================================================")
   console.log(`  RESUMEN DE PRUEBAS: ${passedTests} de ${totalTests} EXITOSAS`)
   console.log("==================================================")

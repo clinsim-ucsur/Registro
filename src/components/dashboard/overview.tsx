@@ -5,18 +5,25 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Users, LogIn, LogOut, Stethoscope, Briefcase, UserSquare2, FileWarning, Loader2, X } from "lucide-react"
+import { Users, LogIn, LogOut, Stethoscope, Briefcase, UserSquare2, FileWarning, Loader2, X, Edit3, PlusCircle } from "lucide-react"
 import { DashboardChart } from "@/components/dashboard-chart"
 import { limaDayKey, formatLimaTime } from "@/lib/timezone"
-import { regularizeMissingExitAction } from "@/actions/attendance"
+import { regularizeMissingExitAction, regularizeEntryAndExitAction } from "@/actions/attendance"
+import { RecordStatus } from "@prisma/client"
 import { toast } from "sonner"
 
 export function DashboardOverview({
   records,
   weekly,
+  canEditEntryTime = false,
+  users = [],
+  campuses = [],
 }: {
   records: any[]
   weekly: { label: string; total: number }[]
+  canEditEntryTime?: boolean
+  users?: any[]
+  campuses?: { id: string; name: string }[]
 }) {
   const [localRecords, setLocalRecords] = useState<any[]>(records)
 
@@ -52,6 +59,126 @@ export function DashboardOverview({
   const [regExitTime, setRegExitTime] = useState<string>("")
   const [regReason, setRegReason] = useState<string>("Olvidó marcar salida")
   const [isSubmittingReg, setIsSubmittingReg] = useState<boolean>(false)
+
+  // Modal exclusivo para Admin Total / Admin General: Regularizar o Editar Hora de Entrada (y Salida)
+  const [entryModalOpen, setEntryModalOpen] = useState<boolean>(false)
+  const [editingEntryRecord, setEditingEntryRecord] = useState<any | null>(null)
+  const [entryUserSearch, setEntryUserSearch] = useState<string>("")
+  const [entrySelectedUserId, setEntrySelectedUserId] = useState<string>("")
+  const [entryTimeHHMM, setEntryTimeHHMM] = useState<string>("07:00")
+  const [entryIncludeExit, setEntryIncludeExit] = useState<boolean>(false)
+  const [entryExitTimeHHMM, setEntryExitTimeHHMM] = useState<string>("15:00")
+  const [entryStatus, setEntryStatus] = useState<RecordStatus>(RecordStatus.A_TIEMPO)
+  const [entryCampusName, setEntryCampusName] = useState<string>("Campus Villa")
+  const [entryReason, setEntryReason] = useState<string>("Regularización manual de entrada solicitada por el colaborador")
+  const [isSubmittingEntry, setIsSubmittingEntry] = useState<boolean>(false)
+
+  const openNewEntryExitModal = () => {
+    setEditingEntryRecord(null)
+    setEntryUserSearch("")
+    setEntrySelectedUserId(users[0]?.id || "")
+    setEntryTimeHHMM("07:00")
+    setEntryIncludeExit(true)
+    setEntryExitTimeHHMM("15:00")
+    setEntryStatus(RecordStatus.A_TIEMPO)
+    setEntryCampusName(campuses[0]?.name || "Campus Villa")
+    setEntryReason("Olvidó marcar entrada — Regularizado por Admin")
+    setEntryModalOpen(true)
+  }
+
+  const openEditExistingEntryModal = (record: any) => {
+    setEditingEntryRecord(record)
+    setEntrySelectedUserId(record.user?.id || record.userId || "")
+    const currentHHMM = new Intl.DateTimeFormat("es-PE", {
+      timeZone: "America/Lima",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(record.timestamp))
+    setEntryTimeHHMM(currentHHMM)
+    setEntryIncludeExit(false)
+    setEntryExitTimeHHMM("15:00")
+    setEntryStatus((record.status as RecordStatus) || RecordStatus.A_TIEMPO)
+    setEntryCampusName(record.campus?.name || campuses[0]?.name || "Campus Villa")
+    setEntryReason("Ajuste manual de hora de ingreso por Admin")
+    setEntryModalOpen(true)
+  }
+
+  const handleConfirmEntryExitRegularize = async () => {
+    const targetUserId = editingEntryRecord
+      ? editingEntryRecord.user?.id || editingEntryRecord.userId
+      : entrySelectedUserId
+    if (!targetUserId) {
+      toast.error("Seleccione un colaborador.")
+      return
+    }
+    setIsSubmittingEntry(true)
+    try {
+      const res = await regularizeEntryAndExitAction({
+        userId: targetUserId,
+        existingEntryRecordId: editingEntryRecord?.id,
+        entryTimeHHMM,
+        includeExit: entryIncludeExit,
+        exitTimeHHMM: entryIncludeExit ? entryExitTimeHHMM : undefined,
+        dateStr: todayKey,
+        status: entryStatus,
+        campusName: entryCampusName,
+        reason: entryReason,
+      })
+
+      if (res.success && res.entryRecord) {
+        toast.success(res.message)
+        const targetUser =
+          editingEntryRecord?.user ||
+          users.find((u) => u.id === targetUserId) || {
+            id: targetUserId,
+            name: "Colaborador",
+            dni: "—",
+            role: "TECNICO",
+          }
+
+        setLocalRecords((prev) => {
+          let next = [...prev]
+          const entryRow = {
+            id: res.entryRecord!.id,
+            type: res.entryRecord!.type,
+            status: res.entryRecord!.status,
+            timestamp: res.entryRecord!.timestamp,
+            userId: targetUserId,
+            user: targetUser,
+            campus: { name: res.entryRecord!.campusName || entryCampusName },
+            course: res.entryRecord!.courseName ? { name: res.entryRecord!.courseName } : null,
+          }
+          if (editingEntryRecord) {
+            next = next.map((r) => (r.id === editingEntryRecord.id ? entryRow : r))
+          } else {
+            next = [entryRow, ...next]
+          }
+          if (res.exitRecord) {
+            const exitRow = {
+              id: res.exitRecord.id,
+              type: res.exitRecord.type,
+              status: res.exitRecord.status,
+              timestamp: res.exitRecord.timestamp,
+              userId: targetUserId,
+              user: targetUser,
+              campus: { name: res.exitRecord.campusName || entryCampusName },
+              course: res.exitRecord.courseName ? { name: res.exitRecord.courseName } : null,
+            }
+            next = [exitRow, ...next]
+          }
+          return next
+        })
+        setEntryModalOpen(false)
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error("Error al regularizar la hora de entrada.")
+    } finally {
+      setIsSubmittingEntry(false)
+    }
+  }
 
   const openRegularizeModal = (record: any) => {
     setRegModalRecord(record)
@@ -235,13 +362,28 @@ export function DashboardOverview({
 
       <div className="grid grid-cols-1 gap-6 animate-fade-in-up" style={{ animationDelay: "0.2s" }}>
         <Card className="shadow-sm shadow-slate-200/50 border-slate-200/60 rounded-2xl bg-white overflow-hidden">
-          <CardHeader className="border-b border-slate-100 bg-white py-5 px-6">
-            <CardTitle className="text-lg font-extrabold text-slate-800">
-              Marcaciones del Día
-            </CardTitle>
-            <CardDescription className="text-sm font-medium">
-              Registros de asistencia procesados hoy. Si un paciente o colaborador olvidó marcar su salida, puede regularizarla manualmente desde su fila de entrada.
-            </CardDescription>
+          <CardHeader className="border-b border-slate-100 bg-white py-5 px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <CardTitle className="text-lg font-extrabold text-slate-800">
+                Marcaciones del Día
+              </CardTitle>
+              <CardDescription className="text-sm font-medium">
+                Registros de asistencia procesados hoy.{" "}
+                {canEditEntryTime
+                  ? "Como Admin Total / General puede editar la hora de ingreso o regularizar entrada y salida manualmente."
+                  : "Si un paciente o colaborador olvidó marcar su salida, puede regularizarla manualmente desde su fila de entrada."}
+              </CardDescription>
+            </div>
+            {canEditEntryTime && (
+              <Button
+                type="button"
+                onClick={openNewEntryExitModal}
+                className="h-10 px-4 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-xs cursor-pointer shrink-0 flex items-center gap-1.5 shadow-sm"
+              >
+                <PlusCircle size={15} />
+                Regularizar Entrada / Salida
+              </Button>
+            )}
           </CardHeader>
           <CardContent className="p-0">
             <Table>
@@ -290,6 +432,16 @@ export function DashboardOverview({
                             >
                               {record.type}
                             </span>
+                            {canEditEntryTime && record.type === "ENTRADA" && (
+                              <button
+                                type="button"
+                                onClick={() => openEditExistingEntryModal(record)}
+                                className="px-2.5 py-1 rounded-md bg-blue-50 hover:bg-blue-100 text-[#1967D2] border border-blue-200 text-[10px] font-black flex items-center gap-1 transition-colors cursor-pointer"
+                                title="Editar manualmente la hora de ingreso (Exclusivo Admin Total / General)"
+                              >
+                                <Edit3 size={11} /> Editar Hora Ingreso
+                              </button>
+                            )}
                             {isOpenEntry && (
                               <button
                                 type="button"
@@ -412,6 +564,208 @@ export function DashboardOverview({
                   <LogOut size={14} />
                 )}
                 Guardar Salida ({regExitTime})
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Exclusivo Admin Total / Admin General: Regularizar o Editar Hora de Entrada y Salida */}
+      {canEditEntryTime && entryModalOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in-up">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-100 space-y-4">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-100 text-[#1967D2] flex items-center justify-center">
+                  <LogIn size={18} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">
+                    {editingEntryRecord
+                      ? "Editar Hora de Ingreso Manualmente"
+                      : "Regularizar Entrada y/o Salida"}
+                  </h3>
+                  <p className="text-xs font-medium text-slate-500">
+                    {editingEntryRecord
+                      ? `${editingEntryRecord.user?.name} (DNI: ${editingEntryRecord.user?.dni})`
+                      : "Exclusivo para Admin Total y Admin General"}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEntryModalOpen(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {!editingEntryRecord && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-black uppercase tracking-wider text-slate-700 block">
+                    Colaborador que olvidó marcar
+                  </label>
+                  <Input
+                    placeholder="Filtrar por nombre o DNI..."
+                    value={entryUserSearch}
+                    onChange={(e) => {
+                      const q = e.target.value
+                      setEntryUserSearch(q)
+                      const filtered = users.filter(
+                        (u) =>
+                          u.name.toLowerCase().includes(q.toLowerCase()) ||
+                          u.dni.includes(q)
+                      )
+                      if (filtered.length > 0) {
+                        setEntrySelectedUserId(filtered[0].id)
+                      }
+                    }}
+                    className="h-9 rounded-xl bg-slate-50 border-slate-200 text-xs font-semibold"
+                  />
+                  <select
+                    value={entrySelectedUserId}
+                    onChange={(e) => setEntrySelectedUserId(e.target.value)}
+                    className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                  >
+                    {users
+                      .filter(
+                        (u) =>
+                          !entryUserSearch.trim() ||
+                          u.name.toLowerCase().includes(entryUserSearch.toLowerCase()) ||
+                          u.dni.includes(entryUserSearch)
+                      )
+                      .map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name} (DNI: {u.dni}) — {u.role}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                    Hora de Entrada
+                  </label>
+                  <Input
+                    type="time"
+                    value={entryTimeHHMM}
+                    onChange={(e) => setEntryTimeHHMM(e.target.value)}
+                    className="h-11 rounded-xl bg-slate-50 border-slate-200 font-black text-slate-900 text-base"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                    Estado de Ingreso
+                  </label>
+                  <select
+                    value={entryStatus}
+                    onChange={(e) => setEntryStatus(e.target.value as RecordStatus)}
+                    className="w-full h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                  >
+                    <option value="A_TIEMPO">A Tiempo</option>
+                    <option value="TARDANZA">Tardanza</option>
+                    <option value="EXCEPCION">Excepción</option>
+                    <option value="FALTA">Falta</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                <label className="flex items-center gap-2 text-xs font-black text-slate-800 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={entryIncludeExit}
+                    onChange={(e) => setEntryIncludeExit(e.target.checked)}
+                    className="rounded border-slate-300 text-[#1967D2] focus:ring-[#1967D2]"
+                  />
+                  <span>Registrar también la Hora de Salida</span>
+                </label>
+                {entryIncludeExit && (
+                  <div>
+                    <label className="text-[11px] font-bold uppercase tracking-wider text-slate-600 block mb-1">
+                      Hora de Salida
+                    </label>
+                    <Input
+                      type="time"
+                      value={entryExitTimeHHMM}
+                      onChange={(e) => setEntryExitTimeHHMM(e.target.value)}
+                      className="h-10 rounded-xl bg-white border-slate-200 font-black text-slate-900 text-sm"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 gap-2.5">
+                <div>
+                  <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                    Sede
+                  </label>
+                  <select
+                    value={entryCampusName}
+                    onChange={(e) => setEntryCampusName(e.target.value)}
+                    className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                  >
+                    {campuses.length > 0 ? (
+                      campuses.map((c) => (
+                        <option key={c.id} value={c.name}>
+                          {c.name}
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="Campus Villa">Campus Villa</option>
+                        <option value="Campus Norte">Campus Norte</option>
+                        <option value="Campus Ate">Campus Ate</option>
+                        <option value="Campus Aramburú">Campus Aramburú</option>
+                      </>
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                    Observación / Motivo
+                  </label>
+                  <Input
+                    value={entryReason}
+                    onChange={(e) => setEntryReason(e.target.value)}
+                    placeholder="Ej. Olvidó marcar entrada"
+                    className="h-10 rounded-xl bg-slate-50 border-slate-200 text-xs font-semibold"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isSubmittingEntry}
+                onClick={() => setEntryModalOpen(false)}
+                className="h-10 px-4 rounded-xl text-xs font-bold cursor-pointer"
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                disabled={isSubmittingEntry || !entryTimeHHMM}
+                onClick={handleConfirmEntryExitRegularize}
+                className="h-10 px-5 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-xs cursor-pointer flex items-center gap-1.5"
+              >
+                {isSubmittingEntry ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <LogIn size={14} />
+                )}
+                {editingEntryRecord
+                  ? `Guardar Hora (${entryTimeHHMM})`
+                  : entryIncludeExit
+                  ? `Guardar Entrada y Salida`
+                  : `Guardar Entrada (${entryTimeHHMM})`}
               </Button>
             </div>
           </div>

@@ -22,8 +22,11 @@ import {
   toggleRuleLateToleranceAction,
   toggleAllToleranceRulesEarlyAction,
   toggleAllToleranceRulesLateAction,
+  getTechnicianCustomRulesAction,
+  saveTechnicianCustomRuleAction,
   type ToleranceRuleInput
 } from "@/actions/tolerance"
+import type { TechnicianCustomRuleEntry } from "@/lib/tech-custom-rules"
 
 export type ToleranceRuleItem = {
   id: string
@@ -249,6 +252,101 @@ export function DashboardRules({
 
   // Modal para ver los técnicos afectados por una regla
   const [inspectingRule, setInspectingRule] = useState<ToleranceRuleItem | null>(null)
+
+  // Liberación fuera de hora y reglas específicas por Técnico
+  const [techCustomMap, setTechCustomMap] = useState<Record<string, TechnicianCustomRuleEntry>>({})
+  const [editingTechCustom, setEditingTechCustom] = useState<TechnicianUser | null>(null)
+  const [techFreeOutOfHours, setTechFreeOutOfHours] = useState<boolean>(false)
+  const [techCustomRuleId, setTechCustomRuleId] = useState<string>("")
+  const [techCustomEntryTime, setTechCustomEntryTime] = useState<string>("")
+  const [techCustomGrace, setTechCustomGrace] = useState<string>("")
+  const [techCustomLate, setTechCustomLate] = useState<string>("")
+  const [isSavingTechCustom, setIsSavingTechCustom] = useState<boolean>(false)
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await getTechnicianCustomRulesAction()
+        if (res.success && res.map) {
+          setTechCustomMap(res.map)
+        }
+      } catch {}
+    })()
+  }, [])
+
+  const openTechCustomModal = (tech: TechnicianUser) => {
+    const existing = techCustomMap[tech.id]
+    setEditingTechCustom(tech)
+    setTechFreeOutOfHours(Boolean(existing?.freeOutOfHours))
+    setTechCustomRuleId(existing?.customRuleId || "")
+    setTechCustomEntryTime(existing?.customEntryTime || "")
+    setTechCustomGrace(
+      existing?.customGraceMinutes != null ? String(existing.customGraceMinutes) : ""
+    )
+    setTechCustomLate(
+      existing?.customLateMinutes != null ? String(existing.customLateMinutes) : ""
+    )
+  }
+
+  const handleQuickToggleTechFree = async (tech: TechnicianUser) => {
+    const existing = techCustomMap[tech.id]
+    const nextFree = !existing?.freeOutOfHours
+    setIsSavingTechCustom(true)
+    try {
+      const res = await saveTechnicianCustomRuleAction({
+        userId: tech.id,
+        dni: tech.dni,
+        userName: tech.name,
+        freeOutOfHours: nextFree,
+        customRuleId: existing?.customRuleId || null,
+        customEntryTime: existing?.customEntryTime || null,
+        customGraceMinutes: existing?.customGraceMinutes ?? null,
+        customLateMinutes: existing?.customLateMinutes ?? null,
+      })
+      if (res.success) {
+        toast.success(res.message)
+        const refreshed = await getTechnicianCustomRulesAction()
+        if (refreshed.success && refreshed.map) setTechCustomMap(refreshed.map)
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error("Error al cambiar el estado del técnico.")
+    } finally {
+      setIsSavingTechCustom(false)
+    }
+  }
+
+  const handleSaveTechCustomModal = async () => {
+    if (!editingTechCustom) return
+    setIsSavingTechCustom(true)
+    try {
+      const res = await saveTechnicianCustomRuleAction({
+        userId: editingTechCustom.id,
+        dni: editingTechCustom.dni,
+        userName: editingTechCustom.name,
+        freeOutOfHours: techFreeOutOfHours,
+        customRuleId: techCustomRuleId || null,
+        customEntryTime: techCustomEntryTime.trim() || null,
+        customGraceMinutes:
+          techCustomGrace.trim() !== "" ? Number(techCustomGrace) : null,
+        customLateMinutes:
+          techCustomLate.trim() !== "" ? Number(techCustomLate) : null,
+      })
+      if (res.success) {
+        toast.success(res.message)
+        const refreshed = await getTechnicianCustomRulesAction()
+        if (refreshed.success && refreshed.map) setTechCustomMap(refreshed.map)
+        setEditingTechCustom(null)
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error("Error al guardar regla del técnico.")
+    } finally {
+      setIsSavingTechCustom(false)
+    }
+  }
 
   // Form state
   const [formData, setFormData] = useState<ToleranceRuleInput>({
@@ -1592,13 +1690,269 @@ export function DashboardRules({
               <div className="rounded-2xl bg-blue-50/50 p-4 border border-blue-100 text-xs text-blue-900 flex items-start gap-2.5">
                 <HelpCircle size={18} className="text-[#1967D2] shrink-0 mt-0.5" />
                 <p className="leading-relaxed">
-                  <strong>¿Cómo funciona la prioridad?</strong> El sistema busca primero una regla que coincida con la Sede y Rol del usuario. Si no encuentra, busca por Sede, luego por Rol, y finalmente usa la Regla Global.
+                  <strong>¿Cómo funciona la prioridad?</strong> El sistema busca primero una regla específica asignada al técnico, luego una regla que coincida con la Sede y Rol del usuario, y finalmente la Regla Global.
                 </p>
               </div>
             </Card>
           </div>
         </div>
+
+        {/* PANEL: LIBERACIÓN MANUAL FUERA DE HORA Y REGLAS PARA TÉCNICOS EN ESPECÍFICO */}
+        {technicians.length > 0 && (
+          <Card className="rounded-3xl border-2 border-indigo-100 bg-white p-6 md:p-8 shadow-sm space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-3 rounded-2xl bg-indigo-50 text-indigo-600 border border-indigo-200">
+                  <UserCircle2 size={22} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-slate-900">
+                    Liberar Técnicos Fuera de Hora o Asignar Regla a Técnicos en Específico
+                  </h3>
+                  <p className="text-xs font-medium text-slate-500">
+                    Libere manualmente a un técnico con 1 clic para que ingrese fuera de hora sin penalización, o asígnele una regla u horario personalizado individual.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {technicians.map((tech) => {
+                const custom = techCustomMap[tech.id]
+                const isFree = Boolean(custom?.freeOutOfHours)
+                const linkedRule = custom?.customRuleId
+                  ? rules.find((r) => r.id === custom.customRuleId)
+                  : null
+
+                return (
+                  <div
+                    key={tech.id}
+                    className={`p-4 rounded-2xl border-2 transition-all flex flex-col justify-between gap-3 ${
+                      isFree
+                        ? "bg-emerald-50/50 border-emerald-300"
+                        : custom?.customEntryTime || linkedRule
+                        ? "bg-indigo-50/40 border-indigo-300"
+                        : "bg-slate-50/70 border-slate-200/80"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-xs font-black text-slate-900 truncate">{tech.name}</p>
+                        <p className="text-[11px] font-mono text-slate-500">
+                          DNI: {tech.dni} • {tech.campus?.name || "Campus Villa"}
+                        </p>
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-black uppercase shrink-0 ${
+                          isFree
+                            ? "bg-emerald-600 text-white"
+                            : custom?.customEntryTime || linkedRule
+                            ? "bg-indigo-600 text-white"
+                            : "bg-slate-200 text-slate-700"
+                        }`}
+                      >
+                        {isFree
+                          ? "🔓 Libre Fuera de Hora"
+                          : custom?.customEntryTime
+                          ? `⏰ ${custom.customEntryTime}`
+                          : linkedRule
+                          ? `📌 ${linkedRule.expectedEntryTime}`
+                          : tech.defaultShift || "Estándar"}
+                      </span>
+                    </div>
+
+                    {(linkedRule || custom?.customEntryTime) && (
+                      <div className="text-[11px] font-semibold text-indigo-900 bg-white/90 px-2.5 py-1.5 rounded-xl border border-indigo-200">
+                        {linkedRule
+                          ? `Regla asignada: ${linkedRule.name || linkedRule.expectedEntryTime} (${linkedRule.expectedEntryTime})`
+                          : `Horario específico: Entrada ${custom?.customEntryTime}`}
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={isSavingTechCustom}
+                        onClick={() => handleQuickToggleTechFree(tech)}
+                        className={`h-8 px-3 rounded-xl text-[11px] font-black flex-1 cursor-pointer ${
+                          isFree
+                            ? "bg-slate-800 hover:bg-slate-700 text-white"
+                            : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                        }`}
+                      >
+                        {isFree ? "Restaurar Horario" : "🔓 Liberar Fuera de Hora"}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => openTechCustomModal(tech)}
+                        className="h-8 px-2.5 rounded-xl text-[11px] font-bold border-slate-300 bg-white hover:bg-slate-100 text-slate-700 cursor-pointer shrink-0"
+                      >
+                        <Settings2 size={13} className="mr-1" /> Regla
+                      </Button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </Card>
+        )}
       </div>
+
+      {/* Modal para Configurar Regla u Horario Específico a un Técnico */}
+      {editingTechCustom && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in-up">
+          <div className="w-full max-w-md rounded-3xl bg-white p-6 shadow-2xl border border-slate-100 space-y-4">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-black text-slate-900">
+                  Regla Específica / Liberación de Técnico
+                </h3>
+                <p className="text-xs font-semibold text-slate-500">
+                  {editingTechCustom.name} (DNI: {editingTechCustom.dni})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingTechCustom(null)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3.5">
+              <label className="flex items-start gap-2.5 p-3 rounded-2xl bg-emerald-50 border border-emerald-200 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={techFreeOutOfHours}
+                  onChange={(e) => setTechFreeOutOfHours(e.target.checked)}
+                  className="mt-0.5 rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500"
+                />
+                <div className="text-xs">
+                  <p className="font-black text-emerald-900">
+                    🔓 Liberar manualmente para ingresar fuera de hora
+                  </p>
+                  <p className="text-[11px] font-medium text-emerald-800 mt-0.5">
+                    Permite a este técnico registrar entrada a cualquier hora del día marcando siempre A Tiempo.
+                  </p>
+                </div>
+              </label>
+
+              <div>
+                <label className="text-xs font-black uppercase tracking-wider text-slate-700 block mb-1">
+                  Asignar una Regla Existente en Específico
+                </label>
+                <select
+                  value={techCustomRuleId}
+                  onChange={(e) => {
+                    const rId = e.target.value
+                    setTechCustomRuleId(rId)
+                    const found = rules.find((r) => r.id === rId)
+                    if (found) {
+                      setTechCustomEntryTime(found.expectedEntryTime)
+                      setTechCustomGrace(String(found.gracePeriodMinutes))
+                      setTechCustomLate(String(found.lateToleranceMinutes))
+                    }
+                  }}
+                  className="w-full h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-800"
+                >
+                  <option value="">(Usar regla automática de su turno/cronograma)</option>
+                  {rules.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name || `Regla ${r.expectedEntryTime}`} — Entrada {r.expectedEntryTime} (Gracia {r.gracePeriodMinutes}m)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2.5">
+                <div>
+                  <label className="text-[11px] font-black uppercase tracking-wider text-slate-700 block mb-1">
+                    Hora Entrada
+                  </label>
+                  <Input
+                    type="time"
+                    value={techCustomEntryTime}
+                    onChange={(e) => setTechCustomEntryTime(e.target.value)}
+                    className="h-10 rounded-xl bg-slate-50 font-black text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-black uppercase tracking-wider text-slate-700 block mb-1">
+                    Gracia (min)
+                  </label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={180}
+                    placeholder="Ej. 15"
+                    value={techCustomGrace}
+                    onChange={(e) => setTechCustomGrace(e.target.value)}
+                    className="h-10 rounded-xl bg-slate-50 font-bold text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-black uppercase tracking-wider text-slate-700 block mb-1">
+                    Tardanza (min)
+                  </label>
+                  <Input
+                    type="number"
+                    min={0}
+                    max={300}
+                    placeholder="Ej. 30"
+                    value={techCustomLate}
+                    onChange={(e) => setTechCustomLate(e.target.value)}
+                    className="h-10 rounded-xl bg-slate-50 font-bold text-xs"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={isSavingTechCustom}
+                onClick={() => {
+                  setTechFreeOutOfHours(false)
+                  setTechCustomRuleId("")
+                  setTechCustomEntryTime("")
+                  setTechCustomGrace("")
+                  setTechCustomLate("")
+                }}
+                className="h-10 px-3 rounded-xl text-xs font-bold text-rose-600 border-rose-200 hover:bg-rose-50 cursor-pointer"
+              >
+                Quitar regla específica
+              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={isSavingTechCustom}
+                  onClick={() => setEditingTechCustom(null)}
+                  className="h-10 px-4 rounded-xl text-xs font-bold cursor-pointer"
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="button"
+                  disabled={isSavingTechCustom}
+                  onClick={handleSaveTechCustomModal}
+                  className="h-10 px-5 rounded-xl bg-[#1967D2] hover:bg-[#124b9c] text-white font-black text-xs cursor-pointer"
+                >
+                  {isSavingTechCustom ? (
+                    <Loader2 size={14} className="animate-spin mr-1" />
+                  ) : null}
+                  Guardar
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {mounted && typeof document !== "undefined" && modalContent && createPortal(modalContent, document.body)}
       {mounted && typeof document !== "undefined" && inspectModalContent && createPortal(inspectModalContent, document.body)}

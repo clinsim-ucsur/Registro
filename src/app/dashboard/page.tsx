@@ -185,6 +185,12 @@ export default async function DashboardPage() {
       : adminTier === "ADMIN_SEDE"
       ? `Admin por Sede`
       : "Admin General"
+
+  // Solo el Admin Total (SUPER_ADMIN) y el Admin General (ADMIN_GLOBAL) pueden crear o editar manualmente la hora de ingreso
+  const canEditEntryTime =
+    currentUserRole === "SUPER_ADMIN" ||
+    adminTier === "SUPER_ADMIN" ||
+    adminTier === "ADMIN_GLOBAL"
   
   return (
     <Tabs defaultValue={defaultTab} orientation="vertical" className="flex flex-row h-screen w-full bg-slate-50 overflow-hidden font-sans">
@@ -370,7 +376,13 @@ export default async function DashboardPage() {
             
             {hasAccess("overview") && (
               <TabsContent value="overview" className="m-0 p-0 outline-none">
-                <DashboardOverview records={records} weekly={weeklySeries} />
+                <DashboardOverview
+                  records={records}
+                  weekly={weeklySeries}
+                  canEditEntryTime={canEditEntryTime}
+                  users={users}
+                  campuses={visibleCampuses}
+                />
               </TabsContent>
             )}
 
@@ -391,6 +403,8 @@ export default async function DashboardPage() {
                   campuses={visibleCampuses}
                   initialOvertimeSettings={overtimeSettings}
                   lockedOperationalRole={scopedRole}
+                  canEditEntryTime={canEditEntryTime}
+                  users={users}
                 />
               </TabsContent>
             )}
@@ -420,6 +434,7 @@ export default async function DashboardPage() {
                 <DashboardDailyProgram
                   scopedCampusName={session.campusName}
                   lockedOperationalRole={scopedRole}
+                  canEditEntryTime={canEditEntryTime}
                 />
               </TabsContent>
             )}

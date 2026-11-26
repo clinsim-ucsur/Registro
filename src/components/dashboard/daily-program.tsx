@@ -6,7 +6,7 @@ import {
   type LiveDailyProgramOverviewResponse,
   type LivePersonScheduleItem,
 } from "@/actions/daily-program"
-import { regularizeMissingExitAction } from "@/actions/attendance"
+import { regularizeMissingExitAction, regularizeEntryAndExitAction } from "@/actions/attendance"
 import type { ResolvedModuleStatus } from "@/lib/daily-program-api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -27,12 +27,14 @@ import {
   Loader2,
   CalendarClock,
   LogOut,
+  LogIn,
   X,
 } from "lucide-react"
 
 interface DashboardDailyProgramProps {
   scopedCampusName?: string | null
   lockedOperationalRole?: "PACIENTE_SIMULADO" | null
+  canEditEntryTime?: boolean
 }
 
 function formatSyncTimeLima(isoStr: string): string {
@@ -67,6 +69,7 @@ function formatRecordHourLima(isoStr?: string | null): string {
 export function DashboardDailyProgram({
   scopedCampusName,
   lockedOperationalRole,
+  canEditEntryTime = false,
 }: DashboardDailyProgramProps) {
   const [data, setData] = useState<LiveDailyProgramOverviewResponse | null>(null)
   const [isLoading, setIsLoading] = useState<boolean>(true)
@@ -76,11 +79,12 @@ export function DashboardDailyProgram({
   const [campusFilter, setCampusFilter] = useState<string>(scopedCampusName || "ALL")
   const [statusFilter, setStatusFilter] = useState<"ALL" | "MATCHED" | "UNMATCHED" | "EN_CURSO">("ALL")
 
-  // Estado del modal de regularización manual de salida
+  // Estado del modal de regularización manual de entrada / salida
   const [regularizeModal, setRegularizeModal] = useState<{
     person: LivePersonScheduleItem
     mod: ResolvedModuleStatus
   } | null>(null)
+  const [regEntryTime, setRegEntryTime] = useState<string>("")
   const [regExitTime, setRegExitTime] = useState<string>("")
   const [regCreateEntryToo, setRegCreateEntryToo] = useState<boolean>(false)
   const [regReason, setRegReason] = useState<string>("Olvidó marcar salida al finalizar la sesión")
@@ -88,8 +92,11 @@ export function DashboardDailyProgram({
 
   const openRegularizeModal = (person: LivePersonScheduleItem, mod: ResolvedModuleStatus) => {
     setRegularizeModal({ person, mod })
+    setRegEntryTime(mod.horaInicio || person.entryTime || "07:00")
     setRegExitTime(mod.horaFin || person.exitTime || "12:00")
-    setRegCreateEntryToo(mod.status === "PENDIENTE" && person.lastRecordType !== "ENTRADA")
+    setRegCreateEntryToo(
+      canEditEntryTime && mod.status === "PENDIENTE" && person.lastRecordType !== "ENTRADA"
+    )
     setRegReason("Olvidó marcar salida al finalizar la sesión")
   }
 
@@ -97,15 +104,28 @@ export function DashboardDailyProgram({
     if (!regularizeModal || !regularizeModal.person.dbUser) return
     setIsSubmittingReg(true)
     try {
-      const res = await regularizeMissingExitAction({
-        userId: regularizeModal.person.dbUser.id,
-        exitTimeHHMM: regExitTime,
-        entryTimeHHMM: regularizeModal.mod.horaInicio,
-        createEntryIfMissing: regCreateEntryToo,
-        campusName: regularizeModal.mod.campusName || regularizeModal.person.campusName,
-        courseName: regularizeModal.mod.courseName,
-        reason: regReason,
-      })
+      let res: { success: boolean; message: string }
+      if (canEditEntryTime && regCreateEntryToo) {
+        res = await regularizeEntryAndExitAction({
+          userId: regularizeModal.person.dbUser.id,
+          entryTimeHHMM: regEntryTime || regularizeModal.mod.horaInicio,
+          includeExit: true,
+          exitTimeHHMM: regExitTime,
+          campusName: regularizeModal.mod.campusName || regularizeModal.person.campusName,
+          courseName: regularizeModal.mod.courseName,
+          reason: regReason,
+        })
+      } else {
+        res = await regularizeMissingExitAction({
+          userId: regularizeModal.person.dbUser.id,
+          exitTimeHHMM: regExitTime,
+          entryTimeHHMM: regularizeModal.mod.horaInicio,
+          createEntryIfMissing: false,
+          campusName: regularizeModal.mod.campusName || regularizeModal.person.campusName,
+          courseName: regularizeModal.mod.courseName,
+          reason: regReason,
+        })
+      }
 
       if (res.success) {
         toast.success(res.message)
@@ -781,18 +801,42 @@ export function DashboardDailyProgram({
                 </div>
               </div>
 
-              {regularizeModal.mod.status === "PENDIENTE" && (
-                <label className="flex items-start gap-2.5 p-3 rounded-xl bg-amber-50/80 border border-amber-200 text-xs cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={regCreateEntryToo}
-                    onChange={(e) => setRegCreateEntryToo(e.target.checked)}
-                    className="mt-0.5 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
-                  />
-                  <span className="font-semibold text-amber-900 leading-snug">
-                    Registrar también la <strong>ENTRADA ({regularizeModal.mod.horaInicio})</strong> de este bloque (activar si el paciente tampoco marcó ingreso).
-                  </span>
-                </label>
+              {canEditEntryTime && regularizeModal.mod.status === "PENDIENTE" && (
+                <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-200 text-xs space-y-2.5">
+                  <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={regCreateEntryToo}
+                      onChange={(e) => setRegCreateEntryToo(e.target.checked)}
+                      className="mt-0.5 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                    />
+                    <span className="font-semibold text-amber-900 leading-snug">
+                      Registrar también la <strong>Hora de Entrada</strong> de este bloque (exclusivo Admin Total / General si el colaborador olvidó marcar ingreso).
+                    </span>
+                  </label>
+                  {regCreateEntryToo && (
+                    <div>
+                      <label className="text-[11px] font-black uppercase tracking-wider text-amber-900 block mb-1">
+                        Hora de Entrada a Registrar
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="time"
+                          value={regEntryTime}
+                          onChange={(e) => setRegEntryTime(e.target.value)}
+                          className="h-10 rounded-xl bg-white border-amber-300 font-black text-slate-900 text-sm flex-1"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setRegEntryTime(regularizeModal.mod.horaInicio)}
+                          className="px-2.5 py-2 rounded-xl bg-white hover:bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-black cursor-pointer shrink-0"
+                        >
+                          Inicio ({regularizeModal.mod.horaInicio})
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
 
               <div>
